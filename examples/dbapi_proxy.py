@@ -5,6 +5,7 @@ sqlite's dialect via sqlglot before running it.
     python examples/dbapi_proxy.py
     psql "host=127.0.0.1 port=5432 user=test dbname=test" -c "select * from users"
 """
+
 import asyncio
 
 import sqlglot

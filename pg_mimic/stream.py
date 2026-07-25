@@ -8,6 +8,7 @@ connection (StartupMessage, SSLRequest, CancelRequest, GSSENCRequest) -- they
 have no leading tag byte, so the server must peek the first 8 bytes to tell
 them apart (see messages.SSL_REQUEST_CODE et al.).
 """
+
 from __future__ import annotations
 
 import asyncio

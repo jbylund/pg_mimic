@@ -1,6 +1,7 @@
 """PgServer -- asyncio.start_server/start_unix_server wrapper, and the
 per-socket accept callback that handles the untagged startup-phase messages
 (SSLRequest/GSSENCRequest/CancelRequest) before a Connection is even created."""
+
 from __future__ import annotations
 
 import asyncio

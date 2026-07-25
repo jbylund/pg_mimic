@@ -3,6 +3,7 @@
 pg_mimic speaks text format only (both directions), matching pg8000's own
 client-side posture: it never requests binary either.
 """
+
 from __future__ import annotations
 
 import json

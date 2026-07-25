@@ -8,6 +8,7 @@ response. Running the server on its own thread/loop makes it independent of
 whatever the test thread is doing, sync or async, exactly like a real
 embedded mimic server would run in practice.
 """
+
 from __future__ import annotations
 
 import asyncio

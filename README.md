@@ -20,6 +20,7 @@ pip install pg-mimic
 import asyncio
 from pg_mimic import PgServer, ResultColumn, Session
 
+
 class MySession(Session):
     async def describe(self, sql, param_oids):
         return [ResultColumn.for_type("a", str), ResultColumn.for_type("b", int)]
@@ -28,10 +29,12 @@ class MySession(Session):
         yield ("hello", 1)
         yield ("world", 2)
 
+
 async def main():
     server = PgServer(session_factory=MySession)
     await server.start_server(host="127.0.0.1", port=5432)
     await server.serve_forever()
+
 
 asyncio.run(main())
 ```
@@ -88,9 +91,11 @@ directly instead of `describe()`/`query()`:
 ```python
 from pg_mimic import Statement, Portal
 
+
 class MyStatement(Statement):
     async def describe(self): ...
     def bind(self, params) -> Portal: ...
+
 
 class MySession(Session):
     async def prepare(self, sql, param_oids) -> Statement:

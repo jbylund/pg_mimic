@@ -5,6 +5,7 @@ Column shape is never inferred by inspecting row data (no "peek the first row"
 trick) -- it's always a declared fact, known before any row is pulled from a
 Portal's row source. See pg_mimic.session.Statement/Portal.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

@@ -13,6 +13,7 @@ robust here than fighting the parser. sqlglot *is* used for everything that
 needs real expression evaluation: static SELECTs and information_schema
 lookups.
 """
+
 from __future__ import annotations
 
 import re

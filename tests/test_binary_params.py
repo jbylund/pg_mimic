@@ -4,6 +4,7 @@ text-format. pg_mimic decodes these transparently so Session.query() always
 sees plain text strings. Each case here pins down one binary decoder in
 pg_mimic/types.py (_decode_bool/_decode_int/_decode_float/_decode_bytea/
 _decode_date/_decode_timestamp/_decode_uuid)."""
+
 from __future__ import annotations
 
 import datetime

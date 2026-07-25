@@ -18,6 +18,7 @@ Both the simple query protocol ('Q') and the extended protocol
 (Parse/Bind/Describe/Execute/Sync) drive this exact same interface --
 simple query just does describe() + bind([]) + execute(0) in one shot.
 """
+
 from __future__ import annotations
 
 import inspect

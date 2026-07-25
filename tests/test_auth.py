@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import psycopg
 import pytest
-
 from conftest import MockSession, ServerThread
+
 from pg_mimic import (
     ClearTextPasswordAuthPlugin,
     Md5PasswordAuthPlugin,
@@ -29,9 +29,7 @@ def _start(auth_plugin_factory, identity_provider=None):
 def test_trust_accepts_any_password():
     thread, port = _start(lambda username: TrustAuthPlugin())
     try:
-        with psycopg.Connection.connect(
-            f"host=127.0.0.1 port={port} user=test dbname=test password=whatever-i-want"
-        ):
+        with psycopg.Connection.connect(f"host=127.0.0.1 port={port} user=test dbname=test password=whatever-i-want"):
             pass
     finally:
         thread.stop()
@@ -46,9 +44,7 @@ def test_password_auth_accepts_correct_password(plugin_cls):
     identity_provider = SimpleIdentityProvider({"alice": "s3cret"})
     thread, port = _start(lambda username: plugin_cls(), identity_provider)
     try:
-        with psycopg.Connection.connect(
-            f"host=127.0.0.1 port={port} user=alice dbname=test password=s3cret"
-        ):
+        with psycopg.Connection.connect(f"host=127.0.0.1 port={port} user=alice dbname=test password=s3cret"):
             pass
     finally:
         thread.stop()
@@ -64,9 +60,7 @@ def test_password_auth_rejects_wrong_password(plugin_cls):
     thread, port = _start(lambda username: plugin_cls(), identity_provider)
     try:
         with pytest.raises(psycopg.OperationalError):
-            with psycopg.Connection.connect(
-                f"host=127.0.0.1 port={port} user=alice dbname=test password=wrong"
-            ):
+            with psycopg.Connection.connect(f"host=127.0.0.1 port={port} user=alice dbname=test password=wrong"):
                 pass
     finally:
         thread.stop()

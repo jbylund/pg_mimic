@@ -3,6 +3,7 @@
 returns str/int rows, so bool/bytes/float-specials/date/datetime/timedelta/
 dict/list/Decimal/UUID encoding had zero coverage despite being documented,
 implemented behavior."""
+
 from __future__ import annotations
 
 import datetime

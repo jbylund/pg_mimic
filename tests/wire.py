@@ -5,6 +5,7 @@ prepared statement/portal, or issuing Describe(Statement) before any Bind.
 pg_mimic itself has no need for frontend-message *builders* (it only parses
 those), so these live here rather than in the package.
 """
+
 from __future__ import annotations
 
 import asyncio

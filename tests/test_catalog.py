@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import psycopg
-
 from conftest import ServerThread
+
 from pg_mimic import PgServer, ResultColumn, Session
 
 
@@ -89,7 +89,6 @@ def test_information_schema_columns(conn, mock_session):
 
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT column_name, data_type FROM information_schema.columns "
-            "WHERE table_name = 'users' ORDER BY ordinal_position"
+            "SELECT column_name, data_type FROM information_schema.columns WHERE table_name = 'users' ORDER BY ordinal_position"
         )
         assert cur.fetchall() == [("id", "integer"), ("name", "text")]

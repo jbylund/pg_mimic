@@ -1,8 +1,9 @@
 """Minimal pg_mimic server: answers every query with the same static rows.
 
-    python examples/simple.py
-    psql "host=127.0.0.1 port=5432 user=test dbname=test" -c "select * from anything"
+python examples/simple.py
+psql "host=127.0.0.1 port=5432 user=test dbname=test" -c "select * from anything"
 """
+
 import asyncio
 
 from pg_mimic import PgServer, ResultColumn, Session

@@ -12,14 +12,15 @@ protocol handling can cause or fix. Talking the wire protocol directly tests
 the actual server-side behavior without depending on any particular client
 library's cancel() implementation.
 """
+
 from __future__ import annotations
 
 import asyncio
 
-from pg_mimic import PgServer, ResultColumn
-
 from conftest import ServerThread
 from wire import connect_and_get_backend_key, make_cancel_request, make_query, parse_error_fields, read_message
+
+from pg_mimic import PgServer, ResultColumn
 
 
 async def test_cancel_request_interrupts_running_query(mock_session):

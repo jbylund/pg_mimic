@@ -12,6 +12,7 @@ protocol -- not textually interpolated into the SQL string.
     print(conn.execute('select * from items where price > %s', (10,)).fetchall())
     "
 """
+
 import asyncio
 
 from pg_mimic import PgServer, ResultColumn, Session
