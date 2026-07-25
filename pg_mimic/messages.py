@@ -6,6 +6,7 @@ StartupMessage/SSLRequest/CancelRequest are the exception -- no leading tag byte
 those are handled in stream.py since they only ever appear as the very first
 message on a connection.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

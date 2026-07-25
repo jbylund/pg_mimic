@@ -4,6 +4,7 @@ Real Postgres SQLSTATE codes -- reused as-is so real client error handling
 (e.g. matching on `error.sqlstate`) behaves the way it would against a real
 server. See https://www.postgresql.org/docs/current/errcodes-appendix.html
 """
+
 from __future__ import annotations
 
 

@@ -2,6 +2,7 @@
 dispatch loop for both the simple ('Q') and extended (P/B/D/E/H/S/C) query
 protocols, driving a single Statement/Portal interface either way.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -12,12 +13,12 @@ from . import catalog, messages
 from .auth import AuthPlugin
 from .errors import (
     FEATURE_NOT_SUPPORTED,
+    IN_FAILED_SQL_TRANSACTION,
     INTERNAL_ERROR,
     INVALID_SQL_STATEMENT_NAME,
-    IN_FAILED_SQL_TRANSACTION,
     PgError,
 )
-from .messages import FieldSpec, ParsedBind, ParsedParse, TARGET_STATEMENT
+from .messages import TARGET_STATEMENT, FieldSpec, ParsedBind, ParsedParse
 from .results import ResultColumn, encode_row
 from .session import BaseSession, Session, Statement
 from .stream import ConnectionClosed, PgStream
@@ -30,6 +31,7 @@ def _format_code_for(format_codes: list[int], index: int) -> int:
     if len(format_codes) == 1:
         return format_codes[0]
     return format_codes[index]
+
 
 if TYPE_CHECKING:
     from .server import PgServer

@@ -3,9 +3,8 @@ suite happens to exercise on its own: explicitly Close-ing a named prepared
 statement/portal (psycopg manages its own prepared-statement cache and
 rarely calls this on demand), and Describe(Statement) before any Bind
 (psycopg's default flow only Describes the *portal*, after Bind)."""
-from __future__ import annotations
 
-from pg_mimic import PgServer, ResultColumn
+from __future__ import annotations
 
 from conftest import ServerThread
 from wire import (
@@ -20,7 +19,9 @@ from wire import (
     parse_error_fields,
     read_message,
 )
-from pg_mimic.types import unpack_int32, unpack_int16
+
+from pg_mimic import PgServer, ResultColumn
+from pg_mimic.types import unpack_int16, unpack_int32
 
 
 async def test_close_statement_and_portal(mock_session):

@@ -13,6 +13,7 @@ Try a few things from psql and watch this process's stdout:
     select * from some_table;
     \\dt
 """
+
 import argparse
 import asyncio
 import logging

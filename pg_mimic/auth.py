@@ -6,6 +6,7 @@ dance -- each mechanism (trust/cleartext/MD5/SCRAM) uses a genuinely different
 through one generic challenge/response generator (as mysql-mimic does), each
 `AuthPlugin` just drives its own exchange directly against the stream.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -39,9 +40,7 @@ class SimpleIdentityProvider(IdentityProvider):
 
 class AuthPlugin(ABC):
     @abstractmethod
-    async def authenticate(
-        self, stream: PgStream, username: str, identity_provider: IdentityProvider
-    ) -> bool:
+    async def authenticate(self, stream: PgStream, username: str, identity_provider: IdentityProvider) -> bool:
         """Drive this mechanism's full challenge/response exchange. Return True
         on success, False on a rejected password."""
 
