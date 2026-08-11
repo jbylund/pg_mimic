@@ -36,7 +36,9 @@ async def _serving():
 async def _shuts_down(serve_task):
     """close() has been called; did serve_forever actually come back?"""
     try:
-        await asyncio.wait_for(serve_task, timeout=5)
+        # Comfortably under the suite-wide per-test timeout, so a regression here
+        # reports as this assertion rather than as a bare pytest timeout.
+        await asyncio.wait_for(serve_task, timeout=2)
     except asyncio.TimeoutError:
         return False
     except asyncio.CancelledError:
