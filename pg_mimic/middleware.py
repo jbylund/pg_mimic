@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import logging
 import re
+from functools import partial
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Sequence
 
 import sqlglot
@@ -139,10 +140,10 @@ async def session_functions(ctx: MiddlewareContext) -> Statement | None:
     expr = ctx.select_without_tables()
     if expr is None:
         return None
-    substituted, substitutions = _substitute_session_functions(ctx.connection, expr)
+    substituted, substitutions, on_execute = _substitute_session_functions(ctx.connection, expr)
     if not substitutions:
         return None
-    return _evaluate_select(substituted, expr)
+    return _evaluate_select(substituted, expr, on_execute)
 
 
 async def static_select(ctx: MiddlewareContext) -> Statement | None:
@@ -155,8 +156,8 @@ async def static_select(ctx: MiddlewareContext) -> Statement | None:
     expr = ctx.select_without_tables()
     if expr is None:
         return None
-    substituted, _ = _substitute_session_functions(ctx.connection, expr)
-    return _evaluate_select(substituted, expr)
+    substituted, _substitutions, on_execute = _substitute_session_functions(ctx.connection, expr)
+    return _evaluate_select(substituted, expr, on_execute)
 
 
 async def information_schema(ctx: MiddlewareContext) -> Statement | None:
@@ -219,6 +220,7 @@ _DEFAULT_SETTINGS = {
     "search_path": lambda c: '"$user", public',
     "standard_conforming_strings": lambda c: "on",
     "is_superuser": lambda c: "off",
+    "jit": lambda c: "off",
 }
 
 
@@ -242,37 +244,92 @@ _SESSION_NULLARY_FUNCS = {
 }
 
 
-def _substitute_session_functions(connection: Connection, expr: exp.Expression) -> tuple[exp.Expression, int]:
-    """Replace session-state functions with literals. Returns the rewritten
-    expression and how many substitutions were made -- a count of zero is how
-    `session_functions` tells "this SELECT is about the connection" apart from
-    "this SELECT is the session's business"."""
+def _setting_value(connection: Connection, key: str) -> str:
+    """Current value of a setting. Unknown settings read as empty rather than
+    failing, matching what SHOW already does for them."""
+    if key in connection.session_vars:
+        return connection.session_vars[key]
+    if key in _DEFAULT_SETTINGS:
+        return _DEFAULT_SETTINGS[key](connection)
+    return ""
+
+
+def _literal_text(node: exp.Expression) -> str | None:
+    """The text of a literal argument, or None if it isn't a plain literal."""
+    if isinstance(node, exp.Null):
+        return None
+    if isinstance(node, exp.Literal):
+        return str(node.this)
+    if isinstance(node, exp.Boolean):
+        return "on" if node.this else "off"
+    return None
+
+
+def _substitute_session_functions(
+    connection: Connection, expr: exp.Expression
+) -> tuple[exp.Expression, int, Callable[[], None] | None]:
+    """Replace session-state functions with literals.
+
+    Returns the rewritten expression, how many substitutions were made, and any
+    deferred side effect. The count of zero is how `session_functions` tells
+    "this SELECT is about the connection" apart from "this SELECT is the
+    session's business".
+
+    `set_config` is the one function here that *writes*, so its effect is handed
+    back to run at Execute rather than applied during this rewrite -- Parse must
+    not change session state, exactly as a SET statement's does not.
+    """
     expr = expr.copy()
     substitutions = 0
+    effects: list[Callable[[], None]] = []
+
     for node_type, resolver in _SESSION_NULLARY_FUNCS.items():
         for node in list(expr.find_all(node_type)):
             node.replace(exp.Literal.string(resolver(connection)))
             substitutions += 1
+
     for node in list(expr.find_all(exp.Anonymous)):
         name = node.this.lower() if isinstance(node.this, str) else ""
         if name == "current_setting" and node.expressions and isinstance(node.expressions[0], exp.Literal):
-            setting_name = node.expressions[0].this
-            key = setting_name.lower()
-            if key in connection.session_vars:
-                value = connection.session_vars[key]
-            elif key in _DEFAULT_SETTINGS:
-                value = _DEFAULT_SETTINGS[key](connection)
-            else:
-                continue
-            node.replace(exp.Literal.string(value))
+            key = str(node.expressions[0].this).lower()
+            node.replace(exp.Literal.string(_setting_value(connection, key)))
+            substitutions += 1
+        elif name == "set_config" and len(node.expressions) >= 2 and isinstance(node.expressions[0], exp.Literal):
+            key = str(node.expressions[0].this).lower()
+            new_value = _literal_text(node.expressions[1])
+            if new_value is None and not isinstance(node.expressions[1], exp.Null):
+                continue  # not a literal we can evaluate -- leave it for the session
+            effects.append(partial(_apply_set_config, connection, key, new_value))
+            # set_config returns the value it just set; NULL resets and returns empty.
+            node.replace(exp.Literal.string(new_value if new_value is not None else ""))
             substitutions += 1
         elif name == "pg_backend_pid":
             node.replace(exp.Literal.number(connection.pid))
             substitutions += 1
-    return expr, substitutions
+
+    return expr, substitutions, _run_all(effects) if effects else None
 
 
-def _evaluate_select(substituted: exp.Expression, original: exp.Select) -> Statement | None:
+def _run_all(effects: list[Callable[[], None]]) -> Callable[[], None]:
+    def run() -> None:
+        for effect in effects:
+            effect()
+
+    return run
+
+
+def _apply_set_config(connection: Connection, key: str, value: str | None) -> None:
+    if value is None:
+        connection.session_vars.pop(key, None)
+    else:
+        connection.session_vars[key] = value
+
+
+def _evaluate_select(
+    substituted: exp.Expression,
+    original: exp.Select,
+    on_execute: Callable[[], None] | None = None,
+) -> Statement | None:
     try:
         result = sqlglot_execute(substituted, dialect="postgres")
     except Exception:
@@ -283,4 +340,4 @@ def _evaluate_select(substituted: exp.Expression, original: exp.Select) -> State
         columns = [ResultColumn.for_type(name, type(value)) for name, value in zip(result.columns, rows[0])]
     else:
         columns = [ResultColumn(name, TEXT) for name in result.columns]
-    return StaticStatement(original.sql(dialect="postgres"), columns, rows)
+    return StaticStatement(original.sql(dialect="postgres"), columns, rows, on_execute)

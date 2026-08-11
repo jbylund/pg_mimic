@@ -156,3 +156,63 @@ def test_session_functions_still_answered_by_default(conn, mock_session):
         cur.execute("SELECT current_user")
         assert cur.fetchone() == ("test",)
     assert mock_session.queries == []
+
+
+def test_set_config_sets_and_returns_the_value(conn, mock_session):
+    """asyncpg opens with `SELECT current_setting('jit'), set_config('jit','off',false)`;
+    before set_config was handled that fell through to the session, which answered
+    with the wrong shape and left the client retrying."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT current_setting('jit') AS cur, set_config('jit', 'off', false) AS new")
+        assert cur.fetchone() == ("off", "off")
+
+        cur.execute("SELECT set_config('search_path', 'myschema', false)")
+        assert cur.fetchone() == ("myschema",)
+        cur.execute("SHOW search_path")
+        assert cur.fetchone() == ("myschema",)
+    assert mock_session.queries == []
+
+
+def test_set_config_null_resets_the_setting(conn, mock_session):
+    with conn.cursor() as cur:
+        cur.execute("SELECT set_config('search_path', 'myschema', false)")
+        cur.execute("SELECT set_config('search_path', NULL, false)")
+        assert cur.fetchone() == ("",)
+        cur.execute("SHOW search_path")
+        # back to the built-in default rather than the value that was set
+        assert cur.fetchone() == ('"$user", public',)
+
+
+def test_current_setting_of_an_unknown_setting_is_empty(conn, mock_session):
+    """Unknown settings read as empty rather than falling through to the session,
+    matching what SHOW already does -- a fall-through here is what made a client
+    retry against a session that can't answer connection questions."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT current_setting('some.unknown.guc')")
+        assert cur.fetchone() == ("",)
+    assert mock_session.queries == []
+
+
+async def test_set_config_applies_at_execute_not_parse():
+    """set_config writes session state, so its effect is deferred to Execute like a
+    SET statement's -- Parse must not change anything."""
+
+    class FakeConnection:
+        def __init__(self):
+            self.session_vars = {}
+            self.database = "d"
+            self.username = "u"
+            self.pid = 1
+
+    connection = FakeConnection()
+    ctx = middleware.MiddlewareContext(connection, "SELECT set_config('a', 'b', false)", [])
+
+    statement = await middleware.session_functions(ctx)
+    assert statement is not None
+    assert connection.session_vars == {}, "Parse must not have applied it yet"
+
+    portal = statement.bind([])
+    assert connection.session_vars == {}, "Bind must not have applied it either"
+
+    await portal.execute(0)
+    assert connection.session_vars == {"a": "b"}
