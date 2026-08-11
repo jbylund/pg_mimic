@@ -82,10 +82,7 @@ async def test_close_shuts_down_mid_query():
     session = MockSession()
     session.columns = [ResultColumn.for_type("x", int)]
 
-    started = asyncio.Event()
-
     async def slow_query(sql, params):
-        started.set()
         await asyncio.sleep(30)  # never finishes on its own within the test
         yield (1,)
 
