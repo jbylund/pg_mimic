@@ -79,6 +79,12 @@ class ServerThread:
         finally:
             pending = [t for t in self.server._tasks if not t.done()]
             if pending:
+                # Cancel rather than await: a connection the test left open keeps
+                # its handler task alive forever, so gathering it would hang here
+                # until stop()'s join gives up -- five seconds and a leaked thread
+                # per test, for what looks like a passing test.
+                for task in pending:
+                    task.cancel()
                 self._loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
 
     def start(self) -> int:
@@ -89,6 +95,7 @@ class ServerThread:
     def stop(self) -> None:
         self._loop.call_soon_threadsafe(self.server.close)
         self._thread.join(timeout=5)
+        assert not self._thread.is_alive(), "server thread did not shut down -- a connection is still open"
 
 
 @pytest.fixture

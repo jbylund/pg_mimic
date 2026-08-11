@@ -32,8 +32,9 @@ asyncio_mode = "auto"
 # A misbehaving client can retry a query it can't parse forever (asyncpg does
 # exactly that when a statement it depends on answers with the wrong shape).
 # Without a per-test limit that hangs until CI's own timeout, which defaults to
-# six hours -- fail the one test instead.
-timeout = 30
+# six hours -- fail the one test instead. The slowest test deliberately runs a
+# ~2s query to have something to cancel, so this leaves ample headroom.
+timeout = 10
 
 [tool.ruff]
 line-length = 132
