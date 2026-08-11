@@ -38,6 +38,7 @@ from sqlglot.executor import execute as sqlglot_execute
 from .catalog import information_schema_statement, pg_catalog_statement
 from .results import ResultColumn
 from .session import Statement, StaticStatement
+from .typeinfo import is_typeinfo_query, typeinfo_statement
 from .types import TEXT
 
 if TYPE_CHECKING:
@@ -171,6 +172,18 @@ async def information_schema(ctx: MiddlewareContext) -> Statement | None:
     return None
 
 
+async def asyncpg_typeinfo(ctx: MiddlewareContext) -> Statement | None:
+    """asyncpg's type introspection.
+
+    Matched on the raw SQL rather than the parse tree, because sqlglot cannot parse
+    this one at all -- and answered directly rather than executed, because its
+    executor has no recursive CTE support. See pg_mimic.typeinfo.
+    """
+    if not is_typeinfo_query(ctx.sql):
+        return None
+    return typeinfo_statement(ctx.connection, ctx.sql)
+
+
 async def pg_catalog(ctx: MiddlewareContext) -> Statement | None:
     """SELECTs against pg_catalog -- psql's \\dt, \\d and friends.
 
@@ -198,7 +211,16 @@ def _is_pg_catalog(table: exp.Table) -> bool:
     return not table.db and table.name.lower().startswith("pg_")
 
 
-DEFAULT_MIDDLEWARE = (transaction_control, set_show, session_functions, information_schema, pg_catalog)
+DEFAULT_MIDDLEWARE = (
+    transaction_control,
+    set_show,
+    session_functions,
+    information_schema,
+    # Ahead of pg_catalog: this query names pg_catalog tables, but has to be
+    # answered rather than executed.
+    asyncpg_typeinfo,
+    pg_catalog,
+)
 
 
 async def resolve(

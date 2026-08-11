@@ -15,7 +15,7 @@ from decimal import Decimal
 
 import pytest
 
-from pg_mimic import ARRAY_OID, INT8, JSONB, TEXT, ResultColumn
+from pg_mimic import ARRAY_OID, BOOL, DATE, FLOAT8, INT2, INT4, INT8, JSONB, TEXT, UUID, VARCHAR, ResultColumn
 
 _scalar_testcases = {
     "int8": {"py_type": int, "value": 42},
@@ -49,8 +49,8 @@ async def test_null_is_null(apg_conn, mock_session):
 
 
 async def test_text_array(apg_conn, mock_session):
-    """text[] is the one array type asyncpg has a built-in codec for; the others
-    send it to pg_catalog (see the xfail below)."""
+    """text[] is the one array type asyncpg has a built-in codec for -- the rest go
+    through its type introspection, which pg_mimic.typeinfo answers."""
     mock_session.columns = [ResultColumn("c", ARRAY_OID[TEXT])]
     mock_session.rows = [(["a", "b,c", None],)]
     assert await apg_conn.fetchval("select c") == ["a", "b,c", None]
@@ -96,12 +96,6 @@ async def test_numeric_precision_is_exact(apg_conn, mock_session):
     assert await apg_conn.fetchval("select c") == value
 
 
-# --- known gaps ---------------------------------------------------------------------
-#
-# strict=True so this is a signal rather than dead weight: implementing it turns
-# CI red with "unexpectedly passing", naming the marker to delete.
-
-
 async def test_numeric(apg_conn, mock_session):
     mock_session.columns = [ResultColumn.for_type("c", Decimal)]
     mock_session.rows = [(Decimal("1.25"),)]
@@ -116,8 +110,41 @@ async def test_time(apg_conn, mock_session):
     assert await apg_conn.fetchval("select c") == time_cls(1, 2, 3)
 
 
-@pytest.mark.xfail(strict=True, reason="asyncpg introspects non-text arrays via pg_catalog, which isn't emulated")
 async def test_int_array(apg_conn, mock_session):
     mock_session.columns = [ResultColumn("c", ARRAY_OID[INT8])]
     mock_session.rows = [([1, 2, 3],)]
     assert await apg_conn.fetchval("select c") == [1, 2, 3]
+
+
+_array_testcases = {
+    "int2": {"element": INT2, "value": [1, 2]},
+    "int4": {"element": INT4, "value": [1, 2]},
+    "int8": {"element": INT8, "value": [1, 2]},
+    "bool": {"element": BOOL, "value": [True, False]},
+    "float8": {"element": FLOAT8, "value": [1.5, -0.25]},
+    "text": {"element": TEXT, "value": ["a", "b,c"]},
+    "varchar": {"element": VARCHAR, "value": ["a"]},
+    "uuid": {"element": UUID, "value": [uuid.UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c8")]},
+    "date": {"element": DATE, "value": [date(2001, 2, 3)]},
+    "with_null": {"element": INT8, "value": [1, None, 3]},
+    "empty": {"element": INT8, "value": []},
+}
+
+
+@pytest.mark.parametrize(
+    argnames=sorted(next(iter(_array_testcases.values()))),
+    argvalues=[[v for k, v in sorted(_array_testcases[name].items())] for name in sorted(_array_testcases)],
+    ids=sorted(_array_testcases),
+)
+async def test_arrays_of_every_element_type(apg_conn, mock_session, element, value):
+    """Each of these sends asyncpg to its type introspection, which only text[]
+    used to survive -- the rest died on pg_catalog."""
+    mock_session.columns = [ResultColumn("c", ARRAY_OID[element])]
+    mock_session.rows = [(value,)]
+    assert await apg_conn.fetchval("select c") == value
+
+
+async def test_nested_array(apg_conn, mock_session):
+    mock_session.columns = [ResultColumn("c", ARRAY_OID[INT8])]
+    mock_session.rows = [([[1, 2], [3, 4]],)]
+    assert await apg_conn.fetchval("select c") == [[1, 2], [3, 4]]
