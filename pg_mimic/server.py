@@ -46,6 +46,8 @@ class PgServer:
         self._server: asyncio.base_events.Server | None = None
         self._connections: dict[int, Connection] = {}
         self._tasks: set[asyncio.Task] = set()
+        self._writers: set[asyncio.StreamWriter] = set()
+        self._closing = False
         self._next_pid = 10000
 
     async def start_server(self, host: str | None = None, port: int | None = None, **kwargs) -> asyncio.base_events.Server:
@@ -62,10 +64,30 @@ class PgServer:
             await self._server.serve_forever()
 
     def close(self) -> None:
+        """Stop listening and drop live connections.
+
+        Closing the client transports matters as much as cancelling the handler
+        tasks. From Python 3.12, a cancelled `Server.serve_forever()` calls
+        `wait_closed()` before re-raising, and that waits for every active
+        connection to go away -- so with one still open, serve_forever never
+        returns and close() cannot shut the server down at all. Cancelling the
+        handler is not enough: the connection stays counted as active until its
+        transport actually closes.
+        """
+        self._closing = True
         if self._server is not None:
             self._server.close()
+            # 3.13+ can drop clients the server knows about but we may not yet.
+            close_clients = getattr(self._server, "close_clients", None)
+            if close_clients is not None:
+                close_clients()
         for task in self._tasks:
             task.cancel()
+        for writer in list(self._writers):
+            try:
+                writer.close()
+            except Exception:
+                pass  # already closing, or the transport is gone
 
     async def wait_closed(self) -> None:
         if self._server is not None:
@@ -85,9 +107,17 @@ class PgServer:
         return pid
 
     async def _client_connected_cb(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        if self._closing:
+            # Accepted just as the server was closing: the socket exists but this
+            # callback had not run yet, so close() could not have known to drop it.
+            # Left open it would keep asyncio counting an active connection, which
+            # is exactly what stops the server shutting down.
+            writer.close()
+            return
         task = asyncio.current_task()
         if task is not None:
             self._tasks.add(task)
+        self._writers.add(writer)
         try:
             await self._handle_client(reader, writer)
         except asyncio.CancelledError:
@@ -95,6 +125,15 @@ class PgServer:
         finally:
             if task is not None:
                 self._tasks.discard(task)
+            self._writers.discard(writer)
+            # The callback owns this connection, so close it on every path out --
+            # the early returns (a client that hangs up before the startup message,
+            # or a CancelRequest) otherwise leave the transport open, and asyncio
+            # counts it as an active connection until it actually closes.
+            try:
+                writer.close()
+            except Exception:
+                pass
 
     async def _handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         stream = PgStream(reader, writer)
