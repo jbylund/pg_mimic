@@ -13,7 +13,7 @@ import struct
 import uuid
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
-from typing import Any, Callable
+from typing import Any, Callable, get_args, get_origin
 
 _PG_EPOCH = datetime(2000, 1, 1)
 _PG_EPOCH_DATE = date(2000, 1, 1)
@@ -74,32 +74,6 @@ UUID = 2950
 JSONB = 3802
 RECORD = 2249
 
-# *_ARRAY oids, keyed by the scalar oid they hold
-ARRAY_OID = {
-    BOOL: 1000,
-    BYTEA: 1001,
-    CHAR: 1002,
-    NAME: 1003,
-    INT8: 1016,
-    INT2: 1005,
-    INT4: 1007,
-    TEXT: 1009,
-    OID: 1028,
-    FLOAT4: 1021,
-    FLOAT8: 1022,
-    VARCHAR: 1015,
-    BPCHAR: 1014,
-    DATE: 1182,
-    TIME: 1183,
-    TIMESTAMP: 1115,
-    TIMESTAMPTZ: 1185,
-    INTERVAL: 1187,
-    NUMERIC: 1231,
-    UUID: 2951,
-    JSON: 199,
-    JSONB: 3807,
-}
-
 
 def _bool_out(v: bool) -> str:
     return "t" if v else "f"
@@ -158,8 +132,6 @@ _TEXT_ENCODERS: dict[type, Any] = {
     time: lambda v: v.isoformat(),
     timedelta: _timedelta_out,
     uuid.UUID: str,
-    dict: _json_out,
-    list: _json_out,
 }
 
 _PY_TYPE_OID: dict[type, int] = {
@@ -175,13 +147,48 @@ _PY_TYPE_OID: dict[type, int] = {
     time: TIME,
     timedelta: INTERVAL,
     uuid.UUID: UUID,
-    dict: JSONB,
-    list: JSONB,
 }
 
 
-def oid_for_type(py_type: type) -> int:
-    """Best-effort Postgres OID for a Python type. Defaults to TEXT for anything unknown."""
+def oid_for_type(py_type: Any) -> int:
+    """Postgres OID for a Python type, inferred only where it is unambiguous.
+
+    Scalars infer from `_PY_TYPE_OID`, and `list[T]` infers to T's array type
+    (`list[str]` -> text[], `list[list[int]]` -> int8[], since an array OID says
+    nothing about dimensionality). Anything unrecognised falls back to TEXT, as
+    before.
+
+    Bare `list` and `dict` raise instead: a list could equally be an array or a
+    json document, and column shape is declared before any row exists, so there
+    is nothing to inspect that would settle it. Name the type you mean --
+    `ResultColumn("c", JSONB)` or `list[str]`.
+    """
+    if get_origin(py_type) is list:
+        from .arrays import ARRAY_OID
+
+        # Unwrap nesting rather than recursing: list[list[int]] is a 2-dimensional
+        # int8[], and Postgres array OIDs say nothing about dimensionality -- it's
+        # carried per value, in the dimension header.
+        element = py_type
+        while get_origin(element) is list:
+            args = get_args(element)
+            if len(args) != 1:
+                raise TypeError(f"{py_type!r} must name exactly one element type, e.g. list[str]")
+            element = args[0]
+
+        element_oid = oid_for_type(element)
+        try:
+            return ARRAY_OID[element_oid]
+        except KeyError:
+            raise TypeError(f"no Postgres array type for element {element!r} (OID {element_oid})") from None
+
+    if py_type is list or py_type is dict:
+        raise TypeError(
+            f"{py_type.__name__} is ambiguous: it could be a Postgres array or a json document. "
+            f"Use list[str] (or list[int], ...) for an array, or declare json explicitly with "
+            f'ResultColumn("name", JSONB).'
+        )
+
     if py_type in _PY_TYPE_OID:
         return _PY_TYPE_OID[py_type]
     for known_type, oid in _PY_TYPE_OID.items():
@@ -283,26 +290,56 @@ _BINARY_DECODERS: dict[int, Callable[[bytes], str]] = {
 }
 
 
-def decode_binary_param(oid: int, data: bytes) -> str:
-    try:
-        decoder = _BINARY_DECODERS[oid]
-    except KeyError:
-        raise ValueError(f"binary format not supported for parameter OID {oid}") from None
-    return decoder(data)
+def decode_binary_param(oid: int, data: bytes) -> Any:
+    """Binary parameter -> the canonical text the session would have seen anyway,
+    except for arrays, which become a (possibly nested) list of those texts."""
+    decoder = _BINARY_DECODERS.get(oid)
+    if decoder is not None:
+        return decoder(data)
+
+    from .arrays import decode_array_binary, is_array_oid
+
+    if is_array_oid(oid):
+        return decode_array_binary(data)
+    raise ValueError(f"binary format not supported for parameter OID {oid}")
 
 
-def encode_value(value: Any) -> str:
+def decode_text_param(oid: int, text: str) -> Any:
+    """Text parameter -> what the session sees. A plain string, except for arrays,
+    which are parsed so that a session gets the same Python shape regardless of
+    which wire format the client happened to choose."""
+    from .arrays import is_array_oid, parse_array_literal
+
+    if oid is not None and is_array_oid(oid):
+        return parse_array_literal(text)
+    return text
+
+
+def encode_value(oid: int, value: Any) -> str:
     """Encode a Python value to its Postgres text-format representation.
+
+    The OID is consulted only where the Python type doesn't settle the wire form:
+    a `list` is an array literal for an array OID and a json document otherwise.
+    Everything else dispatches on the value's own type, so an unrecognised OID
+    still encodes sensibly rather than failing.
 
     Callers are responsible for handling `None` (SQL NULL) before calling this --
     NULL has no text representation, it's signaled by a -1 length in DataRow.
     """
+    if isinstance(value, list):
+        from .arrays import format_array_literal, is_array_oid
+
+        if is_array_oid(oid):
+            return format_array_literal(oid, value)
+
     func = _TEXT_ENCODERS.get(type(value))
     if func is not None:
         return func(value)
     for known_type, encoder in _TEXT_ENCODERS.items():
         if isinstance(value, known_type):
             return encoder(value)
+    if oid in (JSON, JSONB):
+        return _json_out(value)
     return str(value)
 
 
@@ -346,7 +383,7 @@ def _encode_bytea_bin(v: Any) -> bytes:
 def _encode_text_bin(v: Any) -> bytes:
     # Text and binary format are the same bytes for string types; the format code
     # only tells the client not to expect any further decoding.
-    return v.encode("utf-8") if isinstance(v, str) else encode_value(v).encode("utf-8")
+    return v.encode("utf-8") if isinstance(v, str) else encode_value(TEXT, v).encode("utf-8")
 
 
 def _encode_date_bin(v: Any) -> bytes:
@@ -387,9 +424,9 @@ def _encode_uuid_bin(v: Any) -> bytes:
 
 
 def _encode_json_bin(v: Any) -> bytes:
-    # encode_value already turns dicts/lists into JSON text and passes through a
+    # encode_value renders dicts/lists as JSON for a json OID and passes through a
     # str that's assumed to be JSON already, so binary is that same text.
-    return encode_value(v).encode("utf-8")
+    return encode_value(JSON, v).encode("utf-8")
 
 
 def _encode_jsonb_bin(v: Any) -> bytes:
@@ -423,8 +460,12 @@ def encode_value_binary(oid: int, value: Any) -> bytes:
     Raises ValueError for any OID without a known binary representation, so an
     unsupported type surfaces as a protocol error rather than as wrong bytes.
     """
-    try:
-        encoder = _BINARY_ENCODERS[oid]
-    except KeyError:
-        raise ValueError(f"binary format not supported for result column OID {oid}") from None
-    return encoder(value)
+    encoder = _BINARY_ENCODERS.get(oid)
+    if encoder is not None:
+        return encoder(value)
+
+    from .arrays import encode_array_binary, is_array_oid
+
+    if is_array_oid(oid):
+        return encode_array_binary(oid, value)
+    raise ValueError(f"binary format not supported for result column OID {oid}")

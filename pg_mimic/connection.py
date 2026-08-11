@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import re
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import sqlglot
 
@@ -25,7 +25,7 @@ from .middleware import is_transaction_end
 from .results import ResultColumn, encode_row, format_code_for
 from .session import BaseSession, Session, Statement
 from .stream import ConnectionClosed, PgStream
-from .types import decode_binary_param
+from .types import decode_binary_param, decode_text_param
 
 if TYPE_CHECKING:
     from .server import PgServer
@@ -275,12 +275,13 @@ class Connection:
         self.portals[parsed.portal_name] = PortalEntry(portal, columns, statement.sql, parsed.result_format_codes)
         self.stream.write(messages.make_bind_complete())
 
-    def _decode_param(self, value: bytes | None, format_code: int, param_oids: list[int | None], index: int) -> str | None:
+    def _decode_param(self, value: bytes | None, format_code: int, param_oids: list[int | None], index: int) -> Any:
         if value is None:
             return None
-        if format_code == 0:
-            return value.decode("utf-8")
         oid = param_oids[index] if index < len(param_oids) else None
+        if format_code == 0:
+            text = value.decode("utf-8")
+            return decode_text_param(oid, text) if oid is not None else text
         if oid is None:
             raise PgError(
                 FEATURE_NOT_SUPPORTED,
