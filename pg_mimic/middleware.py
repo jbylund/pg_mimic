@@ -35,7 +35,7 @@ import sqlglot
 from sqlglot import exp
 from sqlglot.executor import execute as sqlglot_execute
 
-from .catalog import information_schema_statement
+from .catalog import information_schema_statement, pg_catalog_statement
 from .results import ResultColumn
 from .session import Statement, StaticStatement
 from .types import TEXT
@@ -171,7 +171,34 @@ async def information_schema(ctx: MiddlewareContext) -> Statement | None:
     return None
 
 
-DEFAULT_MIDDLEWARE = (transaction_control, set_show, session_functions, information_schema)
+async def pg_catalog(ctx: MiddlewareContext) -> Statement | None:
+    """SELECTs against pg_catalog -- psql's \\dt, \\d and friends.
+
+    Answered from Session.schema() like information_schema, but the SQL psql
+    writes needs rewriting before sqlglot's executor will run it; see
+    pg_mimic.catalog.
+    """
+    # exp.Query rather than exp.Select: psql's publications section is a UNION, and
+    # matching only Select sent it to the session, which answered with a row of its
+    # own that psql then printed as a publication.
+    expr = ctx.expression
+    if not isinstance(expr, exp.Query):
+        return None
+    tables = list(expr.find_all(exp.Table))
+    if tables and any(_is_pg_catalog(table) for table in tables):
+        return await pg_catalog_statement(ctx.connection, expr)
+    return None
+
+
+def _is_pg_catalog(table: exp.Table) -> bool:
+    """Explicitly `pg_catalog.x`, or a bare `pg_*` name -- psql writes both, and a
+    user table called pg_something would be shadowing a reserved prefix anyway."""
+    if (table.db or "").lower() == "pg_catalog":
+        return True
+    return not table.db and table.name.lower().startswith("pg_")
+
+
+DEFAULT_MIDDLEWARE = (transaction_control, set_show, session_functions, information_schema, pg_catalog)
 
 
 async def resolve(
