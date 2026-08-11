@@ -263,6 +263,15 @@ def _pg_type_rows() -> list[dict]:
     return rows
 
 
+def pg_type_by_oid() -> dict[int, dict]:
+    """The synthesised pg_type rows, keyed by OID.
+
+    Shared with pg_mimic.typeinfo, so the types asyncpg is told about are the same
+    ones psql sees and the same ones the wire codecs can actually handle.
+    """
+    return {row["oid"]: row for row in _pg_type_rows()}
+
+
 def _typname_for(rows: list[dict], oid: int) -> str:
     for row in rows:
         if row["oid"] == oid:

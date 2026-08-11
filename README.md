@@ -166,7 +166,8 @@ before it ever reaches your `Session`, so real clients/ORMs/`psql` work without 
   failed-transaction state (`25P02`) real Postgres enters after an error until `ROLLBACK`.
 - `SET`/`SHOW` (session variables).
 - Session functions: `SELECT version()`, `current_user`, `current_database()`, `current_setting('x')`,
-  `pg_backend_pid()` — things only the connection can answer.
+  `set_config()`, `pg_backend_pid()` — things only the connection can answer.
+- asyncpg's type introspection, so it can build codecs for array and other non-builtin types.
 - `information_schema.tables` / `information_schema.columns`, and the slice of `pg_catalog` psql's
   `\dt`, `\d <table>` and `\dn` read — both built from your `Session.schema()`.
 - Multi-statement simple-query batches (`"BEGIN; INSERT ...; COMMIT;"` sent as one `'Q'` message, e.g. by
@@ -242,8 +243,10 @@ emulation it delegates to is in [`pg_mimic/catalog.py`](pg_mimic/catalog.py).
   A catalog query that can't be answered returns no rows rather than falling through to your session,
   which would otherwise reply with a shape the client reads as catalog data.
 
-  This does **not** cover asyncpg's type introspection, which is a recursive CTE that sqlglot can
-  neither parse nor execute — so asyncpg still can't read array columns other than `text[]`.
+  asyncpg's type introspection is handled separately, in `pg_mimic.typeinfo`: it's a recursive CTE
+  that sqlglot can neither parse nor execute, so it's matched by shape and answered from the same
+  `pg_type` rows. That's coupled to a query asyncpg could rewrite in any release — narrowly, and it
+  fails loudly rather than quietly if it does.
 - **`Describe(Statement)` before any `Bind`** can only answer accurately for statement shapes pg_mimic (or
   your `describe()`) can determine without real parameter values — inherent to being a planner-less mimic,
   not something a workaround can fully close. In practice this rarely matters: most drivers (including
