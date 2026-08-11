@@ -1,3 +1,6 @@
+# catalog is exported because Session.middleware is a public extension point --
+# customising the chain needs catalog.DEFAULT_MIDDLEWARE / catalog.static_select.
+from . import catalog
 from .auth import (
     AuthPlugin,
     ClearTextPasswordAuthPlugin,
@@ -12,10 +15,11 @@ from .results import ResultColumn
 from .server import PgServer
 from .session import BaseSession, Portal, Session, Statement
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 __all__ = [
     "PgServer",
+    "catalog",
     "BaseSession",
     "Session",
     "Statement",

@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import inspect
 from abc import ABC, abstractmethod
-from typing import Any, AsyncIterable, AsyncIterator, Awaitable, Iterable, Union
+from typing import Any, AsyncIterable, AsyncIterator, Awaitable, Iterable, Sequence, Union
 
 from .results import ResultColumn
 
@@ -149,9 +149,27 @@ class CallbackStatement(Statement):
 
 class Session(BaseSession):
     """The class most session authors subclass. Override describe()/query()
-    (and optionally schema()) instead of hand-writing Statement/Portal."""
+    (and optionally schema()) instead of hand-writing Statement/Portal.
 
+    `middleware` is the chain of client boilerplate answered before your
+    describe()/query() is consulted -- transaction control, SET/SHOW, session
+    functions and information_schema by default. It's an ordinary class
+    attribute, so a subclass can extend it::
+
+        from pg_mimic import catalog
+
+        class MySession(Session):
+            middleware = catalog.DEFAULT_MIDDLEWARE + (catalog.static_select,)
+
+    reorder it, or set it to `()` to see every statement yourself. Ordinary
+    queries -- `SELECT 1` included -- always reach your session regardless.
+    """
+
+    # None means catalog.DEFAULT_MIDDLEWARE -- a sentinel rather than the tuple
+    # itself because catalog imports this module, so it can't be imported here at
+    # class-definition time. An explicit () means "no middleware at all".
     _connection: Any = None
+    middleware: "Sequence[Any] | None" = None
 
     async def init(self, connection: Any) -> None:
         self._connection = connection
@@ -171,7 +189,9 @@ class Session(BaseSession):
         if self._connection is not None:
             from . import catalog
 
-            middleware_statement = await catalog.resolve(self._connection, sql, param_oids)
-            if middleware_statement is not None:
-                return middleware_statement
+            chain = catalog.DEFAULT_MIDDLEWARE if self.middleware is None else self.middleware
+            if chain:
+                middleware_statement = await catalog.resolve(self._connection, sql, param_oids, chain)
+                if middleware_statement is not None:
+                    return middleware_statement
         return CallbackStatement(self, sql, param_oids)

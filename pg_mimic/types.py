@@ -1,7 +1,9 @@
 """Primitive wire codec helpers and the Postgres OID / Python-type mapping.
 
-pg_mimic speaks text format only (both directions), matching pg8000's own
-client-side posture: it never requests binary either.
+Text format is the default in both directions, matching pg8000's own client-side
+posture: it never requests binary either. Binary is supported for the common
+scalar types where a client asks for it -- inbound via `decode_binary_param`,
+outbound via `encode_value_binary` -- and refused explicitly otherwise.
 """
 
 from __future__ import annotations
@@ -9,7 +11,7 @@ from __future__ import annotations
 import json
 import struct
 import uuid
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Callable
 
@@ -244,6 +246,22 @@ def _decode_uuid(data: bytes) -> str:
     return str(uuid.UUID(bytes=data))
 
 
+# json's binary representation is just its text; jsonb prefixes a format version
+# byte. Only version 1 has ever existed -- refuse anything else rather than
+# treating a future version's first byte as part of the document.
+_JSONB_VERSION = 1
+
+
+def _decode_json(data: bytes) -> str:
+    return data.decode("utf-8")
+
+
+def _decode_jsonb(data: bytes) -> str:
+    if not data or data[0] != _JSONB_VERSION:
+        raise ValueError(f"unsupported jsonb wire format version {data[0] if data else 'missing'}")
+    return data[1:].decode("utf-8")
+
+
 _BINARY_DECODERS: dict[int, Callable[[bytes], str]] = {
     BOOL: _decode_bool,
     INT2: _decode_int("h"),
@@ -260,6 +278,8 @@ _BINARY_DECODERS: dict[int, Callable[[bytes], str]] = {
     TIMESTAMP: _decode_timestamp,
     TIMESTAMPTZ: _decode_timestamp,
     UUID: _decode_uuid,
+    JSON: _decode_json,
+    JSONB: _decode_jsonb,
 }
 
 
@@ -284,3 +304,127 @@ def encode_value(value: Any) -> str:
         if isinstance(value, known_type):
             return encoder(value)
     return str(value)
+
+
+# --- Binary result encoding ---------------------------------------------------------
+#
+# The inverse of the binary parameter decoders above, keyed the same way (by the
+# column's declared OID rather than the Python type, since the OID is what the
+# client will parse against). Deliberately narrower than the text encoders: a
+# column whose OID has no entry here is refused outright by `encode_value_binary`,
+# because a wrong byte order or epoch offset produces a plausible-looking wrong
+# value rather than a visible failure -- exactly the class of bug text format
+# can't have.
+
+
+def _encode_bool_bin(v: Any) -> bytes:
+    return b"\x01" if v else b"\x00"
+
+
+def _encode_int_bin(fmt: str) -> Callable[[Any], bytes]:
+    packer = struct.Struct("!" + fmt)
+
+    def encode(v: Any) -> bytes:
+        return packer.pack(int(v))
+
+    return encode
+
+
+def _encode_float_bin(fmt: str) -> Callable[[Any], bytes]:
+    packer = struct.Struct("!" + fmt)
+
+    def encode(v: Any) -> bytes:
+        return packer.pack(float(v))
+
+    return encode
+
+
+def _encode_bytea_bin(v: Any) -> bytes:
+    return bytes(v)
+
+
+def _encode_text_bin(v: Any) -> bytes:
+    # Text and binary format are the same bytes for string types; the format code
+    # only tells the client not to expect any further decoding.
+    return v.encode("utf-8") if isinstance(v, str) else encode_value(v).encode("utf-8")
+
+
+def _encode_date_bin(v: Any) -> bytes:
+    if isinstance(v, datetime):
+        v = v.date()
+    return struct.pack("!i", (v - _PG_EPOCH_DATE).days)
+
+
+def _micros_since_epoch(v: datetime) -> bytes:
+    delta = v - _PG_EPOCH
+    return struct.pack("!q", delta.days * 86_400_000_000 + delta.seconds * 1_000_000 + delta.microseconds)
+
+
+def _encode_timestamp_bin(v: Any) -> bytes:
+    """TIMESTAMP (without time zone): the wall clock, offset discarded.
+
+    Matches both Postgres's own semantics and what the text encoder effectively
+    produces for this OID -- psycopg parses a text timestamp against the declared
+    TIMESTAMP type and drops any offset, so converting to UTC here instead would
+    make the two formats disagree.
+    """
+    if not isinstance(v, datetime):
+        v = datetime(v.year, v.month, v.day)
+    return _micros_since_epoch(v.replace(tzinfo=None))
+
+
+def _encode_timestamptz_bin(v: Any) -> bytes:
+    """TIMESTAMPTZ: the UTC instant. A naive value is taken as already UTC."""
+    if not isinstance(v, datetime):
+        v = datetime(v.year, v.month, v.day)
+    if v.tzinfo is not None:
+        v = v.astimezone(timezone.utc).replace(tzinfo=None)
+    return _micros_since_epoch(v)
+
+
+def _encode_uuid_bin(v: Any) -> bytes:
+    return (v if isinstance(v, uuid.UUID) else uuid.UUID(str(v))).bytes
+
+
+def _encode_json_bin(v: Any) -> bytes:
+    # encode_value already turns dicts/lists into JSON text and passes through a
+    # str that's assumed to be JSON already, so binary is that same text.
+    return encode_value(v).encode("utf-8")
+
+
+def _encode_jsonb_bin(v: Any) -> bytes:
+    return bytes([_JSONB_VERSION]) + _encode_json_bin(v)
+
+
+_BINARY_ENCODERS: dict[int, Callable[[Any], bytes]] = {
+    BOOL: _encode_bool_bin,
+    INT2: _encode_int_bin("h"),
+    INT4: _encode_int_bin("i"),
+    INT8: _encode_int_bin("q"),
+    FLOAT4: _encode_float_bin("f"),
+    FLOAT8: _encode_float_bin("d"),
+    BYTEA: _encode_bytea_bin,
+    TEXT: _encode_text_bin,
+    VARCHAR: _encode_text_bin,
+    BPCHAR: _encode_text_bin,
+    NAME: _encode_text_bin,
+    DATE: _encode_date_bin,
+    TIMESTAMP: _encode_timestamp_bin,
+    TIMESTAMPTZ: _encode_timestamptz_bin,
+    UUID: _encode_uuid_bin,
+    JSON: _encode_json_bin,
+    JSONB: _encode_jsonb_bin,
+}
+
+
+def encode_value_binary(oid: int, value: Any) -> bytes:
+    """Encode a Python value to Postgres binary format for a column of `oid`.
+
+    Raises ValueError for any OID without a known binary representation, so an
+    unsupported type surfaces as a protocol error rather than as wrong bytes.
+    """
+    try:
+        encoder = _BINARY_ENCODERS[oid]
+    except KeyError:
+        raise ValueError(f"binary format not supported for result column OID {oid}") from None
+    return encoder(value)

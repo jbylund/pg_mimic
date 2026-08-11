@@ -3,10 +3,14 @@ from __future__ import annotations
 import psycopg
 from psycopg.pq import TransactionStatus
 
-from pg_mimic import ResultColumn
+from pg_mimic import ResultColumn, catalog
 
 
 def test_multiple_static_selects_in_one_batch(conn, mock_session):
+    # static_select gives each statement in the batch a distinct result, which is
+    # what makes the result-set boundaries observable here.
+    mock_session.middleware = catalog.DEFAULT_MIDDLEWARE + (catalog.static_select,)
+
     with conn.cursor() as cur:
         cur.execute("SELECT 1; SELECT 22;")
         assert cur.fetchall() == [(1,)]
@@ -29,8 +33,11 @@ def test_begin_does_not_swallow_following_statement(conn, mock_session):
 
 
 def test_set_does_not_absorb_following_statement(conn, mock_session):
+    mock_session.columns = [ResultColumn.for_type("a", int)]
+    mock_session.rows = [(2,)]
+
     with conn.cursor() as cur:
-        cur.execute("SET x = 1; SELECT 2;")
+        cur.execute("SET x = 1; SELECT a FROM t;")
         assert cur.statusmessage == "SET"
         cur.nextset()
         assert cur.fetchall() == [(2,)]

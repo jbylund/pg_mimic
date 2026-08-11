@@ -19,19 +19,10 @@ from .errors import (
     PgError,
 )
 from .messages import TARGET_STATEMENT, FieldSpec, ParsedBind, ParsedParse
-from .results import ResultColumn, encode_row
+from .results import ResultColumn, encode_row, format_code_for
 from .session import BaseSession, Session, Statement
 from .stream import ConnectionClosed, PgStream
 from .types import decode_binary_param
-
-
-def _format_code_for(format_codes: list[int], index: int) -> int:
-    if not format_codes:
-        return 0
-    if len(format_codes) == 1:
-        return format_codes[0]
-    return format_codes[index]
-
 
 if TYPE_CHECKING:
     from .server import PgServer
@@ -253,12 +244,12 @@ class Connection:
         statement = self._get_statement(parsed.statement_name)
         param_oids = getattr(statement, "param_oids", [])
         text_params = [
-            self._decode_param(value, _format_code_for(parsed.param_format_codes, i), param_oids, i)
+            self._decode_param(value, format_code_for(parsed.param_format_codes, i), param_oids, i)
             for i, value in enumerate(parsed.params)
         ]
         portal = statement.bind(text_params)
         columns = await statement.describe()
-        self.portals[parsed.portal_name] = PortalEntry(portal, columns, statement.sql)
+        self.portals[parsed.portal_name] = PortalEntry(portal, columns, statement.sql, parsed.result_format_codes)
         self.stream.write(messages.make_bind_complete())
 
     def _decode_param(self, value: bytes | None, format_code: int, param_oids: list[int | None], index: int) -> str | None:
@@ -284,6 +275,10 @@ class Connection:
             raise PgError(INVALID_SQL_STATEMENT_NAME, f'portal "{name}" does not exist') from None
 
     async def _handle_describe(self, parsed) -> None:
+        # Result formats are chosen at Bind, so a statement-level Describe can only
+        # honestly report text (format 0) -- real Postgres does the same. Only a
+        # portal-level Describe, which happens after Bind, reflects what was asked for.
+        format_codes: list[int] = []
         if parsed.kind == TARGET_STATEMENT:
             statement = self._get_statement(parsed.name)
             param_oids = [oid if oid is not None else 0 for oid in getattr(statement, "param_oids", [])]
@@ -292,11 +287,12 @@ class Connection:
         else:
             entry = self._get_portal(parsed.name)
             columns = entry.columns
+            format_codes = entry.result_format_codes
 
         if columns is None:
             self.stream.write(messages.make_no_data())
         else:
-            self.stream.write(messages.make_row_description(_field_specs(columns)))
+            self.stream.write(messages.make_row_description(_field_specs(columns, format_codes)))
 
     async def _handle_execute(self, parsed) -> None:
         entry = self._get_portal(parsed.portal_name)
@@ -307,7 +303,11 @@ class Connection:
 
         if entry.columns is not None:
             for row in rows:
-                self.stream.write(messages.make_data_row(encode_row(row, entry.columns)))
+                try:
+                    values = encode_row(row, entry.columns, entry.result_format_codes)
+                except ValueError as e:
+                    raise PgError(FEATURE_NOT_SUPPORTED, str(e)) from None
+                self.stream.write(messages.make_data_row(values))
 
         if suspended:
             self.stream.write(messages.make_portal_suspended())
@@ -323,14 +323,16 @@ class Connection:
 
 
 class PortalEntry:
-    __slots__ = ("portal", "columns", "sql", "rows_returned")
+    __slots__ = ("portal", "columns", "sql", "rows_returned", "result_format_codes")
 
-    def __init__(self, portal, columns: list[ResultColumn] | None, sql: str):
+    def __init__(self, portal, columns: list[ResultColumn] | None, sql: str, result_format_codes: list[int] | None = None):
         self.portal = portal
         self.columns = columns
         self.sql = sql
         self.rows_returned = 0
+        self.result_format_codes = result_format_codes or []
 
 
-def _field_specs(columns: list[ResultColumn]) -> list[FieldSpec]:
-    return [FieldSpec(name=c.name, oid=c.oid) for c in columns]
+def _field_specs(columns: list[ResultColumn], format_codes: list[int] | None = None) -> list[FieldSpec]:
+    codes = format_codes or []
+    return [FieldSpec(name=c.name, oid=c.oid, format_code=format_code_for(codes, i)) for i, c in enumerate(columns)]

@@ -8,6 +8,16 @@ clients, drivers, ORMs, and tools (`psql`, `psycopg`, `asyncpg`, JDBC, ...) can 
 Useful for testing, proxies/virtual databases, query interception, and fronting non-Postgres backends with
 a Postgres-speaking API.
 
+## Contents
+
+- [Install](#install)
+- [Quick start](#quick-start)
+- [The Session API](#the-session-api)
+- [Authentication](#authentication)
+- [What's handled automatically](#whats-handled-automatically)
+- [Known limitations](#known-limitations)
+- [Development](#development)
+
 ## Install
 
 ```bash
@@ -124,27 +134,51 @@ server = PgServer(
 
 ## What's handled automatically
 
-A small middleware layer (mirroring mysql-mimic's design) intercepts common statement shapes before they
-ever reach your `Session`, so real clients/ORMs/`psql` work smoothly without you having to handle them:
+A small middleware chain (mirroring mysql-mimic's design) answers the boilerplate every client sends,
+before it ever reaches your `Session`, so real clients/ORMs/`psql` work without you implementing any of it:
 
 - Transaction control: `BEGIN`/`START TRANSACTION`, `COMMIT`/`END`, `ROLLBACK` — including the
   failed-transaction state (`25P02`) real Postgres enters after an error until `ROLLBACK`.
 - `SET`/`SHOW` (session variables).
-- Static, no-table `SELECT`s: `SELECT 1`, `SELECT version()`, `SELECT current_database()`, etc.
+- Session functions: `SELECT version()`, `current_user`, `current_database()`, `current_setting('x')`,
+  `pg_backend_pid()` — things only the connection can answer.
 - `information_schema.tables` / `information_schema.columns`, built from your `Session.schema()`.
 - Multi-statement simple-query batches (`"BEGIN; INSERT ...; COMMIT;"` sent as one `'Q'` message, e.g. by
   `psql -f script.sql`) are split into individual statements (via sqlglot), each getting its own
   `RowDescription`/`DataRow*`/`CommandComplete` — not silently merged or truncated.
 
-Anything else falls through to your `describe()`/`query()` (or `prepare()`).
+Everything else — `SELECT 1` and `select *` included — falls through to your `describe()`/`query()`
+(or `prepare()`). The line is *state you've already declared*: the chain answers questions about the
+connection on your behalf, but an ordinary query means whatever your session says it means.
 
-## Known v1 limitations
+The chain is a plain class attribute, so you can extend, reorder, or switch it off entirely:
 
-- **Text format only.** Both parameters and results are text-format on the wire (matching
-  [pg8000](https://codeberg.org/tlocke/pg8000)'s own client-side posture — it never requests binary either).
-  Binary parameter values are decoded transparently for common scalar types (ints, floats, bool, bytea,
-  date/timestamp, uuid) since several real clients send these in binary by default; binary *result* format
-  requests get a clear error rather than silently-wrong bytes.
+```python
+from pg_mimic import Session, catalog
+
+
+class MySession(Session):
+    # evaluate table-less SELECTs like `SELECT 1` with sqlglot instead of
+    # passing them through (the pre-0.2 default)
+    middleware = catalog.DEFAULT_MIDDLEWARE + (catalog.static_select,)
+
+
+class RawSession(Session):
+    middleware = ()  # see every statement yourself, boilerplate included
+```
+
+A middleware is just `async (MiddlewareContext) -> Statement | None` — return `None` to pass the
+statement along. Put your own first to override a built-in rather than only add to it.
+
+## Known limitations
+
+- **Binary format covers common scalars only.** Text is the default in both directions. Binary is
+  supported, in either direction, for `bool`, the int and float widths, `bytea`, the string types,
+  `date`, `timestamp`/`timestamptz`, `uuid` and `json`/`jsonb` — the set real clients actually ask
+  for. Anything else (notably `numeric`, `interval` and arrays) is refused with a clear
+  `feature_not_supported` error rather than encoded on a guess, since a wrong byte order or epoch
+  offset would surface as a plausible-looking wrong *value* instead of a failure. Text format
+  carries those types fine; only the binary path is narrow.
 - **No TLS.** `SSLRequest` is answered correctly (`'N'`, continue in plaintext) so opportunistic clients
   still connect, but there's no `ssl.SSLContext` upgrade path yet.
 - **`pg_catalog` is not emulated** (only `information_schema`) — tools that specifically query
