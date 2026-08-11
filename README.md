@@ -167,7 +167,8 @@ before it ever reaches your `Session`, so real clients/ORMs/`psql` work without 
 - `SET`/`SHOW` (session variables).
 - Session functions: `SELECT version()`, `current_user`, `current_database()`, `current_setting('x')`,
   `pg_backend_pid()` — things only the connection can answer.
-- `information_schema.tables` / `information_schema.columns`, built from your `Session.schema()`.
+- `information_schema.tables` / `information_schema.columns`, and the slice of `pg_catalog` psql's
+  `\dt`, `\d <table>` and `\dn` read — both built from your `Session.schema()`.
 - Multi-statement simple-query batches (`"BEGIN; INSERT ...; COMMIT;"` sent as one `'Q'` message, e.g. by
   `psql -f script.sql`) are split into individual statements (via sqlglot), each getting its own
   `RowDescription`/`DataRow*`/`CommandComplete` — not silently merged or truncated.
@@ -235,8 +236,14 @@ emulation it delegates to is in [`pg_mimic/catalog.py`](pg_mimic/catalog.py).
   SQL can close the gap by setting `param_oids` on the `Statement` it returns from `prepare()`.
 - **No TLS.** `SSLRequest` is answered correctly (`'N'`, continue in plaintext) so opportunistic clients
   still connect, but there's no `ssl.SSLContext` upgrade path yet.
-- **`pg_catalog` is not emulated** (only `information_schema`) — tools that specifically query
-  `pg_catalog.pg_class` etc. won't see your schema.
+- **`pg_catalog` is emulated only as far as psql's `\d` family needs.** `pg_class`, `pg_namespace`,
+  `pg_attribute`, `pg_type` and `pg_am` are built from your `Session.schema()`; indexes, constraints,
+  triggers, policies and defaults are declared but always empty, since pg_mimic models none of them.
+  A catalog query that can't be answered returns no rows rather than falling through to your session,
+  which would otherwise reply with a shape the client reads as catalog data.
+
+  This does **not** cover asyncpg's type introspection, which is a recursive CTE that sqlglot can
+  neither parse nor execute — so asyncpg still can't read array columns other than `text[]`.
 - **`Describe(Statement)` before any `Bind`** can only answer accurately for statement shapes pg_mimic (or
   your `describe()`) can determine without real parameter values — inherent to being a planner-less mimic,
   not something a workaround can fully close. In practice this rarely matters: most drivers (including
