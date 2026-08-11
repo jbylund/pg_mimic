@@ -10,6 +10,7 @@ through one generic challenge/response generator (as mysql-mimic does), each
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 from abc import ABC, abstractmethod
 
@@ -18,6 +19,8 @@ from scramp import ScramException, ScramMechanism
 from . import messages
 from .errors import INVALID_PASSWORD, PgError
 from .stream import PgStream
+
+logger = logging.getLogger(__name__)
 
 
 class IdentityProvider(ABC):
@@ -101,6 +104,34 @@ def _derive_scram_credentials(password: str, salt: bytes, iterations: int) -> tu
     return stored_key, server_key
 
 
+# Any non-empty value works; scramp hands it to our auth_fn, which ignores it.
+_SCRAM_USERNAME_PLACEHOLDER = "pg-mimic"
+
+
+def _set_client_first(server, client_first: str) -> None:
+    """Feed client-first to a scramp server, tolerating Postgres's empty username.
+
+    libpq (and so psycopg) sends a bare `n=` here: the username already travelled
+    in the startup packet, so real Postgres ignores this field entirely. RFC 5802's
+    grammar nonetheless wants at least one character, and scramp >= 1.4.15 enforces
+    that, rejecting every stock Postgres client.
+
+    So substitute a placeholder to get past the parser, then restore the original
+    client-first-bare. Those exact bytes go into the auth message that both sides
+    sign, so they have to survive verbatim or the proofs won't match.
+    """
+    parts = client_first.split(",")
+    # gs2 header is the first two fields (channel-binding flag, authzid); the
+    # client-first-bare that gets signed is everything after it.
+    if len(parts) < 3 or parts[2] != "n=":
+        server.set_client_first(client_first)
+        return
+
+    patched = ",".join(parts[:2] + ["n=" + _SCRAM_USERNAME_PLACEHOLDER] + parts[3:])
+    server.set_client_first(patched)
+    server.client_first_bare = ",".join(parts[2:])
+
+
 class ScramSha256AuthPlugin(AuthPlugin):
     """SCRAM-SHA-256 (RFC 5802 / RFC 7677), via the `scramp` library's server-side
     ScramServer -- the same library pg8000 uses client-side."""
@@ -128,7 +159,7 @@ class ScramSha256AuthPlugin(AuthPlugin):
         _mechanism, client_first = messages.parse_sasl_initial_response(payload)
 
         try:
-            server.set_client_first(client_first.decode("utf-8"))
+            _set_client_first(server, client_first.decode("utf-8"))
             server_first = server.get_server_first()
             stream.write(messages.make_authentication_sasl_continue(server_first.encode("utf-8")))
             await stream.drain()
@@ -141,6 +172,10 @@ class ScramSha256AuthPlugin(AuthPlugin):
             server.set_client_final(client_final)
             server_final = server.get_server_final()
         except ScramException:
+            # Covers both a wrong password and a genuinely malformed exchange, and the
+            # client only ever sees "authentication failed" -- so log it, or protocol
+            # bugs are indistinguishable from bad credentials.
+            logger.warning("SCRAM-SHA-256 exchange failed for user %r", username, exc_info=True)
             return False
 
         stream.write(messages.make_authentication_sasl_final(server_final.encode("utf-8")))
