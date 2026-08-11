@@ -14,10 +14,15 @@ from decimal import Decimal
 import pytest
 
 from pg_mimic import ResultColumn
+from pg_mimic.types import JSONB, oid_for_type
 
 
 def _select_one(conn, mock_session, value, py_type):
-    mock_session.columns = [ResultColumn.for_type("x", py_type)]
+    return _select_one_oid(conn, mock_session, value, oid_for_type(py_type))
+
+
+def _select_one_oid(conn, mock_session, value, oid):
+    mock_session.columns = [ResultColumn("x", oid)]
     mock_session.rows = [(value,)]
     with conn.cursor() as cur:
         cur.execute("SELECT x FROM t")
@@ -74,8 +79,18 @@ def test_uuid(conn, mock_session):
 
 
 def test_dict_as_jsonb(conn, mock_session):
-    assert _select_one(conn, mock_session, {"a": 1, "b": [1, 2]}, dict) == {"a": 1, "b": [1, 2]}
+    """json is now named rather than inferred, so the column declares JSONB."""
+    assert _select_one_oid(conn, mock_session, {"a": 1, "b": [1, 2]}, JSONB) == {"a": 1, "b": [1, 2]}
 
 
 def test_list_as_jsonb(conn, mock_session):
-    assert _select_one(conn, mock_session, [1, 2, 3], list) == [1, 2, 3]
+    assert _select_one_oid(conn, mock_session, [1, 2, 3], JSONB) == [1, 2, 3]
+
+
+@pytest.mark.parametrize(argnames=["py_type"], argvalues=[[list], [dict]], ids=["list", "dict"])
+def test_bare_container_declarations_are_rejected(py_type):
+    """A bare list could be an array or a json document, and column shape is
+    declared before any row exists -- so there is nothing to inspect that would
+    settle it. Better to say so than to guess."""
+    with pytest.raises(TypeError, match="ambiguous"):
+        ResultColumn.for_type("x", py_type)

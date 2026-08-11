@@ -74,8 +74,33 @@ Override two methods:
   returning any iterable). `params` are the real out-of-band bind parameter values as decoded text strings
   (not textually interpolated into `sql`) — pg_mimic decodes them itself even when a client sends them in
   binary format (psycopg, JDBC, and most other drivers do this by default for common scalar types).
+  An array parameter arrives as a (possibly nested) `list` of those strings — `["1", "2"]` for an
+  `int8[]`, for the same reason a scalar `int8` arrives as `"1"`. NULL elements are `None`.
 
 Optionally override `schema()` to describe your tables for `information_schema` introspection (see below).
+
+### Declaring column types
+
+`ResultColumn.for_type(name, py_type)` infers the Postgres type where that is unambiguous, and refuses
+where it isn't. `ResultColumn(name, oid)` always works if you'd rather be explicit:
+
+```python
+from pg_mimic import ResultColumn, ARRAY_OID, JSONB, TEXT, NUMERIC
+
+ResultColumn.for_type("n", int)  # int8
+ResultColumn.for_type("tags", list[str])  # text[]
+ResultColumn.for_type("grid", list[list[int]])  # int8[], 2-dimensional per value
+ResultColumn("doc", JSONB)  # json, named explicitly
+ResultColumn("tags", ARRAY_OID[TEXT])  # same as list[str]
+```
+
+Bare `list` and `dict` **raise**: a list is equally a Postgres array or a json document, and since column
+shape is declared before any row exists there is nothing to inspect that would settle it. Say which you
+mean. Nesting doesn't change the declared type — `list[int]` and `list[list[int]]` are both `int8[]`,
+because a Postgres array OID carries no dimensionality; that rides in each value.
+
+Arrays work in both wire formats, and must be rectangular — a ragged list is rejected rather than
+silently reshaped, since Postgres has no wire representation for one.
 
 ### Why two methods instead of one
 
@@ -187,13 +212,27 @@ emulation it delegates to is in [`pg_mimic/catalog.py`](pg_mimic/catalog.py).
 
 ## Known limitations
 
-- **Binary format covers common scalars only.** Text is the default in both directions. Binary is
-  supported, in either direction, for `bool`, the int and float widths, `bytea`, the string types,
-  `date`, `timestamp`/`timestamptz`, `uuid` and `json`/`jsonb` — the set real clients actually ask
-  for. Anything else (notably `numeric`, `interval` and arrays) is refused with a clear
-  `feature_not_supported` error rather than encoded on a guess, since a wrong byte order or epoch
-  offset would surface as a plausible-looking wrong *value* instead of a failure. Text format
+- **Binary format covers common scalars and their arrays.** Text is the default in both directions.
+  Binary is supported, in either direction, for `bool`, the int and float widths, `bytea`, the string
+  types, `date`, `timestamp`/`timestamptz`, `uuid`, `json`/`jsonb`, and arrays of any of those — the
+  set real clients actually ask for. Anything else (notably `numeric` and `interval`) is refused with
+  a clear `feature_not_supported` error rather than encoded on a guess, since a wrong byte order or
+  epoch offset would surface as a plausible-looking wrong *value* instead of a failure. Text format
   carries those types fine; only the binary path is narrow.
+
+  Note that a client requesting binary results gets that error rather than a silent downgrade to text.
+  Degrading looks tempting but isn't safe: asyncpg ignores the per-column format in `RowDescription`
+  and decodes according to its own request regardless, so text bytes reach a binary parser. psycopg
+  reads the field but assumes one format for the whole row.
+- **A text-format array parameter with no declared type OID reaches your session as a string.** Some
+  clients (psycopg, for `text[]`) send array parameters with OID 0 and let the server infer the type.
+  With nothing declared, `{a,b}` can't be told apart from a string that merely looks like an array, so
+  pg_mimic passes it through untouched rather than guessing.
+
+  This costs the session a parsed list, not the client its value: an untouched array literal is still
+  a valid one, so a client that sends an array and reads it back gets exactly what it sent either way.
+  Binary parameters are unaffected — those already require a known OID. A session that knows its own
+  SQL can close the gap by setting `param_oids` on the `Statement` it returns from `prepare()`.
 - **No TLS.** `SSLRequest` is answered correctly (`'N'`, continue in plaintext) so opportunistic clients
   still connect, but there's no `ssl.SSLContext` upgrade path yet.
 - **`pg_catalog` is not emulated** (only `information_schema`) — tools that specifically query

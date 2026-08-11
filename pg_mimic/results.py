@@ -49,7 +49,7 @@ def encode_row(row: tuple, columns: list[ResultColumn], format_codes: list[int] 
         if value is None:
             values.append(None)
         elif format_code_for(codes, index) == 0:
-            values.append(encode_value(value).encode("utf-8"))
+            values.append(encode_value(columns[index].oid, value).encode("utf-8"))
         else:
             values.append(encode_value_binary(columns[index].oid, value))
     return values
