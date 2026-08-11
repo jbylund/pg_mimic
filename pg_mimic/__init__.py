@@ -1,3 +1,6 @@
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _installed_version
+
 # catalog is exported because Session.middleware is a public extension point --
 # customising the chain needs catalog.DEFAULT_MIDDLEWARE / catalog.static_select.
 from . import catalog
@@ -15,7 +18,14 @@ from .results import ResultColumn
 from .server import PgServer
 from .session import BaseSession, Portal, Session, Statement
 
-__version__ = "0.1.1"
+try:
+    # Single source of truth: pyproject.toml's [project] version, read back from
+    # the installed distribution metadata. Hardcoding it here as well meant two
+    # strings to bump, and only pyproject's is checked against the tag at release.
+    __version__ = _installed_version("pg-mimic")
+except PackageNotFoundError:
+    # Imported from a source tree that was never installed (no dist-info to read).
+    __version__ = "0.0.0.dev0"
 
 __all__ = [
     "PgServer",
