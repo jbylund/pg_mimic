@@ -154,13 +154,14 @@ connection on your behalf, but an ordinary query means whatever your session say
 The chain is a plain class attribute, so you can extend, reorder, or switch it off entirely:
 
 ```python
-from pg_mimic import Session, catalog
+from pg_mimic import Session
+from pg_mimic.middleware import DEFAULT_MIDDLEWARE, static_select
 
 
 class MySession(Session):
     # evaluate table-less SELECTs like `SELECT 1` with sqlglot instead of
-    # passing them through (the pre-0.2 default)
-    middleware = catalog.DEFAULT_MIDDLEWARE + (catalog.static_select,)
+    # passing them through (the pre-0.1.1 default)
+    middleware = DEFAULT_MIDDLEWARE + (static_select,)
 
 
 class RawSession(Session):
@@ -168,7 +169,21 @@ class RawSession(Session):
 ```
 
 A middleware is just `async (MiddlewareContext) -> Statement | None` — return `None` to pass the
-statement along. Put your own first to override a built-in rather than only add to it.
+statement along. Put your own first to override a built-in rather than only add to it, and use
+`StaticStatement(sql, columns, rows)` to answer with a fixed result:
+
+```python
+from pg_mimic import ResultColumn, StaticStatement
+
+
+async def answer_ping(ctx):
+    if ctx.sql.lower() != "ping":
+        return None  # not mine -- pass it along
+    return StaticStatement("ping", [ResultColumn.for_type("pong", str)], [("pong",)])
+```
+
+The chain lives in [`pg_mimic/middleware.py`](pg_mimic/middleware.py); the `information_schema`
+emulation it delegates to is in [`pg_mimic/catalog.py`](pg_mimic/catalog.py).
 
 ## Known limitations
 

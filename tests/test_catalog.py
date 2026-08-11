@@ -3,7 +3,7 @@ from __future__ import annotations
 import psycopg
 from conftest import ServerThread
 
-from pg_mimic import PgServer, ResultColumn, Session, catalog
+from pg_mimic import PgServer, ResultColumn, Session, StaticStatement, middleware
 
 
 class ForgetfulSession(Session):
@@ -53,7 +53,7 @@ def test_plain_select_reaches_the_session_by_default(conn, mock_session):
 
 def test_static_select_middleware_can_be_opted_into(conn, mock_session):
     """The old evaluate-every-table-less-SELECT behaviour, available on request."""
-    mock_session.middleware = catalog.DEFAULT_MIDDLEWARE + (catalog.static_select,)
+    mock_session.middleware = middleware.DEFAULT_MIDDLEWARE + (middleware.static_select,)
 
     with conn.cursor() as cur:
         cur.execute("SELECT 1 AS one, 'hi' AS greeting")
@@ -141,9 +141,9 @@ def test_custom_middleware_can_be_added(conn, mock_session):
     async def answer_ping(ctx):
         if ctx.sql.lower() != "ping":
             return None
-        return catalog.StaticStatement("ping", [ResultColumn.for_type("pong", str)], [("pong",)])
+        return StaticStatement("ping", [ResultColumn.for_type("pong", str)], [("pong",)])
 
-    mock_session.middleware = (answer_ping,) + catalog.DEFAULT_MIDDLEWARE
+    mock_session.middleware = (answer_ping,) + middleware.DEFAULT_MIDDLEWARE
 
     with conn.cursor() as cur:
         cur.execute("ping")
@@ -158,9 +158,9 @@ def test_middleware_order_decides_who_answers(conn, mock_session):
     async def hijack_show(ctx):
         if not ctx.sql.lower().startswith("show "):
             return None
-        return catalog.StaticStatement(ctx.sql, [ResultColumn.for_type("v", str)], [("mine",)])
+        return StaticStatement(ctx.sql, [ResultColumn.for_type("v", str)], [("mine",)])
 
-    mock_session.middleware = (hijack_show,) + catalog.DEFAULT_MIDDLEWARE
+    mock_session.middleware = (hijack_show,) + middleware.DEFAULT_MIDDLEWARE
 
     with conn.cursor() as cur:
         cur.execute("SHOW server_version")

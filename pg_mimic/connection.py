@@ -9,7 +9,9 @@ import asyncio
 import re
 from typing import TYPE_CHECKING
 
-from . import catalog, messages
+import sqlglot
+
+from . import messages
 from .auth import AuthPlugin
 from .errors import (
     FEATURE_NOT_SUPPORTED,
@@ -19,6 +21,7 @@ from .errors import (
     PgError,
 )
 from .messages import TARGET_STATEMENT, FieldSpec, ParsedBind, ParsedParse
+from .middleware import is_transaction_end
 from .results import ResultColumn, encode_row, format_code_for
 from .session import BaseSession, Session, Statement
 from .stream import ConnectionClosed, PgStream
@@ -40,6 +43,26 @@ def command_tag(sql: str, row_count: int) -> str:
     if keyword in _ROW_COUNT_COMMANDS:
         return f"{keyword} {row_count}"
     return keyword or "SELECT"
+
+
+def split_statements(sql: str) -> list[str]:
+    """Split a simple-query string into individual statement texts on ';'
+    boundaries, using sqlglot rather than a naive string split so semicolons
+    inside string literals etc. don't misfire. The single-statement case
+    (by far the common one) always returns the original text unchanged --
+    only genuine multi-statement batches get sqlglot's re-rendered SQL,
+    since there's no reliable way to recover the original substrings once
+    parsed. Falls back to treating the whole input as one statement if
+    sqlglot can't parse it at all (best-effort -- pg_mimic isn't a full SQL
+    parser, and a client sending syntax sqlglot doesn't support should still
+    reach the session, not get a hard failure here)."""
+    try:
+        expressions = [e for e in sqlglot.parse(sql, dialect="postgres") if e is not None]
+    except Exception:
+        return [sql]
+    if len(expressions) <= 1:
+        return [sql]
+    return [expr.sql(dialect="postgres") for expr in expressions]
 
 
 class Connection:
@@ -205,11 +228,11 @@ class Connection:
         # statement here raises, the loop stops and the remaining statements
         # in the batch are never run -- matching real Postgres, which aborts
         # the rest of a simple-query batch on error.
-        for stmt_sql in catalog.split_statements(sql):
+        for stmt_sql in split_statements(sql):
             await self._execute_one_simple_statement(stmt_sql)
 
     async def _execute_one_simple_statement(self, sql: str) -> None:
-        if self.tx_status == b"E" and not catalog.is_transaction_end(sql):
+        if self.tx_status == b"E" and not is_transaction_end(sql):
             raise PgError(IN_FAILED_SQL_TRANSACTION, "current transaction is aborted, commands ignored")
         if not sql.strip():
             self.stream.write(messages.make_empty_query_response())
@@ -296,7 +319,7 @@ class Connection:
 
     async def _handle_execute(self, parsed) -> None:
         entry = self._get_portal(parsed.portal_name)
-        if self.tx_status == b"E" and not catalog.is_transaction_end(entry.sql):
+        if self.tx_status == b"E" and not is_transaction_end(entry.sql):
             raise PgError(IN_FAILED_SQL_TRANSACTION, "current transaction is aborted, commands ignored")
         rows, suspended = await entry.portal.execute(parsed.max_rows)
         entry.rows_returned += len(rows)

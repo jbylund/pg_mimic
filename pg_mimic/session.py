@@ -147,6 +147,49 @@ class CallbackStatement(Statement):
         return CallbackPortal(self._session, self.sql, params)
 
 
+class StaticStatement(Statement):
+    """A Statement whose result is already fully known (SET/SHOW/BEGIN/static
+    SELECT/information_schema/...) -- no CallbackStatement/Session involved."""
+
+    def __init__(
+        self,
+        sql: str,
+        columns: list[ResultColumn] | None,
+        rows: list[Row],
+        on_execute=None,
+    ):
+        self.sql = sql
+        self.param_oids: list[int | None] = []
+        self._columns = columns
+        self._rows = rows
+        self._on_execute = on_execute
+
+    async def describe(self) -> list[ResultColumn] | None:
+        return self._columns
+
+    def bind(self, params: list[str | None]) -> Portal:
+        return StaticPortal(self._rows, self._on_execute)
+
+
+class StaticPortal(Portal):
+    def __init__(self, rows: list[Row], on_execute):
+        self._rows = rows
+        self._on_execute = on_execute
+        self._row_source: AsyncIterator[Row] | None = None
+
+    async def execute(self, max_rows: int) -> tuple[list[Row], bool]:
+        if self._row_source is None:
+            if self._on_execute is not None:
+                self._on_execute()
+            self._row_source = _rows_as_async_iter(self._rows)
+        return await drain_rows(self._row_source, max_rows)
+
+
+async def _rows_as_async_iter(rows: list[Row]) -> AsyncIterator[Row]:
+    for row in rows:
+        yield row
+
+
 class Session(BaseSession):
     """The class most session authors subclass. Override describe()/query()
     (and optionally schema()) instead of hand-writing Statement/Portal.
@@ -156,17 +199,17 @@ class Session(BaseSession):
     functions and information_schema by default. It's an ordinary class
     attribute, so a subclass can extend it::
 
-        from pg_mimic import catalog
+        from pg_mimic.middleware import DEFAULT_MIDDLEWARE, static_select
 
         class MySession(Session):
-            middleware = catalog.DEFAULT_MIDDLEWARE + (catalog.static_select,)
+            middleware = DEFAULT_MIDDLEWARE + (static_select,)
 
     reorder it, or set it to `()` to see every statement yourself. Ordinary
     queries -- `SELECT 1` included -- always reach your session regardless.
     """
 
-    # None means catalog.DEFAULT_MIDDLEWARE -- a sentinel rather than the tuple
-    # itself because catalog imports this module, so it can't be imported here at
+    # None means middleware.DEFAULT_MIDDLEWARE -- a sentinel rather than the tuple
+    # itself because that module imports this one, so it can't be imported here at
     # class-definition time. An explicit () means "no middleware at all".
     _connection: Any = None
     middleware: Sequence[Any] | None = None
@@ -187,11 +230,11 @@ class Session(BaseSession):
 
     async def prepare(self, sql: str, param_oids: list[int | None]) -> Statement:
         if self._connection is not None:
-            from . import catalog
+            from .middleware import DEFAULT_MIDDLEWARE, resolve
 
-            chain = catalog.DEFAULT_MIDDLEWARE if self.middleware is None else self.middleware
+            chain = DEFAULT_MIDDLEWARE if self.middleware is None else self.middleware
             if chain:
-                middleware_statement = await catalog.resolve(self._connection, sql, param_oids, chain)
+                middleware_statement = await resolve(self._connection, sql, param_oids, chain)
                 if middleware_statement is not None:
                     return middleware_statement
         return CallbackStatement(self, sql, param_oids)

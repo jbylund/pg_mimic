@@ -1,9 +1,10 @@
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _installed_version
 
-# catalog is exported because Session.middleware is a public extension point --
-# customising the chain needs catalog.DEFAULT_MIDDLEWARE / catalog.static_select.
-from . import catalog
+# middleware is exported because Session.middleware is a public extension point --
+# customising the chain needs middleware.DEFAULT_MIDDLEWARE / middleware.static_select.
+# catalog rides along for Session.schema()-driven information_schema emulation.
+from . import catalog, middleware
 from .auth import (
     AuthPlugin,
     ClearTextPasswordAuthPlugin,
@@ -16,7 +17,7 @@ from .auth import (
 from .errors import PgError
 from .results import ResultColumn
 from .server import PgServer
-from .session import BaseSession, Portal, Session, Statement
+from .session import BaseSession, Portal, Session, Statement, StaticStatement
 
 try:
     # Single source of truth: pyproject.toml's [project] version, read back from
@@ -30,9 +31,11 @@ except PackageNotFoundError:
 __all__ = [
     "PgServer",
     "catalog",
+    "middleware",
     "BaseSession",
     "Session",
     "Statement",
+    "StaticStatement",
     "Portal",
     "ResultColumn",
     "PgError",
