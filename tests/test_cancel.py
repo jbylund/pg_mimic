@@ -29,10 +29,17 @@ async def test_cancel_request_interrupts_running_query(mock_session):
     port = thread.start()
     try:
         mock_session.columns = [ResultColumn.for_type("x", str)]
+        # The session runs on the server's own loop in another thread, so the
+        # event has to be set back on this one. asyncio.Event is not thread-safe:
+        # setting it directly resolves the waiter's future without ever waking
+        # this loop, so the wait below would sit until its timeout expired and
+        # only then notice -- making the timeout a sleep, and the synchronisation
+        # it looks like it provides an illusion.
         started = asyncio.Event()
+        loop = asyncio.get_running_loop()
 
         async def slow_query(sql, params):
-            started.set()
+            loop.call_soon_threadsafe(started.set)
             await asyncio.sleep(10)
             yield ("never gets here",)  # pragma: no cover
 
@@ -71,10 +78,13 @@ async def test_cancel_request_with_wrong_secret_is_ignored(mock_session):
     port = thread.start()
     try:
         mock_session.columns = [ResultColumn.for_type("x", str)]
+        # Set back on this loop rather than the server thread's -- see the note in
+        # test_cancel_request_interrupts_running_query.
         started = asyncio.Event()
+        loop = asyncio.get_running_loop()
 
         async def slow_query(sql, params):
-            started.set()
+            loop.call_soon_threadsafe(started.set)
             await asyncio.sleep(0.3)
             yield ("finished normally",)
 
