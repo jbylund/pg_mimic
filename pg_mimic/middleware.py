@@ -37,7 +37,7 @@ from sqlglot.executor import execute as sqlglot_execute
 
 from .catalog import information_schema_statement, pg_catalog_statement
 from .results import ResultColumn
-from .session import Statement, StaticStatement
+from .session import Statement, StaticStatement, statement_from_rows
 from .typeinfo import is_typeinfo_query, typeinfo_statement
 from .types import TEXT
 
@@ -384,9 +384,4 @@ def _evaluate_select(
     except Exception:
         return None  # not something we can statically evaluate -- fall through
 
-    rows = [tuple(row) for row in result.rows]
-    if rows:
-        columns = [ResultColumn.for_type(name, type(value)) for name, value in zip(result.columns, rows[0])]
-    else:
-        columns = [ResultColumn(name, TEXT) for name in result.columns]
-    return StaticStatement(original.sql(dialect="postgres"), columns, rows, on_execute)
+    return statement_from_rows(original.sql(dialect="postgres"), result.columns, [tuple(row) for row in result.rows], on_execute)
