@@ -249,6 +249,16 @@ def _decode_timestamp(data: bytes) -> str:
     return _datetime_out(_PG_EPOCH + timedelta(microseconds=micros))
 
 
+def _decode_interval(data: bytes) -> str:
+    micros, days, months = struct.unpack("!qii", data)
+    time_part = _timedelta_out(timedelta(days=days, microseconds=micros))
+    if not months:
+        return time_part
+    # timedelta has no month, so a month-bearing interval can only be handed to the
+    # session as text. "N mons" is Postgres's own input syntax, so it round-trips.
+    return f"{months} mons {time_part}"
+
+
 def _decode_uuid(data: bytes) -> str:
     return str(uuid.UUID(bytes=data))
 
@@ -284,6 +294,7 @@ _BINARY_DECODERS: dict[int, Callable[[bytes], str]] = {
     DATE: _decode_date,
     TIMESTAMP: _decode_timestamp,
     TIMESTAMPTZ: _decode_timestamp,
+    INTERVAL: _decode_interval,
     UUID: _decode_uuid,
     JSON: _decode_json,
     JSONB: _decode_jsonb,
@@ -419,6 +430,23 @@ def _encode_timestamptz_bin(v: Any) -> bytes:
     return _micros_since_epoch(v)
 
 
+def _encode_interval_bin(v: Any) -> bytes:
+    """microseconds (int64), days (int32), months (int32).
+
+    Postgres keeps those three fields independently signed rather than reducing
+    them to one duration, because a month is not a fixed number of days. Python's
+    timedelta normalises to a non-negative time-of-day with a possibly negative
+    day count, which is exactly that shape for the two fields it has -- so
+    `timedelta(hours=-23)` becomes days=-1 with +1h of microseconds, and means the
+    same thing on both sides. timedelta cannot express months, so months is always
+    zero on the way out.
+    """
+    if not isinstance(v, timedelta):
+        raise ValueError(f"expected a timedelta for an interval, got {type(v).__name__}")
+    micros = v.seconds * 1_000_000 + v.microseconds
+    return struct.pack("!qii", micros, v.days, 0)
+
+
 def _encode_uuid_bin(v: Any) -> bytes:
     return (v if isinstance(v, uuid.UUID) else uuid.UUID(str(v))).bytes
 
@@ -448,6 +476,7 @@ _BINARY_ENCODERS: dict[int, Callable[[Any], bytes]] = {
     DATE: _encode_date_bin,
     TIMESTAMP: _encode_timestamp_bin,
     TIMESTAMPTZ: _encode_timestamptz_bin,
+    INTERVAL: _encode_interval_bin,
     UUID: _encode_uuid_bin,
     JSON: _encode_json_bin,
     JSONB: _encode_jsonb_bin,
