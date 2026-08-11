@@ -9,6 +9,7 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
@@ -20,4 +21,6 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: pip install -e ".[dev]"
-      - run: pytest
+      # -vvv names every test, --durations=0 reports every duration (not just the
+      # slowest N) so a test that starts creeping is visible before it times out.
+      - run: pytest -vvv --durations=0

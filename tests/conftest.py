@@ -12,18 +12,28 @@ embedded mimic server would run in practice.
 from __future__ import annotations
 
 import asyncio
+import re
 import threading
 
+import asyncpg
 import psycopg
 import pytest
 import pytest_asyncio
 
-from pg_mimic import PgServer, ResultColumn, Session
+from pg_mimic import PgError, PgServer, ResultColumn, Session
+from pg_mimic.errors import UNDEFINED_TABLE
+
+# pg_catalog isn't emulated, so a session fronting a real store would report the
+# table as missing. Saying so matters: a client that gets a plausible-but-wrong
+# answer to its type-introspection query may retry it indefinitely (asyncpg
+# does), where a clean error just fails.
+_CATALOG_RE = re.compile(r"\bpg_(catalog|type|attribute|namespace|range|class|proc|enum)\b", re.IGNORECASE)
 
 
 class MockSession(Session):
     """Configurable test double: set `.rows`/`.columns` and it answers every
-    query with them, ignoring the SQL text."""
+    query with them, ignoring the SQL text -- except catalog queries, which it
+    reports as missing tables the way a real session would."""
 
     def __init__(self):
         self.rows: list[tuple] = []
@@ -32,7 +42,14 @@ class MockSession(Session):
         self.error: Exception | None = None
 
     async def describe(self, sql, param_oids):
+        self._reject_catalog(sql)
         return self.columns
+
+    @staticmethod
+    def _reject_catalog(sql):
+        match = _CATALOG_RE.search(sql)
+        if match:
+            raise PgError(UNDEFINED_TABLE, f'relation "{match.group(0)}" does not exist')
 
     async def query(self, sql, params):
         self.queries.append((sql, params))
@@ -109,3 +126,19 @@ async def aconn(dsn):
 def conn(dsn):
     with psycopg.Connection.connect(dsn, autocommit=True) as conn:
         yield conn
+
+
+@pytest_asyncio.fixture
+async def apg_conn(pg_server):
+    """asyncpg against the same server the psycopg fixtures use.
+
+    Worth testing separately rather than assuming psycopg covers it: asyncpg
+    always requests binary results, where psycopg only does on request, so it
+    exercises the binary path far harder.
+    """
+    _server, port = pg_server
+    conn = await asyncpg.connect(host="127.0.0.1", port=port, user="test", database="test")
+    try:
+        yield conn
+    finally:
+        await conn.close()
