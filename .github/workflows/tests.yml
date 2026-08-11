@@ -20,7 +20,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - run: pip install -e ".[dev]"
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: pyproject.toml
+      - run: uv pip install --system -e ".[dev]"
       # -vvv names every test, --durations=0 reports every duration (not just the
       # slowest N) so a test that starts creeping is visible before it times out.
       - run: pytest -vvv --durations=0
