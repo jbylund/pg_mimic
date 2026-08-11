@@ -1,6 +1,6 @@
 [project]
 name = "pg-mimic"
-version = "0.1.1"
+version = "0.1.2"
 description = "A pure-Python, asyncio PostgreSQL server protocol emulator — implement your own Postgres-compatible backend in Python."
 readme = "README.md"
 requires-python = ">=3.10"
