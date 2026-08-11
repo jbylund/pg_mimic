@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import struct
 import uuid
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 
 import psycopg
@@ -19,7 +19,19 @@ from conftest import MockSession, ServerThread
 
 from pg_mimic import PgServer, ResultColumn
 from pg_mimic.results import encode_row, format_code_for
-from pg_mimic.types import INTERVAL, JSON, JSONB, NUMERIC, TIMESTAMP, TIMESTAMPTZ, decode_binary_param, encode_value_binary
+from pg_mimic.types import (
+    INTERVAL,
+    JSON,
+    JSONB,
+    MONEY,
+    NUMERIC,
+    TIME,
+    TIMESTAMP,
+    TIMESTAMPTZ,
+    decode_binary_param,
+    encode_value,
+    encode_value_binary,
+)
 
 
 def _serve(columns, rows):
@@ -97,33 +109,37 @@ def test_null_is_null_in_binary():
 
 
 def test_unsupported_type_in_binary_is_refused_not_guessed():
-    """The whole point of the narrow encoder table: no silently-wrong bytes."""
-    thread, port = _serve([ResultColumn.for_type("c", Decimal)], [(Decimal("1.25"),)])
+    """The whole point of the narrow encoder table: no silently-wrong bytes.
+
+    MONEY stands in for "a type with no binary encoding" -- it has to be one that
+    genuinely lacks one, so this test tightens rather than rots as coverage grows.
+    """
+    thread, port = _serve([ResultColumn("c", MONEY)], [("$1.25",)])
     try:
         with psycopg.Connection.connect(f"host=127.0.0.1 port={port} user=u dbname=d") as conn:
             with conn.cursor(binary=True) as cur:
                 with pytest.raises(psycopg.errors.FeatureNotSupported) as excinfo:
                     cur.execute("select c")
-        assert str(NUMERIC) in str(excinfo.value)
+        assert str(MONEY) in str(excinfo.value)
     finally:
         thread.stop()
 
 
 def test_unsupported_type_still_works_in_text():
     """Refusing binary must not narrow what text format can carry."""
-    thread, port = _serve([ResultColumn.for_type("c", Decimal)], [(Decimal("1.25"),)])
+    thread, port = _serve([ResultColumn("c", MONEY)], [("$1.25",)])
     try:
         with psycopg.Connection.connect(f"host=127.0.0.1 port={port} user=u dbname=d") as conn:
             with conn.cursor(binary=False) as cur:
                 cur.execute("select c")
-                assert cur.fetchone() == (Decimal("1.25"),)
+                assert cur.fetchone() == ("$1.25",)
     finally:
         thread.stop()
 
 
 def test_encode_value_binary_rejects_unknown_oid():
     with pytest.raises(ValueError, match="binary format not supported"):
-        encode_value_binary(NUMERIC, Decimal("1"))
+        encode_value_binary(MONEY, "$1")
 
 
 _format_code_testcases = {
@@ -282,3 +298,86 @@ def test_interval_months_are_rendered_as_text():
 def test_interval_rejects_non_timedelta():
     with pytest.raises(ValueError, match="expected a timedelta"):
         encode_value_binary(INTERVAL, "1 day")
+
+
+_numeric_testcases = {
+    "zero": {"value": Decimal("0")},
+    "one": {"value": Decimal("1")},
+    "negative_one": {"value": Decimal("-1")},
+    "fraction": {"value": Decimal("1.25")},
+    # dscale is a *display* scale kept separately from the digits, which is the
+    # only reason a trailing zero survives at all.
+    "trailing_zero": {"value": Decimal("1.50")},
+    "trailing_zeros_integer": {"value": Decimal("100.00")},
+    "small_fraction": {"value": Decimal("0.001")},
+    "four_decimals": {"value": Decimal("0.0001")},
+    "negative_fraction": {"value": Decimal("-12345.6789")},
+    "big_integer": {"value": Decimal("12345678901234567890")},
+    "group_boundary": {"value": Decimal("9999.9999")},
+    # No float could hold this; base-10000 digit groups can.
+    "beyond_float_precision": {"value": Decimal("0.10000000000000000000000001")},
+    "positive_exponent": {"value": Decimal("1E+10")},
+    "negative_exponent": {"value": Decimal("1E-8")},
+    "infinity": {"value": Decimal("Infinity")},
+    "negative_infinity": {"value": Decimal("-Infinity")},
+}
+
+
+@pytest.mark.parametrize(
+    argnames=sorted(next(iter(_numeric_testcases.values()))),
+    argvalues=[[v for k, v in sorted(_numeric_testcases[name].items())] for name in sorted(_numeric_testcases)],
+    ids=sorted(_numeric_testcases),
+)
+def test_numeric_round_trips_in_both_formats(value):
+    text_value, binary_value = _read_both_formats([ResultColumn.for_type("c", Decimal)], [(value,)])
+    assert text_value == binary_value == value
+
+
+def test_numeric_nan():
+    """NaN is a sign-field flag rather than a digit pattern, and never compares
+    equal, so it needs asserting separately."""
+    text_value, binary_value = _read_both_formats([ResultColumn.for_type("c", Decimal)], [(Decimal("NaN"),)])
+    assert text_value.is_nan() and binary_value.is_nan()
+
+
+def test_numeric_display_scale_is_preserved():
+    """1.50 and 1.5 are equal numerically but not the same numeric: dscale is what
+    distinguishes them, so equality alone would not catch losing it."""
+    text_value, binary_value = _read_both_formats([ResultColumn.for_type("c", Decimal)], [(Decimal("1.50"),)])
+    assert str(text_value) == str(binary_value) == "1.50"
+
+
+def test_numeric_text_uses_plain_notation():
+    """Postgres never renders numeric in exponent notation; str(Decimal) does. That
+    difference would also split the text and binary paths, which have no exponent
+    to carry."""
+    assert encode_value(NUMERIC, Decimal("1E+10")) == "10000000000"
+    assert encode_value(NUMERIC, Decimal("1.50")) == "1.50"
+
+
+_time_testcases = {
+    "midnight": {"value": time(0, 0, 0)},
+    "hms": {"value": time(1, 2, 3)},
+    "end_of_day": {"value": time(23, 59, 59, 999999)},
+    "microseconds": {"value": time(12, 0, 0, 5)},
+}
+
+
+@pytest.mark.parametrize(
+    argnames=sorted(next(iter(_time_testcases.values()))),
+    argvalues=[[v for k, v in sorted(_time_testcases[name].items())] for name in sorted(_time_testcases)],
+    ids=sorted(_time_testcases),
+)
+def test_time_round_trips_in_both_formats(value):
+    text_value, binary_value = _read_both_formats([ResultColumn.for_type("c", time)], [(value,)])
+    assert text_value == binary_value == value
+
+
+def test_time_binary_is_microseconds_since_midnight():
+    assert encode_value_binary(TIME, time(0, 0, 1)) == struct.pack("!q", 1_000_000)
+    assert encode_value_binary(TIME, time(1, 0, 0)) == struct.pack("!q", 3_600_000_000)
+
+
+def test_time_rejects_non_time():
+    with pytest.raises(ValueError, match="expected a time"):
+        encode_value_binary(TIME, "01:02:03")

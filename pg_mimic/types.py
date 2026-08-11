@@ -113,6 +113,14 @@ def _timedelta_out(v: timedelta) -> str:
     return time_part
 
 
+def _decimal_out(v: Decimal) -> str:
+    # Plain notation, never exponent notation: Postgres renders numeric that way,
+    # and str(Decimal) does not -- str(Decimal("1E+10")) is "1E+10" where Postgres
+    # says 10000000000. That difference would also put the text and binary paths
+    # at odds, since the binary format has no exponent to carry.
+    return format(v, "f")
+
+
 def _json_out(v: Any) -> str:
     return json.dumps(v)
 
@@ -123,7 +131,7 @@ _TEXT_ENCODERS: dict[type, Any] = {
     bool: _bool_out,
     int: str,
     float: _float_out,
-    Decimal: str,
+    Decimal: _decimal_out,
     str: str,
     bytes: _bytes_out,
     bytearray: lambda v: _bytes_out(bytes(v)),
@@ -249,6 +257,33 @@ def _decode_timestamp(data: bytes) -> str:
     return _datetime_out(_PG_EPOCH + timedelta(microseconds=micros))
 
 
+def _decode_numeric(data: bytes) -> str:
+    ndigits, weight, sign, dscale = struct.unpack_from("!HhHH", data, 0)
+    if sign == _NUMERIC_NAN:
+        return "NaN"
+    if sign == _NUMERIC_PINF:
+        return "Infinity"
+    if sign == _NUMERIC_NINF:
+        return "-Infinity"
+
+    groups = struct.unpack_from(f"!{ndigits}H", data, 8) if ndigits else ()
+    text = "".join(f"{group:04d}" for group in groups) or "0"
+    # `weight` counts base-10000 groups before the point, so the value is the digit
+    # string scaled by that many groups of four decimal places.
+    value = Decimal(text).scaleb((weight + 1 - ndigits) * 4)
+    if sign == _NUMERIC_NEG:
+        value = -value
+    return f"{value:.{dscale}f}"
+
+
+def _decode_time(data: bytes) -> str:
+    micros = struct.unpack("!q", data)[0]
+    seconds, micros = divmod(micros, 1_000_000)
+    minutes, seconds = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    return time(hours, minutes, seconds, micros).isoformat()
+
+
 def _decode_interval(data: bytes) -> str:
     micros, days, months = struct.unpack("!qii", data)
     time_part = _timedelta_out(timedelta(days=days, microseconds=micros))
@@ -295,6 +330,8 @@ _BINARY_DECODERS: dict[int, Callable[[bytes], str]] = {
     TIMESTAMP: _decode_timestamp,
     TIMESTAMPTZ: _decode_timestamp,
     INTERVAL: _decode_interval,
+    NUMERIC: _decode_numeric,
+    TIME: _decode_time,
     UUID: _decode_uuid,
     JSON: _decode_json,
     JSONB: _decode_jsonb,
@@ -430,6 +467,65 @@ def _encode_timestamptz_bin(v: Any) -> bytes:
     return _micros_since_epoch(v)
 
 
+# Postgres numerics are stored as base-10000 digit groups, not binary floats, so
+# the decimal value is exact on the wire. The header is ndigits/weight/sign/dscale:
+# weight is the base-10000 exponent of the first group, and dscale is the *display*
+# scale, which is what keeps Decimal("1.50") from coming back as 1.5.
+_NUMERIC_POS = 0x0000
+_NUMERIC_NEG = 0x4000
+_NUMERIC_NAN = 0xC000
+_NUMERIC_PINF = 0xD000
+_NUMERIC_NINF = 0xF000
+_NBASE = 10000
+
+
+def _encode_numeric_bin(v: Any) -> bytes:
+    if not isinstance(v, Decimal):
+        v = Decimal(str(v))
+    if v.is_nan():
+        return struct.pack("!HHHH", 0, 0, _NUMERIC_NAN, 0)
+    if v.is_infinite():
+        sign = _NUMERIC_PINF if v > 0 else _NUMERIC_NINF
+        return struct.pack("!HHHH", 0, 0, sign, 0)
+
+    negative, digits, exponent = v.as_tuple()
+    dscale = -exponent if exponent < 0 else 0
+    text = "".join(map(str, digits))
+
+    if exponent >= 0:
+        integer_part, fraction_part = text + "0" * exponent, ""
+    else:
+        text = text.rjust(-exponent + 1, "0")  # ensure at least one integer digit
+        integer_part, fraction_part = text[:exponent], text[exponent:]
+
+    # Group into base-10000 digits, aligned outwards from the decimal point.
+    integer_part = integer_part.rjust((len(integer_part) + 3) // 4 * 4, "0")
+    fraction_part = fraction_part.ljust((len(fraction_part) + 3) // 4 * 4, "0")
+    groups = [int(integer_part[i : i + 4]) for i in range(0, len(integer_part), 4)]
+    weight = len(groups) - 1
+    groups += [int(fraction_part[i : i + 4]) for i in range(0, len(fraction_part), 4)]
+
+    # Postgres stores only the significant groups; leading ones shift the weight.
+    while groups and groups[0] == 0:
+        groups.pop(0)
+        weight -= 1
+    while groups and groups[-1] == 0:
+        groups.pop()
+    if not groups:
+        weight = 0  # zero has no digits at all
+
+    sign = _NUMERIC_NEG if negative else _NUMERIC_POS
+    return struct.pack("!HhHH", len(groups), weight, sign, dscale) + b"".join(struct.pack("!H", d) for d in groups)
+
+
+def _encode_time_bin(v: Any) -> bytes:
+    """Microseconds since midnight."""
+    if not isinstance(v, time):
+        raise ValueError(f"expected a time, got {type(v).__name__}")
+    micros = ((v.hour * 60 + v.minute) * 60 + v.second) * 1_000_000 + v.microsecond
+    return struct.pack("!q", micros)
+
+
 def _encode_interval_bin(v: Any) -> bytes:
     """microseconds (int64), days (int32), months (int32).
 
@@ -477,6 +573,8 @@ _BINARY_ENCODERS: dict[int, Callable[[Any], bytes]] = {
     TIMESTAMP: _encode_timestamp_bin,
     TIMESTAMPTZ: _encode_timestamptz_bin,
     INTERVAL: _encode_interval_bin,
+    NUMERIC: _encode_numeric_bin,
+    TIME: _encode_time_bin,
     UUID: _encode_uuid_bin,
     JSON: _encode_json_bin,
     JSONB: _encode_jsonb_bin,

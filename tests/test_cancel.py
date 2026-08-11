@@ -97,8 +97,13 @@ async def test_cancel_request_with_wrong_secret_is_ignored(mock_session):
         tag, payload = await asyncio.wait_for(read_message(reader), timeout=5)
         assert tag == b"T"  # RowDescription: the query actually ran to completion
 
-        writer.close()
+        # Drain to ReadyForQuery before hanging up. Closing mid-result leaves the
+        # server's handler suspended part-way through streaming, which is a state
+        # no real client leaves behind and which shutdown then has to unpick.
+        while tag != b"Z":
+            tag, _ = await asyncio.wait_for(read_message(reader), timeout=5)
 
+        writer.close()
         await writer.wait_closed()
     finally:
         thread.stop()

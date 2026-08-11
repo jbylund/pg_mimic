@@ -214,9 +214,9 @@ emulation it delegates to is in [`pg_mimic/catalog.py`](pg_mimic/catalog.py).
 
 - **Binary format covers common scalars and their arrays.** Text is the default in both directions.
   Binary is supported, in either direction, for `bool`, the int and float widths, `bytea`, the string
-  types, `date`, `timestamp`/`timestamptz`, `interval`, `uuid`, `json`/`jsonb`, and arrays of any of
-  those — the set real clients actually ask for. Anything else (notably `numeric` and `time`) is
-  refused with a clear `feature_not_supported` error rather than encoded on a guess, since a wrong
+  types, `numeric`, `date`, `time`, `timestamp`/`timestamptz`, `interval`, `uuid`, `json`/`jsonb`,
+  and arrays of any of those. Anything else (`money`, the network types, `timetz`) is refused with a
+  clear `feature_not_supported` error rather than encoded on a guess, since a wrong
   byte order or epoch offset would surface as a plausible-looking wrong *value* instead of a failure.
   Text format carries those types fine; only the binary path is narrow.
 

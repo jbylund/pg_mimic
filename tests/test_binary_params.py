@@ -51,19 +51,17 @@ def test_binary_param_decoded_to_canonical_text(conn, mock_session, value, expec
 
 
 def test_unrecognized_binary_oid_gives_clear_error(conn, mock_session):
-    # Decimal/numeric has no binary decoder implemented (real drivers send it
-    # as text by default, so this is deliberately unsupported) -- forcing
-    # binary format for it should fail cleanly, not corrupt data silently.
-    class FakeNumericAsBinaryInt(Int4BinaryDumper):
-        # Piggyback on int4's OID-4-byte binary wire shape but relabel it as
-        # NUMERIC (oid 1700) purely to exercise pg_mimic's "unknown binary
-        # OID" error path deterministically, without relying on some other
-        # driver actually doing this by default.
-        oid = 1700
+    # MONEY has no binary decoder -- forcing binary format for it should fail
+    # cleanly rather than corrupt data silently.
+    class FakeMoneyAsBinaryInt(Int4BinaryDumper):
+        # Piggyback on int4's 4-byte binary wire shape but relabel it as MONEY
+        # (oid 790) purely to exercise pg_mimic's "unknown binary OID" error path
+        # deterministically, without relying on a driver actually doing this.
+        oid = 790
 
     mock_session.columns = [ResultColumn.for_type("x", str)]
 
     with conn.cursor() as cur:
-        cur.adapters.register_dumper(int, FakeNumericAsBinaryInt)
+        cur.adapters.register_dumper(int, FakeMoneyAsBinaryInt)
         with pytest.raises(psycopg.errors.FeatureNotSupported):
             cur.execute("SELECT %s", (7,))
