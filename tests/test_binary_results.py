@@ -8,6 +8,7 @@ miss a byte-order or epoch mistake entirely.
 
 from __future__ import annotations
 
+import struct
 import uuid
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
@@ -18,7 +19,7 @@ from conftest import MockSession, ServerThread
 
 from pg_mimic import PgServer, ResultColumn
 from pg_mimic.results import encode_row, format_code_for
-from pg_mimic.types import JSON, JSONB, NUMERIC, TIMESTAMP, TIMESTAMPTZ, decode_binary_param, encode_value_binary
+from pg_mimic.types import INTERVAL, JSON, JSONB, NUMERIC, TIMESTAMP, TIMESTAMPTZ, decode_binary_param, encode_value_binary
 
 
 def _serve(columns, rows):
@@ -231,3 +232,53 @@ def test_json_binary_params_are_decoded_to_text():
     """Session authors see text params regardless of what the client sent."""
     assert decode_binary_param(JSONB, b'\x01{"a": 1}') == '{"a": 1}'
     assert decode_binary_param(JSON, b'{"a": 1}') == '{"a": 1}'
+
+
+_interval_testcases = {
+    "days": {"value": timedelta(days=1)},
+    "days_and_time": {"value": timedelta(days=2, hours=3, minutes=4, seconds=5)},
+    "time_only": {"value": timedelta(hours=2, minutes=3, seconds=4)},
+    "microseconds": {"value": timedelta(microseconds=5)},
+    "fractional_second": {"value": timedelta(seconds=1, microseconds=500000)},
+    "zero": {"value": timedelta(0)},
+    "large": {"value": timedelta(days=400)},
+    # Python normalises a negative duration to a negative day count with a
+    # non-negative time of day, which is exactly how Postgres keeps the two
+    # fields -- so these must survive rather than flipping sign somewhere.
+    "negative_hours": {"value": timedelta(hours=-23)},
+    "negative_days_and_time": {"value": timedelta(days=-2, hours=-3)},
+    "negative_whole_day": {"value": timedelta(days=-1)},
+    "negative_with_microseconds": {"value": timedelta(days=-400, microseconds=-1)},
+}
+
+
+@pytest.mark.parametrize(
+    argnames=sorted(next(iter(_interval_testcases.values()))),
+    argvalues=[[v for k, v in sorted(_interval_testcases[name].items())] for name in sorted(_interval_testcases)],
+    ids=sorted(_interval_testcases),
+)
+def test_interval_round_trips_in_both_formats(value):
+    text_value, binary_value = _read_both_formats([ResultColumn.for_type("c", timedelta)], [(value,)])
+    assert text_value == binary_value == value
+
+
+def test_interval_binary_layout():
+    """microseconds (int64), days (int32), months (int32) -- in that order. Getting
+    the field order wrong still produces a valid-looking interval, just the wrong
+    one, so pin the bytes."""
+    assert encode_value_binary(INTERVAL, timedelta(days=3)) == struct.pack("!qii", 0, 3, 0)
+    assert encode_value_binary(INTERVAL, timedelta(hours=1)) == struct.pack("!qii", 3_600_000_000, 0, 0)
+    # A negative duration keeps a non-negative time-of-day against a negative day.
+    assert encode_value_binary(INTERVAL, timedelta(hours=-23)) == struct.pack("!qii", 3_600_000_000, -1, 0)
+
+
+def test_interval_months_are_rendered_as_text():
+    """timedelta has no month, so a month-bearing interval parameter can only reach
+    the session as text. Postgres's own "N mons" syntax, so it round-trips."""
+    assert decode_binary_param(INTERVAL, struct.pack("!qii", 0, 0, 3)) == "3 mons 00:00:00"
+    assert decode_binary_param(INTERVAL, struct.pack("!qii", 0, 5, 14)) == "14 mons 5 days 00:00:00"
+
+
+def test_interval_rejects_non_timedelta():
+    with pytest.raises(ValueError, match="expected a timedelta"):
+        encode_value_binary(INTERVAL, "1 day")
