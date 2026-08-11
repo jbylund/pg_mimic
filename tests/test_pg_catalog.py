@@ -14,7 +14,8 @@ from __future__ import annotations
 
 import sqlglot
 
-from pg_mimic.catalog import _build_pg_catalog, _rewrite_for_executor
+from pg_mimic.catalog import _build_pg_catalog
+from pg_mimic.catalog_rewrite import rewrite_for_executor
 
 SCHEMA = {"users": {"id": "integer", "name": "text"}, "orders": {"id": "bigint", "total": "numeric"}}
 
@@ -27,7 +28,7 @@ def _run(sql, schema=None):
     sqlglot_schema, tables = _build_pg_catalog(SCHEMA if schema is None else schema)
     from sqlglot.executor import execute
 
-    expr = _rewrite_for_executor(FakeConnection(), sqlglot.parse_one(sql, dialect="postgres"))
+    expr = rewrite_for_executor(FakeConnection(), sqlglot.parse_one(sql, dialect="postgres"))
     result = execute(expr, schema=sqlglot_schema, tables=tables, dialect="postgres")
     return [tuple(row) for row in result.rows]
 

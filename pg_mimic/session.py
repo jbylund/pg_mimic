@@ -26,6 +26,7 @@ from abc import ABC, abstractmethod
 from typing import Any, AsyncIterable, AsyncIterator, Awaitable, Iterable, Sequence
 
 from .results import ResultColumn
+from .types import TEXT
 
 Row = tuple
 RowSource = AsyncIterable[Row] | Iterable[Row]
@@ -188,6 +189,26 @@ class StaticPortal(Portal):
 async def _rows_as_async_iter(rows: list[Row]) -> AsyncIterator[Row]:
     for row in rows:
         yield row
+
+
+def statement_from_rows(
+    sql: str,
+    column_names: Iterable[str],
+    rows: list[Row],
+    on_execute: Any = None,
+) -> Statement:
+    """A StaticStatement over rows some engine already produced.
+
+    Column types come from the first row, the only place they can -- so with no
+    rows there is nothing to infer from and the columns are declared TEXT rather
+    than guessed. Shared because that branch is easy to get subtly different in
+    each copy.
+    """
+    if rows:
+        columns = [ResultColumn.for_type(name, type(value)) for name, value in zip(column_names, rows[0])]
+    else:
+        columns = [ResultColumn(name, TEXT) for name in column_names]
+    return StaticStatement(sql, columns, rows, on_execute)
 
 
 class Session(BaseSession):
