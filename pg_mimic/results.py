@@ -20,7 +20,7 @@ class ResultColumn:
     oid: int
 
     @classmethod
-    def for_type(cls, name: str, py_type: type) -> "ResultColumn":
+    def for_type(cls, name: str, py_type: type) -> ResultColumn:
         return cls(name, oid_for_type(py_type))
 
 

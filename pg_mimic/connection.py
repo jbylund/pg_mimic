@@ -47,7 +47,7 @@ class Connection:
         self,
         stream: PgStream,
         session: BaseSession,
-        server: "PgServer",
+        server: PgServer,
         pid: int,
         secret: int,
         startup_params: dict[str, str],
@@ -64,7 +64,7 @@ class Connection:
         self.tx_status = b"I"
         self.session_vars: dict[str, str] = {}
         self.statements: dict[str, Statement] = {}
-        self.portals: dict[str, "PortalEntry"] = {}
+        self.portals: dict[str, PortalEntry] = {}
         self._ignore_until_sync = False
         self._current_task: asyncio.Task | None = None
 
@@ -268,7 +268,7 @@ class Connection:
         except ValueError as e:
             raise PgError(FEATURE_NOT_SUPPORTED, str(e)) from None
 
-    def _get_portal(self, name: str) -> "PortalEntry":
+    def _get_portal(self, name: str) -> PortalEntry:
         try:
             return self.portals[name]
         except KeyError:

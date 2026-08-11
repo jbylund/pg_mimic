@@ -44,8 +44,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-Middleware = Callable[["MiddlewareContext"], Awaitable["Statement | None"]]
-
 
 class StaticStatement(Statement):
     """A Statement whose result is already fully known (SET/SHOW/BEGIN/static
@@ -131,14 +129,14 @@ class MiddlewareContext:
 
     _UNPARSED = object()
 
-    def __init__(self, connection: "Connection", sql: str, param_oids: list[int | None]):
+    def __init__(self, connection: Connection, sql: str, param_oids: list[int | None]):
         self.connection = connection
         self.sql = sql.strip()
         self.param_oids = param_oids
         self._expression: Any = self._UNPARSED
 
     @property
-    def expression(self) -> "exp.Expression | None":
+    def expression(self) -> exp.Expression | None:
         """The parsed statement, or None if sqlglot can't parse it. Not an error:
         pg_mimic isn't a full SQL parser, and syntax sqlglot doesn't support must
         still reach the session rather than fail here."""
@@ -149,12 +147,18 @@ class MiddlewareContext:
                 self._expression = None
         return self._expression
 
-    def select_without_tables(self) -> "exp.Select | None":
+    def select_without_tables(self) -> exp.Select | None:
         """The parsed statement if it's a SELECT referencing no tables, else None."""
         expr = self.expression
         if isinstance(expr, exp.Select) and not list(expr.find_all(exp.Table)):
             return expr
         return None
+
+
+# Defined below MiddlewareContext rather than beside the other module-level names:
+# a type alias is evaluated at runtime, so `from __future__ import annotations`
+# doesn't apply and a forward reference here would have to stay quoted.
+Middleware = Callable[[MiddlewareContext], Awaitable[Statement | None]]
 
 
 # --- the middleware themselves ------------------------------------------------------
@@ -233,10 +237,10 @@ DEFAULT_MIDDLEWARE = (transaction_control, set_show, session_functions, informat
 
 
 async def resolve(
-    connection: "Connection",
+    connection: Connection,
     sql: str,
     param_oids: list[int | None],
-    middleware: "Sequence[Middleware]" = DEFAULT_MIDDLEWARE,
+    middleware: Sequence[Middleware] = DEFAULT_MIDDLEWARE,
 ) -> Statement | None:
     """Walk `middleware` in order, returning the first Statement one produces,
     or None if every link passes (the caller falls back to the session author's
@@ -252,14 +256,14 @@ async def resolve(
     return None
 
 
-def _transaction_statement(connection: "Connection", tag: str) -> Statement:
+def _transaction_statement(connection: Connection, tag: str) -> Statement:
     def on_execute() -> None:
         connection.tx_status = b"T" if tag == "BEGIN" else b"I"
 
     return StaticStatement(tag, None, [], on_execute)
 
 
-def _set_statement(connection: "Connection", sql: str, match: re.Match) -> Statement:
+def _set_statement(connection: Connection, sql: str, match: re.Match) -> Statement:
     name, raw_value = match.group(1).lower(), match.group(2).strip()
 
     def on_execute() -> None:
@@ -281,7 +285,7 @@ _DEFAULT_SETTINGS = {
 }
 
 
-def _show_statement(connection: "Connection", name: str) -> Statement:
+def _show_statement(connection: Connection, name: str) -> Statement:
     key = name.strip('"').lower()
     if key in connection.session_vars:
         value = connection.session_vars[key]
@@ -301,7 +305,7 @@ _SESSION_NULLARY_FUNCS = {
 }
 
 
-def _substitute_session_functions(connection: "Connection", expr: exp.Expression) -> tuple[exp.Expression, int]:
+def _substitute_session_functions(connection: Connection, expr: exp.Expression) -> tuple[exp.Expression, int]:
     """Replace session-state functions with literals. Returns the rewritten
     expression and how many substitutions were made -- a count of zero is how
     `session_functions` tells "this SELECT is about the connection" apart from
@@ -394,7 +398,7 @@ def _build_information_schema(user_schema: dict) -> tuple[dict, dict]:
     return schema, tables
 
 
-async def _catalog_select_statement(connection: "Connection", expr: exp.Select) -> Statement | None:
+async def _catalog_select_statement(connection: Connection, expr: exp.Select) -> Statement | None:
     schema_fn = getattr(connection.session, "schema", None)
     user_schema = (await schema_fn()) if schema_fn is not None else None
     sqlglot_schema, sqlglot_tables = _build_information_schema(user_schema or {})

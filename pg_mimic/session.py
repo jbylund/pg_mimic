@@ -23,13 +23,13 @@ from __future__ import annotations
 
 import inspect
 from abc import ABC, abstractmethod
-from typing import Any, AsyncIterable, AsyncIterator, Awaitable, Iterable, Sequence, Union
+from typing import Any, AsyncIterable, AsyncIterator, Awaitable, Iterable, Sequence
 
 from .results import ResultColumn
 
 Row = tuple
-RowSource = Union[AsyncIterable[Row], Iterable[Row]]
-QueryResult = Union[RowSource, Awaitable[RowSource]]
+RowSource = AsyncIterable[Row] | Iterable[Row]
+QueryResult = RowSource | Awaitable[RowSource]
 
 
 class Statement(ABC):
@@ -41,7 +41,7 @@ class Statement(ABC):
         """Column shape, or None if this statement produces no rows (NoData)."""
 
     @abstractmethod
-    def bind(self, params: list[str | None]) -> "Portal":
+    def bind(self, params: list[str | None]) -> Portal:
         """Synchronous, no I/O -- just stores the bound parameters."""
 
 
@@ -117,7 +117,7 @@ async def drain_rows(row_source: AsyncIterator[Row], max_rows: int) -> tuple[lis
 
 
 class CallbackPortal(Portal):
-    def __init__(self, session: "Session", sql: str, params: list[str | None]):
+    def __init__(self, session: Session, sql: str, params: list[str | None]):
         self._session = session
         self._sql = sql
         self._params = params
@@ -132,7 +132,7 @@ class CallbackPortal(Portal):
 class CallbackStatement(Statement):
     _UNSET = object()
 
-    def __init__(self, session: "Session", sql: str, param_oids: list[int | None]):
+    def __init__(self, session: Session, sql: str, param_oids: list[int | None]):
         self._session = session
         self.sql = sql
         self.param_oids = param_oids
@@ -169,7 +169,7 @@ class Session(BaseSession):
     # itself because catalog imports this module, so it can't be imported here at
     # class-definition time. An explicit () means "no middleware at all".
     _connection: Any = None
-    middleware: "Sequence[Any] | None" = None
+    middleware: Sequence[Any] | None = None
 
     async def init(self, connection: Any) -> None:
         self._connection = connection
