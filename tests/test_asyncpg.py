@@ -87,20 +87,27 @@ async def test_transaction(apg_conn, mock_session):
         assert await apg_conn.fetchval("select c") == 1
 
 
+async def test_numeric_precision_is_exact(apg_conn, mock_session):
+    """Postgres numerics are base-10000 digit groups rather than binary floats, so
+    a value no float could hold must survive intact."""
+    value = Decimal("0.10000000000000000000000001")
+    mock_session.columns = [ResultColumn.for_type("c", Decimal)]
+    mock_session.rows = [(value,)]
+    assert await apg_conn.fetchval("select c") == value
+
+
 # --- known gaps ---------------------------------------------------------------------
 #
-# strict=True so these become a signal rather than dead weight: implementing one
-# turns CI red with "unexpectedly passing", naming the marker to delete.
+# strict=True so this is a signal rather than dead weight: implementing it turns
+# CI red with "unexpectedly passing", naming the marker to delete.
 
 
-@pytest.mark.xfail(strict=True, reason="numeric has no binary encoding and asyncpg always asks for binary")
 async def test_numeric(apg_conn, mock_session):
     mock_session.columns = [ResultColumn.for_type("c", Decimal)]
     mock_session.rows = [(Decimal("1.25"),)]
     assert await apg_conn.fetchval("select c") == Decimal("1.25")
 
 
-@pytest.mark.xfail(strict=True, reason="time has no binary encoding")
 async def test_time(apg_conn, mock_session):
     from datetime import time as time_cls
 
