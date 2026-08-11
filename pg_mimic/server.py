@@ -8,7 +8,7 @@ import asyncio
 import inspect
 import os
 import struct
-from typing import Awaitable, Callable, Union
+from typing import Awaitable, Callable
 
 from . import messages
 from .auth import AuthPlugin, IdentityProvider, SimpleIdentityProvider, TrustAuthPlugin
@@ -16,7 +16,7 @@ from .connection import Connection
 from .session import BaseSession
 from .stream import ConnectionClosed, PgStream
 
-SessionFactory = Callable[[], Union[BaseSession, Awaitable[BaseSession]]]
+SessionFactory = Callable[[], BaseSession | Awaitable[BaseSession]]
 AuthPluginFactory = Callable[[str], AuthPlugin]
 
 DEFAULT_PARAMETER_STATUS = {

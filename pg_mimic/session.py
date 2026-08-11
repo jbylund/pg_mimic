@@ -23,13 +23,13 @@ from __future__ import annotations
 
 import inspect
 from abc import ABC, abstractmethod
-from typing import Any, AsyncIterable, AsyncIterator, Awaitable, Iterable, Union
+from typing import Any, AsyncIterable, AsyncIterator, Awaitable, Iterable, Sequence
 
 from .results import ResultColumn
 
 Row = tuple
-RowSource = Union[AsyncIterable[Row], Iterable[Row]]
-QueryResult = Union[RowSource, Awaitable[RowSource]]
+RowSource = AsyncIterable[Row] | Iterable[Row]
+QueryResult = RowSource | Awaitable[RowSource]
 
 
 class Statement(ABC):
@@ -41,7 +41,7 @@ class Statement(ABC):
         """Column shape, or None if this statement produces no rows (NoData)."""
 
     @abstractmethod
-    def bind(self, params: list[str | None]) -> "Portal":
+    def bind(self, params: list[str | None]) -> Portal:
         """Synchronous, no I/O -- just stores the bound parameters."""
 
 
@@ -117,7 +117,7 @@ async def drain_rows(row_source: AsyncIterator[Row], max_rows: int) -> tuple[lis
 
 
 class CallbackPortal(Portal):
-    def __init__(self, session: "Session", sql: str, params: list[str | None]):
+    def __init__(self, session: Session, sql: str, params: list[str | None]):
         self._session = session
         self._sql = sql
         self._params = params
@@ -132,7 +132,7 @@ class CallbackPortal(Portal):
 class CallbackStatement(Statement):
     _UNSET = object()
 
-    def __init__(self, session: "Session", sql: str, param_oids: list[int | None]):
+    def __init__(self, session: Session, sql: str, param_oids: list[int | None]):
         self._session = session
         self.sql = sql
         self.param_oids = param_oids
@@ -147,11 +147,72 @@ class CallbackStatement(Statement):
         return CallbackPortal(self._session, self.sql, params)
 
 
+class StaticStatement(Statement):
+    """A Statement whose result is already fully known (SET/SHOW/BEGIN/static
+    SELECT/information_schema/...) -- no CallbackStatement/Session involved."""
+
+    def __init__(
+        self,
+        sql: str,
+        columns: list[ResultColumn] | None,
+        rows: list[Row],
+        on_execute=None,
+    ):
+        self.sql = sql
+        self.param_oids: list[int | None] = []
+        self._columns = columns
+        self._rows = rows
+        self._on_execute = on_execute
+
+    async def describe(self) -> list[ResultColumn] | None:
+        return self._columns
+
+    def bind(self, params: list[str | None]) -> Portal:
+        return StaticPortal(self._rows, self._on_execute)
+
+
+class StaticPortal(Portal):
+    def __init__(self, rows: list[Row], on_execute):
+        self._rows = rows
+        self._on_execute = on_execute
+        self._row_source: AsyncIterator[Row] | None = None
+
+    async def execute(self, max_rows: int) -> tuple[list[Row], bool]:
+        if self._row_source is None:
+            if self._on_execute is not None:
+                self._on_execute()
+            self._row_source = _rows_as_async_iter(self._rows)
+        return await drain_rows(self._row_source, max_rows)
+
+
+async def _rows_as_async_iter(rows: list[Row]) -> AsyncIterator[Row]:
+    for row in rows:
+        yield row
+
+
 class Session(BaseSession):
     """The class most session authors subclass. Override describe()/query()
-    (and optionally schema()) instead of hand-writing Statement/Portal."""
+    (and optionally schema()) instead of hand-writing Statement/Portal.
 
+    `middleware` is the chain of client boilerplate answered before your
+    describe()/query() is consulted -- transaction control, SET/SHOW, session
+    functions and information_schema by default. It's an ordinary class
+    attribute, so a subclass can extend it::
+
+        from pg_mimic.middleware import DEFAULT_MIDDLEWARE, static_select
+
+        class MySession(Session):
+            middleware = DEFAULT_MIDDLEWARE + (static_select,)
+
+    reorder it, or set it to `()` to see every statement yourself. Ordinary
+    queries -- `SELECT 1` included -- always reach your session regardless.
+    """
+
+    # None means middleware.DEFAULT_MIDDLEWARE -- a sentinel rather than the tuple
+    # itself because that module imports this one, so it can't be imported here at
+    # class-definition time. An explicit () means "no middleware at all".
     _connection: Any = None
+    middleware: Sequence[Any] | None = None
 
     async def init(self, connection: Any) -> None:
         self._connection = connection
@@ -169,9 +230,11 @@ class Session(BaseSession):
 
     async def prepare(self, sql: str, param_oids: list[int | None]) -> Statement:
         if self._connection is not None:
-            from . import catalog
+            from .middleware import DEFAULT_MIDDLEWARE, resolve
 
-            middleware_statement = await catalog.resolve(self._connection, sql, param_oids)
-            if middleware_statement is not None:
-                return middleware_statement
+            chain = DEFAULT_MIDDLEWARE if self.middleware is None else self.middleware
+            if chain:
+                middleware_statement = await resolve(self._connection, sql, param_oids, chain)
+                if middleware_statement is not None:
+                    return middleware_statement
         return CallbackStatement(self, sql, param_oids)

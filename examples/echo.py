@@ -1,5 +1,5 @@
 """Echo server: logs every statement pg_mimic receives to stdout (including
-ones the built-in middleware handles, like BEGIN/SET/static SELECTs -- see
+ones the built-in middleware handles, like BEGIN/SET/session functions -- see
 the `prepare()` override below), and echoes the raw SQL text back as a
 single-column result for anything that isn't otherwise handled.
 

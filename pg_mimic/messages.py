@@ -117,6 +117,7 @@ class FieldSpec:
     column_attnum: int = 0
     type_size: int = -1
     type_modifier: int = -1
+    format_code: int = 0  # 0 = text, 1 = binary
 
 
 def make_row_description(columns: list[FieldSpec]) -> bytes:
@@ -128,18 +129,17 @@ def make_row_description(columns: list[FieldSpec]) -> bytes:
         payload += pack_int32(col.oid)
         payload += pack_int16(col.type_size)
         payload += pack_int32(col.type_modifier)
-        payload += pack_int16(0)  # format code: 0 = text, always, in pg_mimic
+        payload += pack_int16(col.format_code)
     return _message(ROW_DESCRIPTION, payload)
 
 
-def make_data_row(values: list[str | None]) -> bytes:
+def make_data_row(values: list[bytes | None]) -> bytes:
     payload = pack_int16(len(values))
     for value in values:
         if value is None:
             payload += pack_int32(-1)
         else:
-            encoded = value.encode("utf-8")
-            payload += pack_int32(len(encoded)) + encoded
+            payload += pack_int32(len(value)) + value
     return _message(DATA_ROW, payload)
 
 
