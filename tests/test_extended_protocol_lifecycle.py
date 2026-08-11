@@ -55,6 +55,8 @@ async def test_close_statement_and_portal(mock_session):
         assert parse_error_fields(payload)["C"] == "26000"
 
         writer.close()
+
+        await writer.wait_closed()
     finally:
         thread.stop()
 
@@ -97,5 +99,7 @@ async def test_describe_statement_before_bind(mock_session):
         assert payload[6 : 6 + value_len] == b"1"  # text-format "1"
 
         writer.close()
+
+        await writer.wait_closed()
     finally:
         thread.stop()

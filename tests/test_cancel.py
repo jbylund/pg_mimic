@@ -49,6 +49,7 @@ async def test_cancel_request_interrupts_running_query(mock_session):
         cancel_writer.write(make_cancel_request(pid, secret))
         await cancel_writer.drain()
         cancel_writer.close()
+        await cancel_writer.wait_closed()
 
         tag, payload = await asyncio.wait_for(read_message(reader), timeout=5)
         assert tag == b"E"
@@ -58,6 +59,8 @@ async def test_cancel_request_interrupts_running_query(mock_session):
         assert tag == b"Z"
 
         writer.close()
+
+        await writer.wait_closed()
     finally:
         thread.stop()
 
@@ -87,6 +90,7 @@ async def test_cancel_request_with_wrong_secret_is_ignored(mock_session):
         cancel_writer.write(make_cancel_request(pid, secret ^ 1))
         await cancel_writer.drain()
         cancel_writer.close()
+        await cancel_writer.wait_closed()
 
         # a mismatched secret must not cancel someone else's/this query --
         # it should complete normally instead of getting an ErrorResponse
@@ -94,5 +98,7 @@ async def test_cancel_request_with_wrong_secret_is_ignored(mock_session):
         assert tag == b"T"  # RowDescription: the query actually ran to completion
 
         writer.close()
+
+        await writer.wait_closed()
     finally:
         thread.stop()
