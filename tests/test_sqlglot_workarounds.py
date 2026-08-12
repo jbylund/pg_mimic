@@ -13,8 +13,11 @@ patch whose stated justification had gone stale. These tests are how the next
 one announces itself instead. See
 https://github.com/jbylund/pg_mimic/issues/50
 
-Each test names the workaround it justifies, so a failure points straight at the
-code to delete. The inventory is https://github.com/jbylund/pg_mimic/issues/49
+Each test names the issue tracking it, and the workaround it justifies where
+there is one, so a failure points straight at the code to delete. Two
+inventories: bugs we work around are
+https://github.com/jbylund/pg_mimic/issues/49, and the ones reaching users
+untreated are https://github.com/jbylund/pg_mimic/issues/58
 
 A failure here is never a pg_mimic regression: it means good news upstream.
 """
@@ -22,6 +25,7 @@ A failure here is never a pg_mimic regression: it means good news upstream.
 from __future__ import annotations
 
 import datetime
+from decimal import Decimal
 
 import pytest
 from sqlglot.executor import execute
@@ -114,7 +118,9 @@ def test_tablesample_is_applied():
 def test_like_is_anchored_and_takes_metacharacters_literally():
     """https://github.com/jbylund/pg_mimic/issues/38
 
-    Workaround: `catalog_rewrite`'s ENV patching.
+    No workaround in the library -- catalog_rewrite patches REGEXPLIKE only, so
+    catalog introspection answers with the wrong rows. examples/git_sql.py
+    replaces ENV["LIKE"] for itself.
 
     Postgres' LIKE is fully anchored, and only % and _ are wildcards.
     """
@@ -172,6 +178,74 @@ def test_typed_division_keeps_a_real_operands_fraction():
     No workaround -- the answer is simply wrong. Fix in flight: https://redirect.github.com/tobymao/sqlglot/pull/8138
     """
     assert _rows("SELECT a / 2.0 FROM t", *_NUMBERS)[0] == (0.5,)
+
+
+_HALVES = [Decimal("2.5"), Decimal("0.5"), Decimal("-2.5"), Decimal("3.5")]
+
+
+@pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
+def test_round_on_numeric_goes_half_away_from_zero():
+    """https://github.com/jbylund/pg_mimic/issues/58
+
+    No workaround. ENV["ROUND"] is Python's builtin, which rounds half to even;
+    Postgres' `round(numeric)` breaks ties away from zero. Checked against a real
+    PostgreSQL 18: 2.5 -> 3, 0.5 -> 1, -2.5 -> -3.
+    """
+    tables = {"d": [{"n": value} for value in _HALVES]}
+    rows = _rows("SELECT round(n) FROM d", tables, {"d": {"n": "DECIMAL"}})
+    assert [row[0] for row in rows] == [3, 1, -3, 4]
+
+
+def test_round_on_double_goes_half_to_even():
+    """Not xfail: correct today, and easy to "fix" into a regression.
+
+    Postgres' `round(double precision)` goes through C's rint(), which rounds
+    half to *even* -- so Python's builtin already matches it, and only the numeric
+    case above is wrong. Verified against PostgreSQL 18, where
+    `round(2.5::double precision)` is 2 while `round(2.5::numeric)` is 3.
+    """
+    tables = {"d": [{"v": float(value)} for value in _HALVES]}
+    rows = _rows("SELECT round(v) FROM d", tables, {"d": {"v": "DOUBLE"}})
+    assert [row[0] for row in rows] == [2, 0, -2, 4]
+
+
+@pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
+def test_now_is_timezone_aware():
+    """https://github.com/jbylund/pg_mimic/issues/58
+
+    ENV["CURRENTTIMESTAMP"] is datetime.now -- the host's local wall clock, with
+    no offset -- where Postgres' now() is timestamptz. Comparing it against an
+    aware column raises rather than answering, the executor having no timezone
+    model at all. Workaround in examples/git_sql.py only; TableSession has none.
+    """
+    tables = {"d": [{"ts": datetime.datetime(2024, 1, 1, tzinfo=datetime.timezone.utc)}]}
+    assert _rows("SELECT ts > CURRENT_TIMESTAMP FROM d", tables, {"d": {"ts": "TIMESTAMPTZ"}}) == [(False,)]
+
+
+@pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
+def test_date_trunc_is_implementable():
+    """https://github.com/jbylund/pg_mimic/issues/58
+
+    The one gap that cannot be closed by adding an ENV entry: the generator emits
+    `TIMESTAMPTRUNC(value, MONTH)`, where MONTH resolves to ENV["MONTH"] -- a
+    function object, not the string a TIMESTAMPTRUNC implementation could switch
+    on. Fixing it means changing what sqlglot's Python generator emits.
+    """
+    tables = {"d": [{"ts": datetime.datetime(2024, 3, 15)}]}
+    assert _rows("SELECT date_trunc('month', ts) FROM d", tables, {"d": {"ts": "TIMESTAMP"}}) == [(datetime.datetime(2024, 3, 1),)]
+
+
+@pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
+def test_a_scalar_subquery_in_the_select_list_runs():
+    """https://github.com/jbylund/pg_mimic/issues/58
+
+    Emits invalid Python, so the client gets a SyntaxError out of generated code
+    it never wrote. One subquery is enough, with or without an outer FROM; a
+    subquery in WHERE, an IN (subquery) and a derived table are all fine.
+    """
+    tables = {"t": [{"a": 1}, {"a": 2}], "u": [{"b": 9}]}
+    schema = {"t": {"a": "INT"}, "u": {"b": "INT"}}
+    assert _rows("SELECT a, (SELECT max(b) FROM u) FROM t", tables, schema) == [(1, 9), (2, 9)]
 
 
 def test_full_outer_join_preserves_unmatched_rows():
