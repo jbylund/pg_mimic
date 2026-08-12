@@ -488,9 +488,8 @@ emulation it delegates to is in [`pg_mimic/catalog.py`](pg_mimic/catalog.py).
   instead of raising on the comparison; and a `UNION`, `EXCEPT` or `INTERSECT` over the same table runs
   both of its branches rather than the first one twice.
 
-  `FULL OUTER JOIN` and `TABLESAMPLE` are refused outright, because the executor gets those wrong in ways
-  nothing here can repair — a `FULL OUTER JOIN` runs as an inner join, dropping the unmatched rows from
-  both sides. An `OFFSET` or `DISTINCT ON` nested inside a subquery is refused for the same reason: the
+  `TABLESAMPLE` is refused outright, because the executor ignores it and nothing here can repair that.
+  An `OFFSET` or `DISTINCT ON` nested inside a subquery is refused for the same reason: the
   repair reaches the query's own rows, and one buried in a subquery would be silently ignored as before.
 
   Everything it can't run is an error, not an approximate answer, and a column type it can't derive is an

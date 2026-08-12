@@ -141,7 +141,7 @@ def test_typed_division_keeps_a_real_operands_fraction():
 
 def test_full_outer_join_preserves_unmatched_rows():
     """Not xfail: fixed upstream in v30.15.0 (commit f85ea4c2), which is why
-    TableSession's refusal of it is now wrong. See #50.
+    `sqlglot>=30.16.0` is pinned and TableSession no longer refuses it (#50).
 
     Kept as a plain assertion so that a *regression* upstream is caught too.
     """

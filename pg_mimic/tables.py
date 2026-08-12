@@ -208,8 +208,8 @@ class TableSession(Session):
     their column names have to be declared. SELECT, WHERE, JOIN, GROUP BY, ORDER
     BY, LIMIT, OFFSET, DISTINCT ON and bind parameters are all answered, some of
     them by rewriting the query or finishing it in Python where sqlglot's executor
-    would get it wrong. FULL OUTER JOIN and TABLESAMPLE are refused, because it
-    gets those wrong in ways nothing here can repair.
+    would get it wrong. TABLESAMPLE is refused, because it gets that wrong in a way
+    nothing here can repair.
     `\\dt`, `\\d users` and `information_schema` come from the derived `schema()`.
 
     Column types are inferred from the values in the rows, once, at construction.
@@ -601,14 +601,6 @@ def _reject_silently_ignored(expression: exp.Expression) -> None:
             "sqlglot's executor ignores TABLESAMPLE, so TableSession refuses the query rather than answering it "
             "with the wrong rows",
         )
-    for join in expression.find_all(exp.Join):
-        if (join.side or "").upper() == "FULL":
-            raise PgError(
-                FEATURE_NOT_SUPPORTED,
-                "sqlglot's executor runs a FULL OUTER JOIN as an inner join, dropping the unmatched rows from both "
-                "sides, so TableSession refuses the query rather than answering it with the wrong rows. Write it as "
-                "a LEFT JOIN and a RIGHT JOIN combined with UNION ALL, giving each side its own table alias.",
-            )
 
     # OFFSET and DISTINCT ON are finished in Python, which can only reach the rows
     # the executor hands back -- the whole query's. One nested inside a subquery or

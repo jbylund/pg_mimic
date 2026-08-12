@@ -1,0 +1,47 @@
+# Watch for sqlglot releases that change what pg_mimic has to work around.
+#
+# The strict-xfail tripwires in tests/test_sqlglot_workarounds.py assert what
+# Postgres answers and are expected to fail; when sqlglot fixes one they XPASS,
+# and strict turns that into a build failure naming the workaround to delete. On
+# pushes and PRs that signal only arrives when someone happens to touch the repo,
+# which is how two workarounds silently outlived their cause (#50). This runs the
+# suite daily against the newest sqlglot instead, so the news arrives on its own.
+#
+# It also runs against sqlglot's main branch, which catches a fix roughly a
+# release earlier -- and catches an upstream regression before it reaches PyPI.
+name: Upstream sqlglot
+
+on:
+  schedule:
+    # 07:00 UTC daily. Any time is fine; this is not racing anything.
+    - cron: "0 7 * * *"
+  workflow_dispatch:
+
+jobs:
+  upstream:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        sqlglot: [latest-release, main]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: astral-sh/setup-uv@v5
+
+      - run: uv pip install --system -e ".[dev]"
+
+      # After the editable install, so it wins over the pinned floor.
+      - name: Install the sqlglot under test
+        run: |
+          if [ "${{ matrix.sqlglot }}" = "main" ]; then
+            uv pip install --system --upgrade "sqlglot @ git+https://github.com/tobymao/sqlglot@main"
+          else
+            uv pip install --system --upgrade sqlglot
+          fi
+          python -c "import sqlglot; print('sqlglot', sqlglot.__version__)"
+
+      - run: pytest -vvv --durations=0
