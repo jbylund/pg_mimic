@@ -20,7 +20,9 @@ from decimal import Decimal
 import asyncpg
 import psycopg
 import pytest
+from sqlglot.executor import execute as sqlglot_execute
 
+import pg_mimic.tables as tables_module
 from pg_mimic import ARRAY_OID, DATE, INT4, INT8, JSONB, NUMERIC, TEXT, TIMESTAMP, VARCHAR, TableSession
 from pg_mimic.testing import serve, serve_in_thread
 from pg_mimic.types import INET
@@ -256,6 +258,156 @@ async def test_asyncpg_decodes_the_declared_types_from_binary():
             assert await client.fetchval("SELECT total FROM orders WHERE id = 10") == Decimal("9.99")
         finally:
             await client.close()
+
+
+# --- numbers ---------------------------------------------------------------------------
+#
+# Two ways a number went wrong, both measured against a real PostgreSQL 18: a decimal
+# constant compared as a float, which missed rows it should have matched, and every
+# integer expression described as int4 however wide it was.
+
+PRICES = {"prices": [{"id": 1, "amount": Decimal("9.99")}, {"id": 2, "amount": Decimal("10.00")}]}
+
+
+@pytest.fixture
+def prices():
+    with serve_in_thread(lambda: TableSession(PRICES)) as server:
+        with psycopg.Connection.connect(server.dsn(), autocommit=True) as conn:
+            yield conn
+
+
+# Postgres types an unadorned decimal constant as numeric and compares it exactly, so
+# it matches each of these rows. Only `= 10.00` matched here before, 10.0 being the
+# one value of the two a binary float represents exactly -- which is what made the
+# bug intermittent rather than a flat failure.
+_exact_testcases = {
+    "a_value_no_float_represents": {"literal": "9.99", "expected": 1},
+    "a_value_float_gets_right": {"literal": "10.00", "expected": 2},
+    "trailing_zeros_do_not_count": {"literal": "9.990", "expected": 1},
+    "a_cast_written_out": {"literal": "'9.99'::numeric", "expected": 1},
+    "a_cast_of_a_whole_number": {"literal": "CAST(10 AS DECIMAL)", "expected": 2},
+}
+
+
+@pytest.mark.parametrize(
+    argnames=sorted(next(iter(_exact_testcases.values()))),
+    argvalues=[[v for k, v in sorted(_exact_testcases[name].items())] for name in sorted(_exact_testcases)],
+    ids=sorted(_exact_testcases),
+)
+def test_a_decimal_comparison_is_exact(prices, literal, expected):
+    assert prices.execute(f"SELECT id FROM prices WHERE amount = {literal}").fetchall() == [(expected,)]
+
+
+def test_a_decimal_comparison_is_exact_the_other_way_round_too(prices):
+    """The literal on the left, and an inequality rather than an equality -- the
+    rewrite reads a comparison's operands rather than assuming which side is which."""
+    assert prices.execute("SELECT id FROM prices WHERE 9.99 >= amount").fetchall() == [(1,)]
+    assert prices.execute("SELECT id FROM prices WHERE amount BETWEEN 9.98 AND 9.999").fetchall() == [(1,)]
+    assert prices.execute("SELECT id FROM prices WHERE amount IN (9.99, 1.11)").fetchall() == [(1,)]
+
+
+def test_a_numeric_cast_is_answered_rather_than_raising(prices):
+    """sqlglot's executor sends every DECIMAL cast through `int()`, so `::numeric`
+    raised ValueError and `CAST(9.99 AS DECIMAL)` was 9. Postgres gives an exact 9.99
+    for both, and the CAST override in tables.py makes them exact here."""
+    assert prices.execute("SELECT '9.99'::numeric").fetchall() == [(Decimal("9.99"),)]
+    assert prices.execute("SELECT CAST(9.99 AS DECIMAL)").fetchall() == [(Decimal("9.99"),)]
+    assert prices.execute("SELECT CAST(amount AS NUMERIC) FROM prices WHERE id = 1").fetchall() == [(Decimal("9.99"),)]
+
+
+def test_decimal_arithmetic_stays_exact(prices):
+    """The reason the fix is a numeric cast rather than a float on both sides: a
+    column describe() calls NUMERIC has to multiply and sum as numeric too."""
+    cursor = prices.execute("SELECT amount * 2 FROM prices WHERE amount = 9.99")
+    assert _types(cursor) == [NUMERIC]
+    assert cursor.fetchall() == [(Decimal("19.98"),)]
+    assert prices.execute("SELECT sum(amount) FROM prices").fetchall() == [(Decimal("19.99"),)]
+
+
+def test_a_decimal_literal_against_a_double_precision_column_is_left_alone(conn):
+    """`Decimal * float` raises TypeError in Python, so making every decimal literal
+    a Decimal would break a float8 column where it works today. The rewrite is scoped
+    to comparisons whose other side is already numeric; this one is not."""
+    tables = {"readings": [{"v": 9.99}, {"v": 2.5}]}
+    with serve_in_thread(lambda: TableSession(tables)) as server:
+        with psycopg.Connection.connect(server.dsn(), autocommit=True) as floats:
+            assert floats.execute("SELECT v FROM readings WHERE v = 9.99").fetchall() == [(9.99,)]
+            assert floats.execute("SELECT v * 1.5 FROM readings WHERE v = 2.5").fetchall() == [(3.75,)]
+
+
+def test_a_numeric_parameter_is_exact_too(prices):
+    """A bind parameter becomes a literal for the executor, so it had the identical
+    problem -- and the promise is that a parameterised query answers like a literal
+    one."""
+    assert prices.execute("SELECT id FROM prices WHERE amount = %s", (Decimal("9.99"),)).fetchall() == [(1,)]
+    assert prices.execute("SELECT id FROM prices WHERE amount = %s", (Decimal("10.00"),)).fetchall() == [(2,)]
+
+
+# What Postgres calls each of these, read off `pg_typeof`. sqlglot's annotator types
+# every integer literal INT, so all of them described as int4 until the literal was
+# sized ahead of it.
+_width_testcases = {
+    "int4_max": {"expr": "2147483647", "type_name": "int4", "expected": 2147483647},
+    "one_past_int4_max": {"expr": "2147483648", "type_name": "int8", "expected": 2147483648},
+    # A negation is sized by what it evaluates to, however many of them there are.
+    "int4_min": {"expr": "-2147483648", "type_name": "int4", "expected": -2147483648},
+    "negated_back_out_of_int4": {"expr": "- -2147483648", "type_name": "int8", "expected": 2147483648},
+    "int8_max": {"expr": "9223372036854775807", "type_name": "int8", "expected": 9223372036854775807},
+    "int8_min": {"expr": "-9223372036854775808", "type_name": "int8", "expected": -9223372036854775808},
+    "past_int8_max": {"expr": "9223372036854775808", "type_name": "numeric", "expected": Decimal("9223372036854775808")},
+    "width_carries_through_arithmetic": {"expr": "3000000000 + 0", "type_name": "int8", "expected": 3000000000},
+    "narrow_arithmetic_stays_narrow": {"expr": "1 + 1", "type_name": "int4", "expected": 2},
+}
+
+
+@pytest.mark.parametrize(
+    argnames=sorted(next(iter(_width_testcases.values()))),
+    argvalues=[[v for k, v in sorted(_width_testcases[name].items())] for name in sorted(_width_testcases)],
+    ids=sorted(_width_testcases),
+)
+async def test_an_integer_literal_is_as_wide_as_postgres_makes_it(expr, type_name, expected):
+    """Through asyncpg, because psycopg reads results as text and cannot see this at
+    all: a bigint declared int4 crashes asyncpg's binary decoder with "'i' format
+    requires -2147483648 <= number <= 2147483647" rather than returning a wrong
+    value."""
+    async with serve(_session) as server:
+        client = await asyncpg.connect(host="127.0.0.1", port=server.port, user="u", database="d")
+        try:
+            statement = await client.prepare(f"SELECT {expr}")
+            assert [attribute.type.name for attribute in statement.get_attributes()] == [type_name]
+            assert await statement.fetchval() == expected
+        finally:
+            await client.close()
+
+
+async def test_a_declared_integer_column_still_describes_as_int4():
+    """The round trip sizing the literals must not disturb: a table whose real column
+    is `integer` says so, where `int` infers to bigint as it does everywhere else in
+    pg_mimic. Remapping INT to INT8 in _TYPES is the one-line fix that breaks this."""
+    tables = {"counters": [{"narrow": 1, "wide": 1}]}
+    columns = {"counters": {"narrow": INT4, "wide": int}}
+    async with serve(lambda: TableSession(tables, columns=columns)) as server:
+        client = await asyncpg.connect(host="127.0.0.1", port=server.port, user="u", database="d")
+        try:
+            statement = await client.prepare("SELECT narrow, wide FROM counters")
+            assert [attribute.type.name for attribute in statement.get_attributes()] == ["int4", "int8"]
+        finally:
+            await client.close()
+
+
+async def test_the_hand_built_executor_answers_what_sqlglots_own_does():
+    """TableSession runs the executor itself rather than calling
+    `sqlglot.executor.execute()`, which takes no `env=` -- and the env is where the
+    exact numeric CAST lives. That means replicating the public function's body, so
+    this is the tripwire for the day those internals move: same query, same rows,
+    both ways. A drift shows up here rather than as wrong rows.
+    """
+    session = _session()
+    sql = "SELECT u.name, count(*) AS n FROM users AS u JOIN orders AS o ON o.user_id = u.id GROUP BY u.name"
+    expression = session._plan(sql).expression
+    ours = [tuple(row) for row in tables_module._execute(expression, session._sqlglot_schema, session._rows).rows]
+    theirs = [tuple(row) for row in sqlglot_execute(expression, schema=session._sqlglot_schema, tables=session._rows).rows]
+    assert ours == theirs == [("alice", 2)]
 
 
 # --- the catalog, for free -----------------------------------------------------------

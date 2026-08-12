@@ -521,10 +521,10 @@ emulation it delegates to is in [`pg_mimic/catalog.py`](pg_mimic/catalog.py).
   SQL can close the gap by setting `param_oids` on the `Statement` it returns from `prepare()`.
 - **`TableSession` executes as much SQL as sqlglot's executor does, which is not all of Postgres.**
   Joins, grouping, ordering, subqueries and the common functions work; recursive CTEs and window functions
-  don't, function coverage is partial, and numeric comparisons go through Python floats — so a value no
-  float represents exactly compares wrong at the boundary (`where total = 9.99` misses a `Decimal("9.99")`
-  row). That is the executor's arithmetic, not pg_mimic's parameter handling: a literal in the SQL and a
-  bind parameter behave identically, and neither is exact.
+  don't, and function coverage is partial. Integer arithmetic does not overflow where Postgres would raise:
+  `2147483647 + 1` answers 2147483648 rather than failing with `integer out of range`. That is the
+  executor's arithmetic, not pg_mimic's parameter handling — a literal in the SQL and a bind parameter
+  behave identically.
 
   The executor's more dangerous gaps are the clauses it parses and then answers *wrongly* — a wrong answer
   wearing a right answer's clothes. `TableSession` repairs the ones it can, verified against a real
@@ -533,6 +533,12 @@ emulation it delegates to is in [`pg_mimic/catalog.py`](pg_mimic/catalog.py).
   becomes a `NOT EXISTS` carrying SQL's NULL rule; `ORDER BY` places NULLs where Postgres places them
   instead of raising on the comparison; and a `UNION`, `EXCEPT` or `INTERSECT` over the same table runs
   both of its branches rather than the first one twice.
+
+  Numbers are the same story. A decimal constant is compared as `numeric`, the way Postgres types one, so
+  `where total = 9.99` finds the `Decimal("9.99")` row instead of missing it because the executor read the
+  literal as a float — and `::numeric`, which used to raise, is exact. An integer constant is as wide as
+  Postgres makes it, so `select 3000000000` describes as `int8` rather than telling a binary client `int4`
+  and crashing its decoder.
 
   `TABLESAMPLE` is refused outright, because the executor ignores it and nothing here can repair that.
   An `OFFSET` or `DISTINCT ON` nested inside a subquery is refused for the same reason: the
