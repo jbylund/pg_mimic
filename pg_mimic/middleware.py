@@ -89,7 +89,7 @@ _ROLLBACK_TO_RE = re.compile(rf"^\s*ROLLBACK\s+(?:TRANSACTION\s+|WORK\s+)?TO\s+(
 _SET_TIME_ZONE_RE = re.compile(r"^\s*SET\s+(?:SESSION\s+|LOCAL\s+)?TIME\s+ZONE\s+(?!TO\b|=)(.+?)\s*;?\s*$", re.IGNORECASE)
 _SET_SCHEMA_RE = re.compile(r"^\s*SET\s+(?:SESSION\s+|LOCAL\s+)?SCHEMA\s+(?!TO\b|=)(.+?)\s*;?\s*$", re.IGNORECASE)
 _SET_CHARACTERISTICS_RE = re.compile(r"^\s*SET\s+SESSION\s+CHARACTERISTICS\s+AS\s+TRANSACTION\s+(.+?)\s*;?\s*$", re.IGNORECASE)
-_SET_RE = re.compile(rf"^\s*SET\s+(?:SESSION\s+|LOCAL\s+)?({_SETTING_NAME})\s*(?:TO|=)\s*(.+?)\s*;?\s*$", re.IGNORECASE)
+_SET_RE = re.compile(rf"^\s*SET\s+(SESSION\s+|LOCAL\s+)?({_SETTING_NAME})\s*(?:TO|=)\s*(.+?)\s*;?\s*$", re.IGNORECASE)
 _RESET_RE = re.compile(rf"^\s*RESET\s+(ALL|{_SETTING_NAME})\s*;?\s*$", re.IGNORECASE)
 _SHOW_RE = re.compile(r"^\s*SHOW\s+(\S+?)\s*;?\s*$", re.IGNORECASE)
 # The read counterpart of SET TIME ZONE, and the one multi-word SHOW worth
@@ -523,6 +523,23 @@ def _setting_name(raw: str) -> str:
     return raw.strip().strip('"').lower()
 
 
+def _end_transaction(connection: Connection, committed: bool) -> None:
+    """Settle the settings at COMMIT or ROLLBACK, reporting what moved.
+
+    Both ends can change what the client sees -- a COMMIT drops the SET LOCALs, a
+    ROLLBACK drops everything the transaction set -- so the settings that differ
+    afterwards owe a ParameterStatus just as a SET does.
+    """
+    before = dict(connection.state.session_vars)
+    if committed:
+        connection.state.commit_transaction()
+    else:
+        connection.state.end_transaction()
+    for name in set(before) | set(connection.state.session_vars):
+        if before.get(name) != connection.state.session_vars.get(name):
+            _report_setting(connection, name)
+
+
 def _transaction_statement(connection: Connection, tag: str) -> Statement:
     def on_execute() -> None:
         # A BEGIN inside an open transaction block does not start a second one:
@@ -530,11 +547,18 @@ def _transaction_statement(connection: Connection, tag: str) -> Statement:
         # on with the first. The savepoints already taken in it are still live, so
         # this is the one case that must not clear them.
         redundant_begin = tag == "BEGIN" and connection.tx_status == b"T"
+        was_open = connection.tx_status != b"I"
         connection.tx_status = b"T" if tag == "BEGIN" else b"I"
-        if not redundant_begin:
-            # Every savepoint belongs to the transaction that opened it, so a new
-            # or finished transaction block starts with an empty stack either way.
-            connection.state.savepoints.clear()
+        if redundant_begin:
+            return
+        # Every savepoint belongs to the transaction that opened it, so a new or
+        # finished transaction block starts with an empty stack either way.
+        connection.state.savepoints.clear()
+
+        if tag == "BEGIN":
+            connection.state.open_scope()
+        elif was_open:
+            _end_transaction(connection, committed=tag == "COMMIT")
 
     return StaticStatement(tag, None, [], on_execute)
 
@@ -563,6 +587,7 @@ def _savepoint_statement(connection: Connection, sql: str, kind: str, name: str)
             # Repeating a name is legal: the new savepoint shadows the old one,
             # which is why this is a stack and not a set.
             connection.state.savepoints.append(name)
+            connection.state.open_scope()
             return
 
         stack = connection.state.savepoints
@@ -573,7 +598,16 @@ def _savepoint_statement(connection: Connection, sql: str, kind: str, name: str)
         # RELEASE drops the named savepoint along with everything inside it;
         # ROLLBACK TO keeps it, so the same name can be rolled back to again.
         del stack[index if kind == "RELEASE" else index + 1 :]
-        if kind == "ROLLBACK TO":
+        # Frame 0 is the transaction itself, so savepoint N is frame N + 1.
+        if kind == "RELEASE":
+            # Keeps whatever the released scope set -- only the frames go.
+            connection.state.discard_scopes(index + 1)
+        else:
+            before = dict(connection.state.session_vars)
+            connection.state.restore_scope(index + 1)
+            for setting in set(before) | set(connection.state.session_vars):
+                if before.get(setting) != connection.state.session_vars.get(setting):
+                    _report_setting(connection, setting)
             # The point of the whole feature: the failed-transaction state ends
             # here, and the transaction itself carries on.
             connection.tx_status = b"T"
@@ -679,11 +713,12 @@ def _set_variants(connection: Connection, sql: str) -> Statement | None:
 
     match = _SET_RE.match(sql)
     if match:
-        name = _setting_name(match.group(1))
+        name = _setting_name(match.group(2))
         if name in _PASSED_THROUGH_SETTINGS:
             return None
-        _reject_placeholder_value(match.group(2))
-        return _assignment_statement(connection, sql, [(name, _set_value(match.group(2)))])
+        _reject_placeholder_value(match.group(3))
+        local = (match.group(1) or "").strip().upper() == "LOCAL"
+        return _assignment_statement(connection, sql, [(name, _set_value(match.group(3)))], local=local)
 
     match = _RESET_RE.match(sql)
     if match:
@@ -698,10 +733,20 @@ def _set_variants(connection: Connection, sql: str) -> Statement | None:
     return None
 
 
-def _assignment_statement(connection: Connection, sql: str, assignments: Sequence[tuple[str, str | None]]) -> Statement:
+def _assignment_statement(
+    connection: Connection,
+    sql: str,
+    assignments: Sequence[tuple[str, str | None]],
+    local: bool = False,
+) -> Statement:
     def on_execute() -> None:
+        if local and connection.tx_status == b"I":
+            # Real Postgres warns "SET LOCAL can only be used in transaction
+            # blocks" and does nothing. We have no NoticeResponse to warn with
+            # yet (#24), so this is the silent half of that: doing nothing.
+            return
         for name, value in assignments:
-            _apply_set_config(connection, name, value)
+            _apply_set_config(connection, name, value, local=local)
 
     return StaticStatement(sql, None, [], on_execute)
 
@@ -718,6 +763,7 @@ def _reset_all(connection: Connection) -> None:
     again on the way out, at whatever value they revert to."""
     names = list(connection.state.session_vars)
     connection.state.session_vars.clear()
+    connection.state.committed_vars.clear()
     for name in names:
         _report_setting(connection, name)
 
@@ -865,13 +911,20 @@ def _run_all(effects: list[Callable[[], None]]) -> Callable[[], None]:
     return run
 
 
-def _apply_set_config(connection: Connection, key: str, value: str | None) -> None:
+def _apply_set_config(connection: Connection, key: str, value: str | None, local: bool = False) -> None:
     """Apply one setting change, from SET/RESET or from set_config(). None means
-    "back to the built-in default", i.e. forget the override."""
-    if value is None:
-        connection.state.session_vars.pop(key, None)
-    else:
-        connection.state.session_vars[key] = value
+    "back to the built-in default", i.e. forget the override.
+
+    Every write lands in `session_vars`, which is what SHOW reads. A write that is
+    not `SET LOCAL` also lands in `committed_vars`, which is what survives COMMIT.
+    """
+    for target in (connection.state.session_vars, connection.state.committed_vars):
+        if value is None:
+            target.pop(key, None)
+        else:
+            target[key] = value
+        if local:
+            break  # session_vars only
     _report_setting(connection, key)
 
 
