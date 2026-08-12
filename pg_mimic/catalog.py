@@ -262,6 +262,11 @@ def _build_pg_catalog(user_schema: dict, database: str = "postgres") -> tuple[di
                     "rolinherit": True,
                     "rolcreaterole": False,
                     "rolcreatedb": False,
+                    "rolcanlogin": True,
+                    "rolconnlimit": -1,
+                    "rolvaliduntil": None,
+                    "rolreplication": False,
+                    "rolbypassrls": False,
                 }
             ],
             "pg_publication": [],

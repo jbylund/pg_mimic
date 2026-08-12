@@ -22,6 +22,13 @@ if TYPE_CHECKING:
 
 # sqlglot's Python executor knows the `~` operator's node but has no
 # implementation for it, and psql filters on `nspname !~ '^pg_'` constantly.
+def _array_length(this: Any, *_: Any) -> Any:
+    """NULL for a NULL array, as in Postgres -- an empty one has length NULL too."""
+    if this is None:
+        return None
+    return len(this) or None
+
+
 def _regexp_like(this: Any, expression: Any, *_: Any) -> Any:
     if this is None or expression is None:
         return None
@@ -29,6 +36,10 @@ def _regexp_like(this: Any, expression: Any, *_: Any) -> Any:
 
 
 sqlglot_env.ENV.setdefault("REGEXPLIKE", _regexp_like)
+# array_length(anyarray, int) -- psql's \\l asks it of datacl to decide whether to
+# print "(none)" for access privileges. Without it the whole database list comes
+# back empty, which is a lie: pg_mimic does know its own database.
+sqlglot_env.ENV.setdefault("ARRAYSIZE", _array_length)
 
 
 _CATALOG_FUNCTIONS = {
@@ -96,6 +107,15 @@ def rewrite_for_executor(connection: Connection, expr: exp.Expression) -> exp.Ex
             replacement = _CATALOG_FUNCTIONS.get(str(inner.this).lower())
             if replacement is not None:
                 node.replace(replacement(connection))
+                continue
+            # `pg_catalog.array_length(x, 1)` stays an Anonymous inside the Dot, so
+            # it generates a bare lowercase `array_length(...)` the executor has no
+            # name for -- where the unqualified spelling would have parsed to
+            # exp.ArraySize and generated ARRAYSIZE. Rebuild the node psql would
+            # have got had it not qualified the call. Without this the whole of
+            # \l comes back empty.
+            if str(inner.this).lower() in ("array_length", "array_upper") and inner.expressions:
+                node.replace(exp.ArraySize(this=inner.expressions[0]))
 
     for node in list(expr.find_all(exp.Anonymous)):
         replacement = _CATALOG_FUNCTIONS.get(str(node.this).lower())
@@ -125,7 +145,14 @@ def rewrite_for_executor(connection: Connection, expr: exp.Expression) -> exp.Ex
         first = node.expressions[0]
         if not isinstance(first, exp.Column):
             continue
-        column = exp.column("attformattype", table=first.table)
+        # Which column carries the rendered name depends on where the OID came
+        # from. psql asks this of pg_attribute for \d (a column's type) and of
+        # pg_type for \dT (the type itself), and the answer lives in a different
+        # place each time -- rewriting both to attformattype left \dT selecting a
+        # pg_attribute column from pg_type, so the whole type listing came back
+        # empty.
+        rendered = "attformattype" if first.name.lower() == "atttypid" else "typname"
+        column = exp.column(rendered, table=first.table)
         # Qualified as `pg_catalog.format_type(...)` the call is wrapped in a Dot,
         # and replacing only the inner function leaves `pg_catalog.<column>` behind
         # -- which fails later, in the Sort step, a long way from here.
