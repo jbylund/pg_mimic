@@ -10,6 +10,7 @@ import re
 from typing import TYPE_CHECKING, Any
 
 import sqlglot
+from sqlglot.tokens import TokenType
 
 from . import messages
 from .auth import AuthPlugin
@@ -37,7 +38,7 @@ _KEYWORD_RE = re.compile(r"[A-Za-z]+")
 # The handful of command tags real Postgres spells with two words -- see
 # src/include/tcop/cmdtaglist.h. Everything else is just the leading keyword.
 _TWO_WORD_TAG_RE = re.compile(
-    r"^(DISCARD\s+(?:ALL|PLANS|SEQUENCES|TEMP|TEMPORARY)|DEALLOCATE\s+ALL)\s*;?\s*$",
+    r"^(DISCARD\s+(?:ALL|PLANS|SEQUENCES|TEMP|TEMPORARY)|DEALLOCATE\s+(?:PREPARE\s+)?ALL)\s*;?\s*$",
     re.IGNORECASE,
 )
 
@@ -45,8 +46,10 @@ _TWO_WORD_TAG_RE = re.compile(
 def command_tag(sql: str, row_count: int) -> str:
     two_word = _TWO_WORD_TAG_RE.match(sql.strip())
     if two_word:
-        # DISCARD TEMPORARY completes as "DISCARD TEMP", the way Postgres reports it.
-        return " ".join(two_word.group(1).upper().split()).replace("TEMPORARY", "TEMP")
+        # As Postgres reports them: DISCARD TEMPORARY completes as "DISCARD TEMP",
+        # and the optional PREPARE noise word is not part of DEALLOCATE's tag.
+        tag = " ".join(two_word.group(1).upper().split())
+        return tag.replace("TEMPORARY", "TEMP").replace("DEALLOCATE PREPARE", "DEALLOCATE")
     match = _KEYWORD_RE.match(sql.strip())
     keyword = match.group(0).upper() if match else ""
     if keyword == "INSERT":
@@ -58,22 +61,36 @@ def command_tag(sql: str, row_count: int) -> str:
 
 def split_statements(sql: str) -> list[str]:
     """Split a simple-query string into individual statement texts on ';'
-    boundaries, using sqlglot rather than a naive string split so semicolons
-    inside string literals etc. don't misfire. The single-statement case
-    (by far the common one) always returns the original text unchanged --
-    only genuine multi-statement batches get sqlglot's re-rendered SQL,
-    since there's no reliable way to recover the original substrings once
-    parsed. Falls back to treating the whole input as one statement if
-    sqlglot can't parse it at all (best-effort -- pg_mimic isn't a full SQL
-    parser, and a client sending syntax sqlglot doesn't support should still
-    reach the session, not get a hard failure here)."""
+    boundaries, using sqlglot's tokenizer rather than a naive string split so
+    semicolons inside string literals, comments and dollar-quoted bodies don't
+    misfire.
+
+    The tokenizer rather than the parser, because each statement is handed on as
+    the client wrote it. Parsing and re-rendering does not round-trip: sqlglot
+    writes `SAVEPOINT a` back as `SAVEPOINT AS a`, `DISCARD ALL` as `DISCARD AS
+    ALL` and `RELEASE a` as `RELEASE AS a`, so every statement the middleware
+    classifies from its raw text stopped being recognised the moment it arrived in
+    a batch rather than on its own. Slicing the original string has no such gap.
+
+    Falls back to treating the whole input as one statement if sqlglot can't
+    tokenize it -- pg_mimic isn't a full SQL parser, and a client sending syntax
+    sqlglot doesn't support should still reach the session, not get a hard failure
+    here."""
     try:
-        expressions = [e for e in sqlglot.parse(sql, dialect="postgres") if e is not None]
+        tokens = sqlglot.Dialect.get_or_raise("postgres").tokenize(sql)
     except Exception:
         return [sql]
-    if len(expressions) <= 1:
-        return [sql]
-    return [expr.sql(dialect="postgres") for expr in expressions]
+    statements = []
+    start = 0
+    for token in tokens:
+        if token.token_type is TokenType.SEMICOLON:
+            statements.append(sql[start : token.start])
+            start = token.end + 1
+    statements.append(sql[start:])
+    statements = [statement for statement in statements if statement.strip()]
+    # One statement (with or without a trailing semicolon) is by far the common
+    # case, and is returned as the untouched original.
+    return statements if len(statements) > 1 else [sql]
 
 
 class Connection:

@@ -158,6 +158,20 @@ def test_committing_forgets_the_savepoints(conn, mock_session):
         cur.execute("ROLLBACK")
 
 
+def test_a_redundant_begin_does_not_forget_the_savepoints(conn, mock_session):
+    """A BEGIN inside an open transaction block starts nothing -- Postgres warns
+    "there is already a transaction in progress" and carries on with the first, so
+    the savepoints taken in it are still live. Clearing them on every BEGIN made
+    the second one unreachable."""
+    with conn.cursor() as cur:
+        cur.execute("BEGIN")
+        cur.execute("SAVEPOINT sp1")
+        cur.execute("BEGIN")
+        cur.execute("ROLLBACK TO SAVEPOINT sp1")
+        cur.execute("RELEASE sp1")
+        cur.execute("ROLLBACK")
+
+
 def test_rollback_to_savepoint_clears_the_failed_transaction_state(conn, mock_session):
     """The whole point of a savepoint: the transaction survives the error. Before
     this, `ROLLBACK TO SAVEPOINT` matched the plain-ROLLBACK regex and reported the

@@ -230,6 +230,36 @@ def test_set_config_reports_too(conn, mock_session):
     assert conn.info.parameter_status("application_name") == "via_set_config"
 
 
+def test_a_parameterized_set_is_a_syntax_error(conn, mock_session):
+    """SET's value is part of the statement, not something Bind supplies, and
+    Postgres answers `SET x TO $1` with a syntax error. Accepted, it would report a
+    ParameterStatus whose value is the literal text "$1" -- and psycopg takes
+    client_encoding at its word, so every later row fails to decode and the
+    connection is unusable with nothing to blame it on."""
+    with conn.cursor() as cur:
+        with pytest.raises(psycopg.Error) as excinfo:
+            cur.execute("SET client_encoding TO %s", ("LATIN1",))
+        assert excinfo.value.sqlstate == "42601"
+    assert conn.info.parameter_status("client_encoding") == "UTF8"
+    # and the connection is still usable, which is the whole point
+    assert conn.execute("SHOW client_encoding").fetchone() == ("UTF8",)
+
+
+def test_session_state_statements_survive_a_multi_statement_batch(conn, mock_session):
+    """A batch is split by slicing the original text, not by re-rendering it through
+    sqlglot -- which writes `SAVEPOINT a` back as `SAVEPOINT AS a` and `DISCARD ALL`
+    as `DISCARD AS ALL`, so none of these were recognised in a batch."""
+    with conn.cursor() as cur:
+        cur.execute("SET search_path TO myschema; BEGIN; SAVEPOINT a; ROLLBACK TO SAVEPOINT a; RELEASE a; COMMIT")
+        cur.execute("SHOW search_path")
+        assert cur.fetchone() == ("myschema",)
+
+        cur.execute("DISCARD ALL; SHOW search_path")
+        assert cur.nextset()  # past DISCARD ALL's own (empty) result
+        assert cur.fetchone() == ('"$user", public',)
+    assert mock_session.queries == []
+
+
 def test_unreported_settings_get_no_parameter_status(conn, mock_session):
     with conn.cursor() as cur:
         cur.execute("SET extra_float_digits = 3")

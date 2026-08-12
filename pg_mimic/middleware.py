@@ -42,6 +42,7 @@ from .errors import (
     INVALID_SAVEPOINT_SPECIFICATION,
     INVALID_SQL_STATEMENT_NAME,
     NO_ACTIVE_SQL_TRANSACTION,
+    SYNTAX_ERROR,
     PgError,
 )
 from .results import ResultColumn
@@ -394,10 +395,16 @@ def _setting_name(raw: str) -> str:
 
 def _transaction_statement(connection: Connection, tag: str) -> Statement:
     def on_execute() -> None:
+        # A BEGIN inside an open transaction block does not start a second one:
+        # Postgres warns "there is already a transaction in progress" and carries
+        # on with the first. The savepoints already taken in it are still live, so
+        # this is the one case that must not clear them.
+        redundant_begin = tag == "BEGIN" and connection.tx_status == b"T"
         connection.tx_status = b"T" if tag == "BEGIN" else b"I"
-        # Every savepoint belongs to the transaction that opened it, so a new or
-        # finished transaction block starts with an empty stack either way.
-        connection.savepoints.clear()
+        if not redundant_begin:
+            # Every savepoint belongs to the transaction that opened it, so a new
+            # or finished transaction block starts with an empty stack either way.
+            connection.savepoints.clear()
 
     return StaticStatement(tag, None, [], on_execute)
 
@@ -477,6 +484,23 @@ def _deallocate_statement(connection: Connection, sql: str, raw_name: str) -> St
     return StaticStatement(sql, None, [], on_execute)
 
 
+_PLACEHOLDER_RE = re.compile(r"^\$\d+$")
+
+
+def _reject_placeholder_value(raw: str) -> None:
+    """Refuse `SET x TO $1`, as Postgres does.
+
+    SET takes no parameters -- its value is part of the statement, not something
+    Bind supplies -- so Postgres answers the Parse with a syntax error. Accepting
+    it here would report a ParameterStatus whose value is the literal text "$1",
+    and a client that reads the setting back acts on it: psycopg takes
+    client_encoding at its word and every later row fails to decode, with the
+    connection unusable and nothing to blame it on.
+    """
+    if _PLACEHOLDER_RE.match(raw.strip()):
+        raise PgError(SYNTAX_ERROR, f'syntax error at or near "{raw.strip()}"')
+
+
 def _set_value(raw: str) -> str | None:
     """The value a SET assigns, or None for the spellings that mean "back to the
     built-in default" (`SET x TO DEFAULT`, `SET TIME ZONE LOCAL`)."""
@@ -527,6 +551,7 @@ def _set_variants(connection: Connection, sql: str) -> Statement | None:
         name = _setting_name(match.group(1))
         if name in _PASSED_THROUGH_SETTINGS:
             return None
+        _reject_placeholder_value(match.group(2))
         return _assignment_statement(connection, sql, [(name, _set_value(match.group(2)))])
 
     match = _RESET_RE.match(sql)
