@@ -93,7 +93,12 @@ def test_reset_restores_the_default(conn, mock_session):
         assert cur.fetchone() == ('"$user", public',)
 
 
-def test_reset_all_clears_every_setting(conn, mock_session):
+def test_reset_all_restores_every_default(conn, mock_session):
+    """RESET ALL restores defaults; it does not blank the settings.
+
+    `extra_float_digits` asserted "" here until pg_mimic knew what its default was,
+    which was only ever a description of the gap -- real Postgres answers 1. See #32.
+    """
     with conn.cursor() as cur:
         cur.execute("SET search_path TO myschema")
         cur.execute("SET extra_float_digits = 3")
@@ -101,7 +106,7 @@ def test_reset_all_clears_every_setting(conn, mock_session):
         cur.execute("SHOW search_path")
         assert cur.fetchone() == ('"$user", public',)
         cur.execute("SHOW extra_float_digits")
-        assert cur.fetchone() == ("",)
+        assert cur.fetchone() == ("1",)
 
 
 def test_set_session_characteristics_sets_the_default_transaction_gucs(conn, mock_session):
@@ -460,3 +465,49 @@ def test_a_session_can_take_prepare_back(mock_session):
     finally:
         thread.stop()
     assert [sql for sql, _params in mock_session.queries] == ["PREPARE p AS SELECT 1", "EXECUTE p"]
+
+
+# --- the parameters a real server is born knowing (#32) -------------------------------
+
+
+def test_an_unmodelled_but_real_guc_reads_its_postgres_default(conn, mock_session):
+    """`SHOW work_mem` answered "" before pg_mimic carried the parameter list, then
+    42704 once unknown names started erroring. Neither is what a server says: the
+    value is a property of PostgreSQL, and pg_settings.json now supplies it."""
+    with conn.cursor() as cur:
+        for setting, expected in (("work_mem", "4MB"), ("shared_buffers", "128MB"), ("max_connections", "100")):
+            cur.execute(f"SHOW {setting}")
+            assert cur.fetchone() == (expected,), setting
+
+
+def test_a_name_that_is_not_a_parameter_still_raises(conn, mock_session):
+    """The catalog is what keeps the previous test from swallowing this one: a
+    parameter pg_mimic does not model and a parameter that does not exist are only
+    different questions if something knows the difference."""
+    import psycopg
+    import pytest
+
+    with conn.cursor() as cur:
+        with pytest.raises(psycopg.errors.UndefinedObject):
+            cur.execute("SHOW never.set_at_all")
+
+
+def test_setting_a_real_guc_then_resetting_returns_the_default_not_a_blank(conn, mock_session):
+    """The ordering rule in _setting_value: a catalogued default outranks the
+    known-but-blank state, because RESET means different things to the two kinds of
+    name. Measured against PostgreSQL 18 -- work_mem reads 4MB, app.x reads ""."""
+    with conn.cursor() as cur:
+        cur.execute("SET work_mem = '8MB'")
+        cur.execute("SHOW work_mem")
+        assert cur.fetchone() == ("8MB",)
+        cur.execute("RESET work_mem")
+        cur.execute("SHOW work_mem")
+        assert cur.fetchone() == ("4MB",)
+
+
+def test_current_setting_missing_ok_is_still_null_for_a_non_parameter(conn, mock_session):
+    """The row-level-security probe #32 exists for, still answered NULL -- the
+    catalog must not turn every unknown name into a value."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT current_setting('app.tenant', true)")
+        assert cur.fetchone() == (None,)

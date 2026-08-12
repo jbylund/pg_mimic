@@ -37,6 +37,7 @@ from sqlglot import exp
 from sqlglot.executor import execute as sqlglot_execute
 from sqlglot.tokens import TokenType
 
+from . import settings_catalog
 from .catalog import _oid_for_declared_type, information_schema_statement, pg_catalog_statement
 from .copy import copy_statement
 from .errors import (
@@ -851,18 +852,27 @@ def _setting_value(connection: Connection, key: str) -> str | None:
     semantics require.
 
     The three states are Postgres's, not an invention here. A name is *known* if
-    it is one pg_mimic models (`_DEFAULT_SETTINGS`, standing in for the ~400 GUCs
-    a real server is born knowing) or one this connection has written; a known
-    name with no current override reads as the empty string; an unknown one does
-    not read at all. What makes the middle state worth tracking is
+    it is one pg_mimic answers for itself (`_DEFAULT_SETTINGS`), one of the ~400
+    a real server is born knowing (`settings_catalog`), or one this connection has
+    written; a known name with no current override reads as its default, or as the
+    empty string if it never had one; an unknown one does not read at all. What
+    makes the middle state worth tracking is
     `current_setting('app.tenant', true) IS NULL`, the usual row-level-security
     probe for "was this ever set?" -- answering it with an empty string sends the
     caller down the wrong branch silently. See #32.
+
+    Order is Postgres's too. The catalog default outranks `known_settings` because
+    RESET means different things to the two kinds of name: `SET work_mem = '8MB';
+    RESET work_mem` reads back 4MB, its default, while the same pair on `app.x`
+    reads back empty. Only a name with no default falls through to the blank.
     """
     if key in connection.state.session_vars:
         return connection.state.session_vars[key]
     if key in _DEFAULT_SETTINGS:
         return _DEFAULT_SETTINGS[key](connection)
+    catalogued = settings_catalog.default(key)
+    if catalogued is not None:
+        return catalogued
     if key in connection.state.known_settings:
         return ""  # written once, since reset: PG keeps the name and blanks the value
     return None
