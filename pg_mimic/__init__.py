@@ -9,7 +9,11 @@ from importlib.metadata import version as _installed_version
 # serving path refers to it, so importing it eagerly would make every process that
 # embeds a server -- production ones included -- pay for a threading-based test
 # harness it never calls. `import pg_mimic.testing` in your tests instead.
-from . import catalog, middleware
+#
+# errors is exported for its SQLSTATE constants. PgError below is the exception a
+# session raises, but `PgError("42P01", ...)` says nothing at the call site --
+# `PgError(errors.UNDEFINED_TABLE, ...)` does, so the codes are public surface too.
+from . import catalog, errors, middleware
 from .arrays import ARRAY_OID
 from .auth import (
     AuthPlugin,
@@ -64,6 +68,7 @@ except PackageNotFoundError:
 __all__ = [
     "PgServer",
     "catalog",
+    "errors",
     "middleware",
     "BaseSession",
     "Session",

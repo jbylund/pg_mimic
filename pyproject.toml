@@ -4,7 +4,39 @@ version = "0.1.3"
 description = "A pure-Python, asyncio PostgreSQL server protocol emulator — implement your own Postgres-compatible backend in Python."
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+# PEP 639 form: an SPDX expression plus the file to ship. The older
+# `license = { text = "MIT" }` named a licence without shipping one, so neither
+# the sdist nor the wheel carried the text and GitHub couldn't detect it.
+license = "MIT"
+license-files = ["LICENSE"]
+keywords = [
+    "postgres",
+    "postgresql",
+    "wire-protocol",
+    "asyncio",
+    "database",
+    "emulator",
+    "mock",
+    "testing",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Database",
+    "Topic :: Database :: Database Engines/Servers",
+    "Framework :: AsyncIO",
+    "Typing :: Typed",
+    # No "License :: OSI Approved :: ..." classifier on purpose: PEP 639 retired
+    # those, and a build that declares a `license` expression *and* a licence
+    # classifier is rejected rather than merely warned about. The expression above
+    # is what PyPI renders now.
+]
 dependencies = [
     # 30.15.0 is where the executor stopped running a FULL OUTER JOIN as an inner
     # join; below it, TableSession would answer one with the wrong rows.
@@ -22,6 +54,12 @@ dev = [
     "ruff>=0.6.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/jbylund/pg_mimic"
+Repository = "https://github.com/jbylund/pg_mimic"
+Issues = "https://github.com/jbylund/pg_mimic/issues"
+Changelog = "https://github.com/jbylund/pg_mimic/blob/main/CHANGELOG.md"
+
 [project.entry-points.pytest11]
 # Makes pg_mimic's fixtures (pg_mimic_server, pg_mimic_dsn) available to any test
 # suite that has pg-mimic installed, with no conftest plumbing. Only this module
@@ -29,10 +67,17 @@ dev = [
 pg_mimic = "pg_mimic.pytest_plugin"
 
 [build-system]
-requires = ["hatchling"]
+# 1.27 is where hatchling learned PEP 639: below it, `license = "MIT"` plus
+# `license-files` is a metadata error rather than a licence.
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
+# No file selection beyond this: hatchling ships every non-ignored file under
+# pg_mimic/, which is how the zero-byte PEP 561 marker (pg_mimic/py.typed) gets
+# into the wheel. Narrowing this to *.py would strip the marker, and a stripped
+# marker fails silently -- the package still imports, it just reads as Any to a
+# consumer's mypy. tests/test_packaging.py fails instead.
 packages = ["pg_mimic"]
 
 [tool.pytest.ini_options]

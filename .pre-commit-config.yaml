@@ -1,0 +1,16 @@
+# The same two checks CI runs (.github/workflows/ruff.yml), moved to commit time
+# so a formatting-only red build stops happening. Optional -- CI is still the
+# thing that enforces them; this just tells you sooner.
+#
+#     pip install pre-commit && pre-commit install
+#
+# Keep `rev` in step with the ruff CI installs, which is whatever the `ruff`
+# constraint in pyproject.toml's dev extra resolves to. A rev behind CI formats
+# differently from CI, which is worse than not running it here at all.
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.2
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format
