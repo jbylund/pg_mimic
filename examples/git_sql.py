@@ -81,6 +81,13 @@ def _like_to_regex(pattern: str) -> str:
     return "".join({"%": ".*", "_": "."}.get(char) or _ere_escape(char) for char in pattern)
 
 
+def _utc_now() -> datetime:
+    """The one clock this module reads. Naive UTC, matching the timestamps the
+    collectors produce -- see _naive_utc -- so that the rows git returns, the rows
+    the WHERE keeps and `now()` itself cannot disagree about what time it is."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
 # --- the executor's function table ---------------------------------------------------
 
 # sqlglot.executor.env.ENV is a plain dict of the functions the executor can call.
@@ -90,15 +97,29 @@ def _like_to_regex(pattern: str) -> str:
 # Filling holes: an unfilled name raises, which _execute reports as a Postgres error.
 # date_trunc is deliberately absent -- the executor passes its unit as an env *function*
 # rather than a string. EXTRACT(year FROM committed_at) works natively.
-executor_env.ENV.setdefault("LENGTH", len)
-executor_env.ENV.setdefault("DPIPE", lambda a, b: f"{a}{b}")
+#
+# Every one of them is wrapped in null_if_any, the executor's own convention: SQL
+# says an operator on NULL is NULL, and a bare Python function raises instead --
+# `length(ext)` on an extensionless file, `path || ext` yielding ".gitignoreNone".
+executor_env.ENV.setdefault("LENGTH", executor_env.null_if_any(len))
+executor_env.ENV.setdefault("DPIPE", executor_env.null_if_any(lambda a, b: f"{a}{b}"))
 
 # Correcting a wrong answer: the shipped LIKE is `re.match(pattern.replace("_", ".")
 # .replace("%", ".*"), value)`, which neither escapes regex metacharacters (so
 # `LIKE '%(#1_)%'` matches text with no parenthesis at all, `(...)` having become a
 # capture group) nor anchors the end (`LIKE 'Bump'` matches 'Bump version').
-executor_env.ENV["LIKE"] = lambda value, pattern: re.fullmatch(_like_to_regex(pattern), value) is not None
-executor_env.ENV["ILIKE"] = lambda value, pattern: re.fullmatch(_like_to_regex(pattern), value, re.IGNORECASE) is not None
+executor_env.ENV["LIKE"] = executor_env.null_if_any(lambda value, pattern: re.fullmatch(_like_to_regex(pattern), value) is not None)
+executor_env.ENV["ILIKE"] = executor_env.null_if_any(
+    lambda value, pattern: re.fullmatch(_like_to_regex(pattern), value, re.IGNORECASE) is not None
+)
+
+# Correcting a second one: the executor's clock is datetime.now(), which is the
+# host's local time, while every timestamp collected below is naive UTC (see
+# _naive_utc) and so is the clock pushdown compares against. Left alone, `WHERE
+# committed_at > now() - interval '1 day'` is wrong by the host's UTC offset, and
+# `committed_at > now()` returns the last few hours of commits rather than none.
+executor_env.ENV["CURRENTTIMESTAMP"] = executor_env.ENV["CURRENTDATETIME"] = _utc_now
+executor_env.ENV["CURRENTDATE"] = lambda: _utc_now().date()
 
 
 def _interval_delta(count: str, unit: str) -> timedelta:
@@ -210,6 +231,17 @@ def _declared_oid(name: str | None) -> int | None:
 #     uncollected -- and a re-applied WHERE cannot recover a row never produced.
 #     --since-as-filter (git 2.37+) filters without the cutoff. --until is fine:
 #     traversal runs newest to oldest, so it only skips before it starts yielding.
+#   - a pathspec turns on history simplification, which prunes commits that did touch
+#     the path. --full-history in pushdown() turns it back off.
+#   - a timestamp with no offset is read in the host's local zone, not the UTC the
+#     columns are in. _time_args spells the offset out.
+#   - `NOT LIKE` is a Like node with negate=True, so a pattern read off it and pushed
+#     collects exactly the rows the query excludes. pushdown() skips negated nodes,
+#     and _unfold_negations rewrites them into a form the executor also gets right.
+#
+# The first two of those three went unnoticed for a while because the differential test
+# ran on a UTC-offset host against a merge-free repository, which is the one shape that
+# hides both.
 
 _IDENTITY_FLAGS = {
     "author_name": "--author",
@@ -231,14 +263,16 @@ def _constant_datetime(node: exp.Expression) -> datetime | None:
     Interval). Anything else declines, and the predicate just isn't pushed.
     """
     if isinstance(node, exp.CurrentTimestamp):
-        return datetime.now(timezone.utc).replace(tzinfo=None)
+        return _utc_now()
     if isinstance(node, exp.Cast):
         return _constant_datetime(node.this)
     if text := _literal(node):
-        try:
-            return datetime.fromisoformat(text).replace(tzinfo=None)
-        except ValueError:
+        parsed = _from_iso(text)
+        if parsed is None:
             return None
+        # Converted to UTC, not merely stripped of its offset: the columns are naive
+        # UTC, so `'2024-01-02T00:00:00+05:00'` is 2024-01-01T19:00 to them.
+        return parsed.astimezone(timezone.utc).replace(tzinfo=None) if parsed.tzinfo else parsed
     if isinstance(node, exp.Sub) and isinstance(node.expression, exp.Interval):
         base = _constant_datetime(node.this)
         if base is None:
@@ -249,6 +283,23 @@ def _constant_datetime(node: exp.Expression) -> datetime | None:
         except (AttributeError, TypeError, ValueError):
             return None
     return None
+
+
+def _unfold_negations(expr: exp.Expression) -> None:
+    """Rewrite `x NOT LIKE 'p'` into `NOT (x LIKE 'p')`, which the executor evaluates.
+
+    A third correction to the executor, and the one that could not go in ENV: sqlglot
+    parses NOT LIKE as a single Like node carrying negate=True, and the executor
+    compiles the node without ever reading that flag -- so `subject NOT LIKE 'Bump%'`
+    returns precisely the Bump commits. As a Not wrapping a plain Like it is
+    evaluated correctly, and _conjuncts stops seeing a Like it might push.
+    """
+    for node in expr.find_all(exp.Like, exp.ILike):
+        if not node.args.get("negate"):
+            continue
+        positive = node.copy()
+        positive.set("negate", None)
+        node.replace(exp.Not(this=exp.Paren(this=positive)))
 
 
 def _conjuncts(expr: exp.Expression) -> list[exp.Expression]:
@@ -305,10 +356,15 @@ def _time_args(node: exp.Expression) -> list[str]:
     when = _constant_datetime(node.expression)
     if when is None:
         return []
+    # Spelled with its offset. `when` is naive UTC, and git reads a timestamp that
+    # does not say otherwise in the host's own zone -- so west of UTC a bare one
+    # asks for the wrong window, and --since-as-filter stops collecting at commits
+    # that did qualify.
+    stamp = when.replace(tzinfo=timezone.utc).isoformat()
     if isinstance(node, (exp.GT, exp.GTE)):
-        return [f"--since-as-filter={when.isoformat()}"]  # never plain --since; see above
+        return [f"--since-as-filter={stamp}"]  # never plain --since; see above
     if isinstance(node, (exp.LT, exp.LTE)):
-        return [f"--until={when.isoformat()}"]
+        return [f"--until={stamp}"]
     return []
 
 
@@ -339,6 +395,12 @@ def pushdown(expr: exp.Expression, table: str, alias: str) -> list[str]:
         # the exact unsoundness the re-applied WHERE cannot repair.
         if not isinstance(node, _COMPARISONS) or not isinstance(node.this, exp.Column):
             continue
+        # `x NOT LIKE 'p'` is one Like node carrying negate=True, not a Not wrapping
+        # a Like -- so a pattern taken off it and pushed as --grep collects exactly
+        # the commits the query asked to exclude. Nothing here can push a negation
+        # (git's flags are all positive), so leave it to the WHERE.
+        if node.args.get("negate"):
+            continue
         if not _owned_by(node, alias):
             continue
         column = node.this.name
@@ -348,7 +410,13 @@ def pushdown(expr: exp.Expression, table: str, alias: str) -> list[str]:
             args += _time_args(node)
         elif column == "path" and table == "commit_files":
             paths += _path_args(node)
-    return args + (["--", *paths] if paths else [])
+    if not paths:
+        return args
+    # --full-history because a pathspec otherwise turns on git's history
+    # simplification, which prunes a commit that did touch the path when a merge
+    # makes it look redundant. Those commits are rows, and the WHERE cannot put
+    # back what git never listed.
+    return args + ["--full-history", "--", *paths]
 
 
 # --- collectors ----------------------------------------------------------------------
@@ -369,11 +437,22 @@ def _git(repo: str, *args: str) -> str:
     return result.stdout
 
 
-def _naive_utc(stamp: str) -> datetime | None:
+def _from_iso(stamp: str) -> datetime | None:
+    """ISO 8601 as datetime.fromisoformat wants it.
+
+    git's %cI/%aI spell UTC as a trailing `Z`, which fromisoformat only learned to
+    read in 3.11 -- on 3.10 every timestamp in a UTC repo parsed to None, so every
+    committed_at came back NULL.
+    """
     try:
-        return datetime.fromisoformat(stamp).astimezone(timezone.utc).replace(tzinfo=None)
+        return datetime.fromisoformat(re.sub(r"[Zz]\Z", "+00:00", stamp))
     except ValueError:
         return None
+
+
+def _naive_utc(stamp: str) -> datetime | None:
+    parsed = _from_iso(stamp)
+    return None if parsed is None else parsed.astimezone(timezone.utc).replace(tzinfo=None)
 
 
 def parse_log(repo: str, filters: list[str]) -> list[tuple[list[str], list[tuple]]]:
@@ -567,6 +646,7 @@ class GitSession(Session):
         expr = sqlglot.parse_one(sql, dialect="postgres")
         if isinstance(expr, exp.Select):
             expr = qualify(expr, schema=SCHEMA, dialect="postgres")
+            _unfold_negations(expr)
             _substitute_params(expr, params)
         return expr
 
@@ -580,7 +660,12 @@ class GitSession(Session):
             raise PgError(FEATURE_NOT_SUPPORTED, f"this query is beyond the demo's executor: {error}") from error
 
     def _tables(self, expr: exp.Select) -> dict[str, list[dict]]:
-        nodes = list(expr.find_all(exp.Table))
+        # A reference to a CTE is an exp.Table like any other, and the executor
+        # supplies its rows itself -- collecting it here is neither possible nor
+        # needed, and reporting it as unknown made the docstring's promise of CTEs
+        # a lie.
+        cte_names = {cte.alias_or_name for cte in expr.find_all(exp.CTE)}
+        nodes = [node for node in expr.find_all(exp.Table) if node.name not in cte_names]
         uses = Counter(node.name for node in nodes)
         tables: dict[str, list[dict]] = {}
         for node in nodes:
