@@ -237,3 +237,105 @@ def test_nested_transaction_recovers_from_a_server_error(conn, mock_session):
         assert conn.execute("SELECT x FROM t").fetchall() == [(1,)]
 
     assert conn.info.transaction_status == TransactionStatus.IDLE
+
+
+# --- settings are transactional ------------------------------------------------------
+#
+# Every expectation below was checked against a real PostgreSQL 18, including the
+# two that are not obvious: a SET LOCAL followed by a plain SET reads back the
+# *session* value (so this is not a local-shadows-session lookup), and a SET made
+# inside a savepoint is undone by ROLLBACK TO just as a local one is.
+
+
+def _search_path(cur) -> str:
+    cur.execute("SHOW search_path")
+    return cur.fetchone()[0]
+
+
+@pytest.fixture
+def guc_conn(dsn, mock_session):
+    # prepare_threshold=None: a prepared SHOW answers with the value it had when it
+    # was parsed (#63), which would mask everything this file is checking.
+    with psycopg.Connection.connect(dsn, autocommit=True, prepare_threshold=None) as conn:
+        conn.execute("SET search_path TO base")
+        yield conn
+
+
+_GUC_TRANSACTION_CASES = {
+    "set_rolled_back": {"steps": ["BEGIN", "SET search_path TO x", "ROLLBACK"], "expected": "base"},
+    "set_committed": {"steps": ["BEGIN", "SET search_path TO x", "COMMIT"], "expected": "x"},
+    "local_reverts_at_commit": {"steps": ["BEGIN", "SET LOCAL search_path TO x", "COMMIT"], "expected": "base"},
+    "local_reverts_at_rollback": {"steps": ["BEGIN", "SET LOCAL search_path TO x", "ROLLBACK"], "expected": "base"},
+    # The case that rules out "local shadows session": the later SET wins, and survives.
+    "local_then_session": {
+        "steps": ["BEGIN", "SET LOCAL search_path TO l", "SET search_path TO s", "COMMIT"],
+        "expected": "s",
+    },
+    "session_then_local": {
+        "steps": ["BEGIN", "SET search_path TO s", "SET LOCAL search_path TO l", "COMMIT"],
+        "expected": "s",
+    },
+    "set_inside_a_savepoint_is_rolled_back": {
+        "steps": ["BEGIN", "SAVEPOINT sp", "SET search_path TO x", "ROLLBACK TO sp", "COMMIT"],
+        "expected": "base",
+    },
+    "local_reverts_to_the_savepoints_value": {
+        "steps": ["BEGIN", "SET LOCAL search_path TO a", "SAVEPOINT sp", "SET LOCAL search_path TO b", "ROLLBACK TO sp"],
+        "expected": "a",
+    },
+    "release_keeps_what_the_scope_set": {
+        "steps": ["BEGIN", "SAVEPOINT sp", "SET search_path TO x", "RELEASE sp", "COMMIT"],
+        "expected": "x",
+    },
+    "nested_savepoints": {
+        "steps": [
+            "BEGIN",
+            "SET search_path TO one",
+            "SAVEPOINT a",
+            "SET search_path TO two",
+            "SAVEPOINT b",
+            "SET search_path TO three",
+            "ROLLBACK TO a",
+            "COMMIT",
+        ],
+        "expected": "one",
+    },
+    # Postgres warns "SET LOCAL can only be used in transaction blocks" and does
+    # nothing. We have no NoticeResponse to warn with yet (#24); the nothing is here.
+    "local_outside_a_transaction": {"steps": ["SET LOCAL search_path TO nope"], "expected": "base"},
+}
+
+
+@pytest.mark.parametrize(
+    argnames=sorted(next(iter(_GUC_TRANSACTION_CASES.values()))),
+    argvalues=[[v for k, v in sorted(_GUC_TRANSACTION_CASES[name].items())] for name in sorted(_GUC_TRANSACTION_CASES)],
+    ids=sorted(_GUC_TRANSACTION_CASES),
+)
+def test_settings_follow_the_transaction(guc_conn, expected, steps):
+    with guc_conn.cursor() as cur:
+        for step in steps:
+            cur.execute(step)
+        assert _search_path(cur) == expected
+
+
+def test_a_rolled_back_setting_is_reported_to_the_client(dsn, mock_session):
+    """A reported GUC that reverts owes the client a ParameterStatus just as one
+    that changes does -- otherwise psycopg goes on decoding with the value the
+    rolled-back transaction set."""
+    with psycopg.Connection.connect(dsn, autocommit=True, prepare_threshold=None) as conn:
+        assert conn.info.parameter_status("client_encoding") == "UTF8"
+        conn.execute("BEGIN")
+        conn.execute("SET client_encoding TO 'LATIN1'")
+        assert conn.info.parameter_status("client_encoding") == "LATIN1"
+        conn.execute("ROLLBACK")
+        assert conn.info.parameter_status("client_encoding") == "UTF8"
+
+
+def test_prepared_statements_are_not_transactional(guc_conn):
+    """Settings are; prepared statements are not. Verified against PostgreSQL 18,
+    where a PREPARE inside a rolled-back transaction survives it."""
+    with guc_conn.cursor() as cur:
+        cur.execute("BEGIN")
+        cur.execute("PREPARE survivor AS SELECT 1")
+        cur.execute("ROLLBACK")
+        cur.execute("DEALLOCATE survivor")  # still there: no error
