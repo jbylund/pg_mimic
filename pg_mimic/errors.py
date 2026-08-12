@@ -37,3 +37,18 @@ FEATURE_NOT_SUPPORTED = "0A000"
 PROTOCOL_VIOLATION = "08P01"
 QUERY_CANCELED = "57014"
 INTERNAL_ERROR = "XX000"
+
+
+class ProtocolViolation(PgError):
+    """A frame that the framing layer itself refused -- a length that can't be
+    true, a protocol version we don't speak.
+
+    Its own class because it is not recoverable the way a failed statement is.
+    An ordinary PgError leaves the connection in a known place (the client sends
+    Sync and carries on); a frame we would not read leaves the byte stream at an
+    offset neither side agrees on, so there is nothing to carry on with. The
+    connection gets a FATAL report and is dropped.
+    """
+
+    def __init__(self, message: str, sqlstate: str = PROTOCOL_VIOLATION):
+        super().__init__(sqlstate, message)
