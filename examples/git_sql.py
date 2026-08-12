@@ -92,28 +92,25 @@ def _utc_now() -> datetime:
 
 # sqlglot.executor.env.ENV is a plain dict of the functions the executor can call.
 # Editing it is process-global (pg_mimic's catalog_rewrite.py already does, for
-# REGEXPLIKE), and the three edits below are not the same kind of change.
+# REGEXPLIKE), and the two edits below are not the same kind of change.
 #
-# Filling holes: an unfilled name raises, which _execute reports as a Postgres error.
+# Filling a hole: an unfilled name raises, which _execute reports as a Postgres error.
 # date_trunc is deliberately absent -- the executor passes its unit as an env *function*
 # rather than a string. EXTRACT(year FROM committed_at) works natively.
 #
-# Every one of them is wrapped in null_if_any, the executor's own convention: SQL
-# says an operator on NULL is NULL, and a bare Python function raises instead --
-# `length(ext)` on an extensionless file, `path || ext` yielding ".gitignoreNone".
-executor_env.ENV.setdefault("LENGTH", executor_env.null_if_any(len))
+# It is wrapped in null_if_any, the executor's own convention: SQL says an operator on
+# NULL is NULL, and a bare Python function raises instead -- `path || ext` on an
+# extensionless file would yield ".gitignoreNone".
+#
+# Note this is not the shape the upstream fix takes. tobymao/sqlglot#8146 adds no DPIPE
+# at all: it routes `||` in the generator to the CONCAT / SAFECONCAT / ARRAYCONCAT that
+# already exist. So this line does not anticipate that fix, it goes inert the moment it
+# lands -- nothing will emit DPIPE to look up. Nothing changes here when it does, since
+# SAFECONCAT coerces and nulls identically for the two text operands this sees.
+# test_length_and_concatenation_exist is the tripwire that will say so; #72 tracks it.
 executor_env.ENV.setdefault("DPIPE", executor_env.null_if_any(lambda a, b: f"{a}{b}"))
 
-# Correcting a wrong answer: the shipped LIKE is `re.match(pattern.replace("_", ".")
-# .replace("%", ".*"), value)`, which neither escapes regex metacharacters (so
-# `LIKE '%(#1_)%'` matches text with no parenthesis at all, `(...)` having become a
-# capture group) nor anchors the end (`LIKE 'Bump'` matches 'Bump version').
-executor_env.ENV["LIKE"] = executor_env.null_if_any(lambda value, pattern: re.fullmatch(_like_to_regex(pattern), value) is not None)
-executor_env.ENV["ILIKE"] = executor_env.null_if_any(
-    lambda value, pattern: re.fullmatch(_like_to_regex(pattern), value, re.IGNORECASE) is not None
-)
-
-# Correcting a second one: the executor's clock is datetime.now(), which is the
+# Correcting a wrong answer: the executor's clock is datetime.now(), which is the
 # host's local time, while every timestamp collected below is naive UTC (see
 # _naive_utc) and so is the clock pushdown compares against. Left alone, `WHERE
 # committed_at > now() - interval '1 day'` is wrong by the host's UTC offset, and
@@ -236,8 +233,7 @@ def _declared_oid(name: str | None) -> int | None:
 #   - a timestamp with no offset is read in the host's local zone, not the UTC the
 #     columns are in. _time_args spells the offset out.
 #   - `NOT LIKE` is a Like node with negate=True, so a pattern read off it and pushed
-#     collects exactly the rows the query excludes. pushdown() skips negated nodes,
-#     and _unfold_negations rewrites them into a form the executor also gets right.
+#     collects exactly the rows the query excludes. pushdown() skips negated nodes.
 #
 # The first two of those three went unnoticed for a while because the differential test
 # ran on a UTC-offset host against a merge-free repository, which is the one shape that
@@ -283,23 +279,6 @@ def _constant_datetime(node: exp.Expression) -> datetime | None:
         except (AttributeError, TypeError, ValueError):
             return None
     return None
-
-
-def _unfold_negations(expr: exp.Expression) -> None:
-    """Rewrite `x NOT LIKE 'p'` into `NOT (x LIKE 'p')`, which the executor evaluates.
-
-    A third correction to the executor, and the one that could not go in ENV: sqlglot
-    parses NOT LIKE as a single Like node carrying negate=True, and the executor
-    compiles the node without ever reading that flag -- so `subject NOT LIKE 'Bump%'`
-    returns precisely the Bump commits. As a Not wrapping a plain Like it is
-    evaluated correctly, and _conjuncts stops seeing a Like it might push.
-    """
-    for node in expr.find_all(exp.Like, exp.ILike):
-        if not node.args.get("negate"):
-            continue
-        positive = node.copy()
-        positive.set("negate", None)
-        node.replace(exp.Not(this=exp.Paren(this=positive)))
 
 
 def _conjuncts(expr: exp.Expression) -> list[exp.Expression]:
@@ -646,7 +625,6 @@ class GitSession(Session):
         expr = sqlglot.parse_one(sql, dialect="postgres")
         if isinstance(expr, exp.Select):
             expr = qualify(expr, schema=SCHEMA, dialect="postgres")
-            _unfold_negations(expr)
             _substitute_params(expr, params)
         return expr
 
