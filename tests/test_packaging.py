@@ -15,6 +15,24 @@ from importlib.metadata import metadata
 import pg_mimic
 
 
+def _installed_metadata():
+    """The installed distribution's metadata, with a readable failure when it is stale.
+
+    These declarations are recorded at install time, not read from pyproject.toml at
+    test time, so an editable install predating a metadata change still reports the
+    old values. Left alone that surfaces as `TypeError: 'NoneType' object is not
+    iterable` from a missing Project-URL, which says nothing about the cause.
+    """
+    m = metadata("pg-mimic")
+    if m.get("License-Expression") is None and m.get_all("Project-URL") is None:
+        raise AssertionError(
+            "the installed pg-mimic metadata predates these declarations. Reinstall "
+            "(`uv pip install -e '.[dev]'`) and run again -- metadata is recorded when the "
+            "distribution is installed, so editing pyproject.toml alone does not refresh it."
+        )
+    return m
+
+
 def test_py_typed_marker_is_installed():
     marker = pathlib.Path(pg_mimic.__file__).resolve().parent / "py.typed"
     assert marker.is_file(), (
@@ -24,7 +42,7 @@ def test_py_typed_marker_is_installed():
 
 
 def test_license_is_declared_and_shipped():
-    m = metadata("pg-mimic")
+    m = _installed_metadata()
     assert m.get_all("License-Expression") == ["MIT"]
     assert m.get_all("License-File") == ["LICENSE"], (
         "the built distribution declares no licence file. `license-files` in pyproject.toml is what "
@@ -33,6 +51,6 @@ def test_license_is_declared_and_shipped():
 
 
 def test_project_urls_point_at_the_repository():
-    urls = dict(entry.split(", ", 1) for entry in metadata("pg-mimic").get_all("Project-URL"))
+    urls = dict(entry.split(", ", 1) for entry in _installed_metadata().get_all("Project-URL"))
     assert set(urls) >= {"Homepage", "Repository", "Issues"}
     assert all(url.startswith("https://github.com/jbylund/pg_mimic") for url in urls.values()), urls
