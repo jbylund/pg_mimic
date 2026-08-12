@@ -146,3 +146,18 @@ def test_typarray_points_at_the_real_array_type(conn, mock_session):
     with conn.cursor() as cur:
         cur.execute("SELECT typarray FROM pg_catalog.pg_type WHERE typname = 'text'")
         assert cur.fetchone() == (ARRAY_OID[TEXT],)
+
+
+def test_backslash_l_lists_the_connected_database(conn, mock_session):
+    """pg_database exists with one row -- the database from the startup packet --
+    rather than being absent, which the executor reports as an unhelpful
+    'NoneType' object has no attribute 'range_reader'."""
+
+    async def schema():
+        return {"users": {"id": "integer"}}
+
+    mock_session.schema = schema
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT datname FROM pg_catalog.pg_database")
+        assert cur.fetchall() == [("test",)]

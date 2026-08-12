@@ -77,6 +77,7 @@ PG_CATALOG_SCHEMA = {
             "connoinherit": "BOOLEAN",
             "conislocal": "BOOLEAN",
             "coninhcount": "INT",
+            "conkey": "TEXT",
         },
         "pg_index": {
             "indexrelid": "INT",
@@ -108,9 +109,33 @@ PG_CATALOG_SCHEMA = {
             "polwithcheck": "TEXT",
             "polroles": "TEXT",
         },
-        "pg_roles": {"oid": "INT", "rolname": "TEXT", "rolsuper": "BOOLEAN", "rolinherit": "BOOLEAN", "rolcreaterole": "BOOLEAN"},
+        "pg_roles": {
+            "oid": "INT",
+            "rolname": "TEXT",
+            "rolsuper": "BOOLEAN",
+            "rolinherit": "BOOLEAN",
+            "rolcreaterole": "BOOLEAN",
+            "rolcreatedb": "BOOLEAN",
+        },
         "pg_publication": {"oid": "INT", "pubname": "TEXT", "pubowner": "INT", "puballtables": "BOOLEAN"},
         "pg_publication_rel": {"oid": "INT", "prpubid": "INT", "prrelid": "INT", "prqual": "TEXT", "prattrs": "TEXT"},
+        "pg_publication_namespace": {"oid": "INT", "pnpubid": "INT", "pnnspid": "INT"},
+        # One row, for the database this connection is on -- filled in from the
+        # startup packet rather than left empty, because \\l should list it.
+        "pg_database": {
+            "oid": "INT",
+            "datname": "TEXT",
+            "datdba": "INT",
+            "datcollate": "TEXT",
+            "datctype": "TEXT",
+            "datlocprovider": "TEXT",
+            "daticulocale": "TEXT",
+            "daticurules": "TEXT",
+            "datacl": "TEXT",
+            "datallowconn": "BOOLEAN",
+            "datconnlimit": "INT",
+            "dattablespace": "INT",
+        },
         "pg_statistic_ext": {
             "oid": "INT",
             "stxname": "TEXT",

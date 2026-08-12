@@ -180,7 +180,7 @@ def _typname_for(rows: list[dict], oid: int) -> str:
     return "unknown"
 
 
-def _build_pg_catalog(user_schema: dict) -> tuple[dict, dict]:
+def _build_pg_catalog(user_schema: dict, database: str = "postgres") -> tuple[dict, dict]:
     """The slice of pg_catalog psql's \\d family reads, from Session.schema()."""
     class_rows = []
     attribute_rows = []
@@ -254,9 +254,35 @@ def _build_pg_catalog(user_schema: dict) -> tuple[dict, dict]:
             "pg_statistic_ext": [],
             # No privilege model here at all, so claiming superuser would be the more
             # flattering lie. False is the safer one.
-            "pg_roles": [{"oid": _OWNER_OID, "rolname": "postgres", "rolsuper": False, "rolinherit": True, "rolcreaterole": False}],
+            "pg_roles": [
+                {
+                    "oid": _OWNER_OID,
+                    "rolname": "postgres",
+                    "rolsuper": False,
+                    "rolinherit": True,
+                    "rolcreaterole": False,
+                    "rolcreatedb": False,
+                }
+            ],
             "pg_publication": [],
             "pg_publication_rel": [],
+            "pg_publication_namespace": [],
+            "pg_database": [
+                {
+                    "oid": 16385,
+                    "datname": database,
+                    "datdba": _OWNER_OID,
+                    "datcollate": "C",
+                    "datctype": "C",
+                    "datlocprovider": "c",
+                    "daticulocale": None,
+                    "daticurules": None,
+                    "datacl": None,
+                    "datallowconn": True,
+                    "datconnlimit": -1,
+                    "dattablespace": 0,
+                }
+            ],
         }
     }
     return PG_CATALOG_SCHEMA, tables
@@ -349,5 +375,5 @@ async def information_schema_statement(connection: Connection, expr: exp.Select)
 
 
 async def pg_catalog_statement(connection: Connection, expr: exp.Select) -> Statement | None:
-    schema, tables = _build_pg_catalog(await _user_schema(connection))
+    schema, tables = _build_pg_catalog(await _user_schema(connection), connection.state.database)
     return _as_statement(rewrite_for_executor(connection, expr), schema, tables, strict=False)
