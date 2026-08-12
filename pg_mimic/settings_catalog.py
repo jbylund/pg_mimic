@@ -25,9 +25,14 @@ from typing import Any
 
 _DOCUMENT: dict[str, Any] = json.loads(files(__package__).joinpath("pg_settings.json").read_text(encoding="utf-8"))
 
-#: name -> {"default": str, "vartype": str, "context": str}. Keys are lower-cased,
-#: which is how Postgres compares parameter names.
-SETTINGS: dict[str, dict[str, str]] = _DOCUMENT["settings"]
+#: name -> entry. Keys are lower-cased, which is how Postgres compares parameter names.
+#:
+#: `default`, `vartype` and `context` are on every entry. The rest -- `unit`,
+#: `enumvals`, `min_val`, `max_val`, `short_desc` -- describe what a *value* may be,
+#: and are omitted where the parameter does not constrain it: 320 of the 398 have no
+#: unit and 357 no enum, so carrying the empties would half again the file to say
+#: nothing. An absent key means "no such constraint"; read them with `.get()`.
+SETTINGS: dict[str, dict[str, Any]] = _DOCUMENT["settings"]
 
 #: The server the file was generated from, for the "which release is this" question.
 GENERATED_FROM: str = _DOCUMENT["_generated_from"]
