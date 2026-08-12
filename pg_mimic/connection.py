@@ -23,6 +23,7 @@ from .errors import (
     PROTOCOL_VIOLATION,
     QUERY_CANCELED,
     PgError,
+    ProtocolViolation,
 )
 from .messages import TARGET_STATEMENT, FieldSpec, ParsedBind, ParsedParse
 from .middleware import allowed_in_failed_transaction
@@ -110,6 +111,7 @@ class Connection:
         pid: int,
         secret: int,
         startup_params: dict[str, str],
+        protocol_version: int = messages.PROTOCOL_VERSION,
     ):
         self.stream = stream
         self.session = session
@@ -117,6 +119,11 @@ class Connection:
         self.pid = pid
         self.secret = secret
         self.startup_params = startup_params
+        # What the client asked for, not what it got: the server answers 3.0
+        # regardless (having said so with NegotiateProtocolVersion), and this is
+        # kept because "which version did this client want" is the first
+        # question to ask of a client behaving unlike the last one.
+        self.protocol_version = protocol_version
         self.username = startup_params.get("user", "")
         self.database = startup_params.get("database", self.username)
 
@@ -176,6 +183,14 @@ class Connection:
             await self._command_loop()
         except ConnectionClosed:
             pass
+        except ProtocolViolation as e:
+            # Raised by the framing layer, from the read at the top of the
+            # command loop rather than from anything a statement did -- so
+            # _dispatch's error handling never saw it, and could not have: it
+            # answers errors and keeps the connection, and there is no keeping a
+            # connection whose byte stream we have stopped being able to follow.
+            self.stream.write(messages.make_fatal_error(e.sqlstate, e.message))
+            await self.stream.drain_quietly()
         finally:
             try:
                 await self.session.close()
@@ -189,16 +204,7 @@ class Connection:
         plugin: AuthPlugin = self.server.auth_plugin_factory(self.username)
         ok = await plugin.authenticate(self.stream, self.username, self.server.identity_provider)
         if not ok:
-            self.stream.write(
-                messages.make_error_response(
-                    {
-                        "S": "FATAL",
-                        "V": "FATAL",
-                        "C": "28P01",
-                        "M": f'password authentication failed for user "{self.username}"',
-                    }
-                )
-            )
+            self.stream.write(messages.make_fatal_error("28P01", f'password authentication failed for user "{self.username}"'))
             await self.stream.drain()
             return False
         self.stream.write(messages.make_authentication_ok())
@@ -275,6 +281,11 @@ class Connection:
                 await self.stream.drain()
             else:
                 raise PgError("08P01", f"unsupported message type {tag!r}")
+        except ProtocolViolation:
+            # A bad frame read mid-copy: framing, not a statement, so it does not
+            # get the ErrorResponse-and-carry-on treatment below. run() reports it
+            # and hangs up.
+            raise
         except PgError as e:
             fields = {"S": "ERROR", "V": "ERROR", "C": e.sqlstate, "M": e.message}
             fields.update(e.fields)

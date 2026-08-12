@@ -8,14 +8,16 @@ import asyncio
 import inspect
 import os
 import struct
+from dataclasses import dataclass
 from types import TracebackType
 from typing import Awaitable, Callable
 
 from . import messages
 from .auth import AuthPlugin, IdentityProvider, SimpleIdentityProvider, TrustAuthPlugin
 from .connection import Connection
+from .errors import FEATURE_NOT_SUPPORTED, PgError, ProtocolViolation
 from .session import BaseSession
-from .stream import ConnectionClosed, PgStream
+from .stream import DEFAULT_MAX_MESSAGE_SIZE, ConnectionClosed, PgStream
 
 SessionFactory = Callable[[], BaseSession | Awaitable[BaseSession]]
 AuthPluginFactory = Callable[[str], AuthPlugin]
@@ -31,6 +33,16 @@ DEFAULT_PARAMETER_STATUS = {
 }
 
 
+@dataclass
+class StartupRequest:
+    """What a client asked for in its StartupMessage: the protocol version, and
+    the parameters (minus any `_pq_.` extension requests, which are answered by
+    NegotiateProtocolVersion rather than passed on as settings)."""
+
+    protocol_version: int
+    params: dict[str, str]
+
+
 class PgServer:
     def __init__(
         self,
@@ -38,10 +50,12 @@ class PgServer:
         auth_plugin_factory: AuthPluginFactory | None = None,
         identity_provider: IdentityProvider | None = None,
         server_version: str = "16.0 (pg_mimic)",
+        max_message_size: int = DEFAULT_MAX_MESSAGE_SIZE,
     ):
         self.session_factory = session_factory
         self.auth_plugin_factory = auth_plugin_factory or (lambda username: TrustAuthPlugin())
         self.identity_provider = identity_provider or SimpleIdentityProvider()
+        self.max_message_size = max_message_size
         self.parameter_status = {**DEFAULT_PARAMETER_STATUS, "server_version": server_version}
 
         self._server: asyncio.base_events.Server | None = None
@@ -180,12 +194,20 @@ class PgServer:
                 pass
 
     async def _handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        stream = PgStream(reader, writer)
+        stream = PgStream(reader, writer, max_message_size=self.max_message_size)
         try:
-            startup_params = await self._negotiate_startup(stream)
+            startup = await self._negotiate_startup(stream)
         except ConnectionClosed:
             return
-        if startup_params is None:
+        except PgError as e:
+            # A startup packet we won't read (see PgStream._check_length) or a
+            # protocol version we don't speak. There is no Connection yet to
+            # report it, so it is reported here, and the caller's finally drops
+            # the socket -- which is what a FATAL means.
+            stream.write(messages.make_fatal_error(e.sqlstate, e.message))
+            await stream.drain_quietly()
+            return
+        if startup is None:
             return  # was a CancelRequest, already handled
 
         session = self.session_factory()
@@ -194,14 +216,14 @@ class PgServer:
 
         pid = self._allocate_pid()
         secret = struct.unpack("!i", os.urandom(4))[0]
-        connection = Connection(stream, session, self, pid, secret, startup_params)
+        connection = Connection(stream, session, self, pid, secret, startup.params, protocol_version=startup.protocol_version)
         self._connections[pid] = connection
         try:
             await connection.run()
         finally:
             self._connections.pop(pid, None)
 
-    async def _negotiate_startup(self, stream: PgStream) -> dict[str, str] | None:
+    async def _negotiate_startup(self, stream: PgStream) -> StartupRequest | None:
         code, payload = await stream.read_startup_packet()
 
         # No TLS support in v1 -- always decline, and let the client fall back
@@ -218,4 +240,31 @@ class PgServer:
             await stream.close()
             return None
 
-        return messages.parse_startup_message(payload)
+        major, minor = code >> 16, code & 0xFFFF
+        if major != messages.PROTOCOL_MAJOR:
+            # Postgres's own wording and SQLSTATE for this. A major version is
+            # not negotiable -- 2.0 framed its messages differently, and
+            # whatever a 4.0 does we have never seen -- so the client is told
+            # rather than left to fail somewhere further in, where the symptom
+            # would be a parse error against bytes we misread.
+            raise ProtocolViolation(
+                f"unsupported frontend protocol {major}.{minor}: server supports "
+                f"{messages.PROTOCOL_MAJOR}.0 to {messages.PROTOCOL_MAJOR}.{messages.PROTOCOL_MINOR}",
+                sqlstate=FEATURE_NOT_SUPPORTED,
+            )
+
+        params = messages.parse_startup_message(payload)
+        extensions = [name for name in params if name.startswith(messages.PROTOCOL_EXTENSION_PREFIX)]
+        for name in extensions:
+            # Not settings, and not ours: a session must not see `_pq_.foo` as
+            # something it was asked to apply. Reported back instead, below.
+            del params[name]
+        if minor > messages.PROTOCOL_MINOR or extensions:
+            # A minor version above ours means the client has to be told what it
+            # is actually getting, or it goes on believing 3.2 features are
+            # available. Saying so is the whole point of the message: libpq 18
+            # asks for 3.2 under `max_protocol_version=latest` (3.0 remains its
+            # default) and downgrades itself on this reply.
+            stream.write(messages.make_negotiate_protocol_version(messages.PROTOCOL_VERSION, extensions))
+            await stream.drain()
+        return StartupRequest(protocol_version=code, params=params)

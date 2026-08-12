@@ -43,6 +43,7 @@ COPY_OUT_RESPONSE = b"H"
 DATA_ROW = b"D"
 EMPTY_QUERY_RESPONSE = b"I"
 ERROR_RESPONSE = b"E"
+NEGOTIATE_PROTOCOL_VERSION = b"v"
 NO_DATA = b"n"
 NOTICE_RESPONSE = b"N"
 PARAMETER_DESCRIPTION = b"t"
@@ -57,6 +58,20 @@ ROW_DESCRIPTION = b"T"
 SSL_REQUEST_CODE = 80877103
 CANCEL_REQUEST_CODE = 80877102
 GSSENC_REQUEST_CODE = 80877104
+
+# The protocol version pg_mimic speaks, in the wire's own encoding: major in the
+# high 16 bits, minor in the low ones. 3.0 has been the only version for two
+# decades; 3.2 arrived with PostgreSQL 18, and libpq 18 asks for it. A minor
+# version is by definition negotiable -- see NegotiateProtocolVersion below --
+# where a major one is not. (libpq 18 still requests 3.0 unless asked for more
+# with max_protocol_version.)
+PROTOCOL_MAJOR = 3
+PROTOCOL_MINOR = 0
+PROTOCOL_VERSION = (PROTOCOL_MAJOR << 16) | PROTOCOL_MINOR
+
+# Startup parameters under this prefix are protocol extension requests rather
+# than settings, and are the other thing NegotiateProtocolVersion reports on.
+PROTOCOL_EXTENSION_PREFIX = "_pq_."
 
 # Statement/portal target kinds used by Describe and Close
 TARGET_STATEMENT = ord("S")
@@ -171,6 +186,29 @@ def make_error_response(fields: dict[str, str]) -> bytes:
 
 def make_notice_response(fields: dict[str, str]) -> bytes:
     return _fields_message(NOTICE_RESPONSE, fields)
+
+
+def make_fatal_error(sqlstate: str, message: str) -> bytes:
+    """An ErrorResponse at FATAL severity: the connection is being dropped, not
+    just the current command failed. Clients treat the two differently -- psycopg
+    marks the connection unusable on a FATAL rather than expecting a
+    ReadyForQuery it will never get."""
+    return make_error_response({"S": "FATAL", "V": "FATAL", "C": sqlstate, "M": message})
+
+
+def make_negotiate_protocol_version(version: int, unrecognized_options: list[str]) -> bytes:
+    """Tell the client which protocol version it is actually getting, and which
+    of its `_pq_.` extension requests went unrecognised.
+
+    Sent before authentication, and only when there is something to say: a client
+    that asked for exactly what we speak gets no such message. The version field
+    carries the full major/minor word, not the minor alone -- which is what libpq
+    compares against its own, whatever the message-format table's wording
+    suggests."""
+    payload = pack_int32(version) + pack_int32(len(unrecognized_options))
+    for option in unrecognized_options:
+        payload += _cstring(option)
+    return _message(NEGOTIATE_PROTOCOL_VERSION, payload)
 
 
 def make_parse_complete() -> bytes:

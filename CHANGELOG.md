@@ -30,6 +30,19 @@ what shipped rather than what was written down at the time.
   This file is new too. (#26)
 - `pg_mimic.errors` is documented as public: its SQLSTATE constants are what you
   raise `PgError` with, and until now only `PgError` itself was exported. (#26)
+- `PgServer(max_message_size=...)`, defaulting to 64MiB: a message length is the
+  peer's word for how much to buffer, and until now the server acted on any of
+  them — a single bogus `Int32` bought a read of up to 2GB. A length over the cap,
+  or one that contradicts the header it belongs to (0, negative, or under the four
+  bytes it counts for itself), is now a `FATAL` `08P01` and that connection is
+  dropped. The startup packet keeps real Postgres's own much smaller ceiling of
+  10000 bytes. (#27)
+- The startup packet's protocol version is read rather than ignored. A client
+  asking for a newer minor version (libpq 18, with `max_protocol_version=latest`,
+  asks for 3.2) is answered with `NegotiateProtocolVersion` and connects as 3.0,
+  which is also how any `_pq_.` protocol extension it requested is reported back
+  — those no longer reach your session as settings. A major version pg_mimic
+  doesn't speak is refused with `0A000` rather than misread. (#27)
 
 ### Changed
 
