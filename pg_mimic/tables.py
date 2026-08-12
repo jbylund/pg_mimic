@@ -44,6 +44,7 @@ OUTER JOIN), the query is refused.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from functools import cmp_to_key
 from typing import Any, Mapping, Sequence
@@ -336,6 +337,7 @@ class TableSession(Session):
             raise PgError(SYNTAX_ERROR, str(exc)) from None
 
         _reject_non_select(sql, expression)
+        expression = _flatten_parenthesized(expression)
         _reject_silently_ignored(expression)
         self._reject_unknown_tables(expression)
         try:
@@ -546,6 +548,42 @@ def _reject_non_select(sql: str, expression: exp.Expression) -> None:
         )
     if not isinstance(expression, exp.Query):
         raise PgError(FEATURE_NOT_SUPPORTED, f"TableSession answers SELECT only, and cannot run {tag}")
+
+
+def _flatten_parenthesized(expression: exp.Expression) -> exp.Expression:
+    """Fold a parenthesized top-level query into the query it wraps.
+
+    `(SELECT ...) LIMIT 1` parses as an exp.Subquery carrying the LIMIT, and every
+    check below reads the clauses it cares about -- the LIMIT/OFFSET window, the
+    ORDER BY a set operation or a SELECT DISTINCT has to be sorted by here -- off
+    the outermost node. Left wrapped they are found on neither node: the executor
+    ignores a LIMIT on a Subquery, so `(SELECT a FROM t) LIMIT 1` answers with
+    every row.
+
+    Postgres reads the parentheses as grouping, so folding the wrapper's clauses
+    onto the query inside is what they mean -- unless the inner query has a row
+    window of its own, where the two are genuinely nested and there is nothing to
+    fold.
+    """
+    while isinstance(expression, exp.Subquery) and not expression.alias:
+        inner = expression.this
+        if not isinstance(inner, exp.Query):
+            break
+        if inner.args.get("limit") is not None or inner.args.get("offset") is not None:
+            raise PgError(
+                FEATURE_NOT_SUPPORTED,
+                "TableSession applies LIMIT/OFFSET to the rows sqlglot's executor returns, which it can only do for "
+                "the whole query -- a parenthesized query with a row window of its own is two of them, and answering "
+                "with the wrong rows is worse than refusing.",
+            )
+        # An inner ORDER BY is only meaningful together with an inner row window,
+        # which there is none of here, so an outer one simply replaces it.
+        for arg in ("order", "limit", "offset"):
+            outer = expression.args.get(arg)
+            if outer is not None:
+                inner.set(arg, outer)
+        expression = inner
+    return expression
 
 
 def _reject_silently_ignored(expression: exp.Expression) -> None:
@@ -824,13 +862,26 @@ def _first_row_per_key(rows: list[Row], keys: tuple[int, ...]) -> list[Row]:
     seen = set()
     kept = []
     for row in rows:
-        # Lists (an array column) are not hashable; nothing here needs the key to
-        # be anything but comparable for equality, so tuples do.
-        key = tuple(tuple(row[k]) if isinstance(row[k], list) else row[k] for k in keys)
+        key = tuple(_hashable(row[k]) for k in keys)
         if key not in seen:
             seen.add(key)
             kept.append(row)
     return kept
+
+
+def _hashable(value: Any) -> Any:
+    """A DISTINCT ON key that can go in a set.
+
+    An array column is a list and a json/jsonb one a dict or a list, neither of
+    which hashes, and both nest. Nothing here needs the key to be anything but
+    comparable for equality, so tuples stand in -- dicts as their sorted items, so
+    that two equal documents produce one key however they were built.
+    """
+    if isinstance(value, (list, tuple)):
+        return tuple(_hashable(item) for item in value)
+    if isinstance(value, dict):
+        return tuple(sorted((k, _hashable(v)) for k, v in value.items()))
+    return value
 
 
 def _result_columns(expression: exp.Query, param_oids: list[int | None]) -> list[ResultColumn]:
@@ -965,9 +1016,11 @@ def _child_expressions(node: exp.Expression) -> list[exp.Expression]:
     return children
 
 
-# Postgres's own spellings of true, plus pg_mimic's canonical "t"/"f" (what a
-# binary bool parameter is decoded to).
+# Postgres's own spellings of true and false, plus pg_mimic's canonical "t"/"f"
+# (what a binary bool parameter is decoded to). Anything else is not a boolean:
+# taken as false it would silently answer with the false rows.
 _TRUE_TEXTS = {"t", "true", "y", "yes", "on", "1"}
+_FALSE_TEXTS = {"f", "false", "n", "no", "off", "0"}
 
 # The types whose text form the executor's CAST converts correctly. Deliberately
 # not bool (`bool("f")` is True there) and not numeric (int(), which "1.5" fails
@@ -987,15 +1040,41 @@ def _literal(value: Any, oid: int | None) -> exp.Expression:
     if oid in _NUMBERS:
         return _number_literal(value, oid)
     if oid == BOOL:
-        return exp.true() if str(value).lower() in _TRUE_TEXTS else exp.false()
+        return _bool_literal(value)
     if oid in _CAST_FOR:
         return exp.Cast(this=exp.Literal.string(value), to=exp.DataType.build(_CAST_FOR[oid]))
     return exp.Literal.string(value)
 
 
+def _bool_literal(value: Any) -> exp.Boolean:
+    text = str(value).strip().lower()
+    if text in _TRUE_TEXTS:
+        return exp.true()
+    if text in _FALSE_TEXTS:
+        return exp.false()
+    raise PgError(INVALID_TEXT_REPRESENTATION, f'invalid input syntax for type boolean: "{value}"')
+
+
+# What each numeric type's text form may look like. float() is not the test:
+# it takes "1.5" and "1_0" for a bigint, where Postgres raises, and a parameter
+# quietly rounded or reinterpreted is a query answered with the wrong rows.
+_INTEGER_TEXT = re.compile(r"[+-]?[0-9]+\Z")
+_DECIMAL_TEXT = re.compile(r"[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?\Z")
+_INTEGERS = {INT2, INT4, INT8}
+_NON_FINITE = {"inf", "infinity", "-inf", "-infinity", "nan"}
+
+
 def _number_literal(value: Any, oid: int) -> exp.Literal:
-    try:
-        float(value)
-    except (TypeError, ValueError):
-        raise PgError(INVALID_TEXT_REPRESENTATION, f'invalid input syntax for type {_PG_NAME[oid]}: "{value}"') from None
-    return exp.Literal.number(value)
+    text = str(value).strip()
+    if oid not in _INTEGERS and text.lower() in _NON_FINITE:
+        # Postgres takes these for float4/float8/numeric; sqlglot's executor has
+        # no spelling for them, and an unquoted Infinity reaches it as a name.
+        raise PgError(
+            FEATURE_NOT_SUPPORTED,
+            f'TableSession cannot pass the {_PG_NAME[oid]} value "{value}" to sqlglot\'s executor, which has no '
+            f"literal for infinity or NaN.",
+        )
+    pattern = _INTEGER_TEXT if oid in _INTEGERS else _DECIMAL_TEXT
+    if not pattern.match(text):
+        raise PgError(INVALID_TEXT_REPRESENTATION, f'invalid input syntax for type {_PG_NAME[oid]}: "{value}"')
+    return exp.Literal.number(text)

@@ -203,6 +203,28 @@ def test_a_parameter_that_is_not_a_number_for_a_number_column_is_refused(conn):
         conn.execute("SELECT id FROM users WHERE id = %s", ("not-a-number",))
 
 
+@pytest.mark.parametrize(
+    argnames=["text"],
+    argvalues=[("1.5",), ("1_0",), ("0x10",), ("inf",), ("nan",)],
+)
+def test_a_parameter_that_is_not_an_integer_for_an_integer_column_is_refused(conn, text):
+    """Postgres raises 22P02 for every one of these against an integer column.
+    float() takes them all, and the query then answers with no rows -- or with the
+    rows for a number the client never sent."""
+    with pytest.raises(psycopg.errors.InvalidTextRepresentation):
+        conn.execute("SELECT id FROM users WHERE id = %s::bigint", (text,))
+
+
+def test_a_parameter_that_is_not_a_boolean_is_refused(conn):
+    """Read as false it would return the false rows, which is an answer to a query
+    nobody wrote. Postgres raises 22P02."""
+    flags = {"flags": [{"id": 1, "enabled": True}, {"id": 2, "enabled": False}]}
+    with serve_in_thread(lambda: TableSession(flags)) as server:
+        with psycopg.Connection.connect(server.dsn(), autocommit=True) as flag_conn:
+            with pytest.raises(psycopg.errors.InvalidTextRepresentation):
+                flag_conn.execute("SELECT id FROM flags WHERE enabled = %s::boolean", ("banana",))
+
+
 def test_a_parameter_nothing_types_is_reported_as_such(conn):
     """Postgres's own answer to `SELECT $1` with no context: 42P18. Guessing text
     would send the client a column of the wrong type instead."""
@@ -437,6 +459,33 @@ def test_offset_pages_through_the_rows(semantics):
     assert semantics.execute("SELECT id FROM items ORDER BY id OFFSET 3").fetchall() == [(4,), (5,)]
     assert semantics.execute("SELECT id FROM items ORDER BY id LIMIT 2 OFFSET 9").fetchall() == []
     assert semantics.execute("SELECT id FROM items ORDER BY id LIMIT 2").fetchall() == [(1,), (2,)]
+
+
+def test_parentheses_round_the_whole_query_do_not_hide_its_clauses(semantics):
+    """`(SELECT ...) LIMIT 1` parses as a Subquery carrying the LIMIT, which the
+    executor ignores and which is not where the top-level clauses are looked for --
+    so every row came back where one was asked for."""
+    assert semantics.execute("(SELECT id FROM items) LIMIT 2").fetchall() == [(1,), (2,)]
+    assert semantics.execute("(SELECT id FROM items ORDER BY id DESC) LIMIT 2").fetchall() == [(5,), (4,)]
+    assert semantics.execute("(SELECT id FROM items ORDER BY id) OFFSET 3").fetchall() == [(4,), (5,)]
+    # The two forms whose ORDER BY is sorted here rather than by the executor.
+    union = "(SELECT id FROM items UNION SELECT id FROM items) ORDER BY id DESC LIMIT 2"
+    assert semantics.execute(union).fetchall() == [(5,), (4,)]
+    distinct = "(SELECT DISTINCT id FROM items ORDER BY id DESC) LIMIT 2"
+    assert semantics.execute(distinct).fetchall() == [(5,), (4,)]
+
+
+def test_a_parenthesized_query_with_its_own_row_window_is_refused(semantics):
+    """Two windows, one of them nested -- there is nothing to fold, and the inner
+    one would be applied to rows this session never sees."""
+    with pytest.raises(psycopg.errors.FeatureNotSupported):
+        semantics.execute("(SELECT id FROM items LIMIT 3) LIMIT 1")
+
+
+def test_distinct_on_a_json_column_is_answered_rather_than_crashing(conn):
+    """The DISTINCT ON key goes in a set, and a json document is a dict, which does
+    not hash -- it used to reach the client as an internal_error."""
+    assert conn.execute("SELECT DISTINCT ON (body) id FROM docs ORDER BY body, id").fetchall() == [(1,)]
 
 
 def test_offset_takes_a_bind_parameter(semantics):
