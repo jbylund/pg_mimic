@@ -110,6 +110,22 @@ def test_limit_on_a_parenthesized_query_is_applied():
 
 
 @pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
+def test_a_decimal_cast_is_exact():
+    """https://github.com/jbylund/pg_mimic/issues/33
+
+    Workaround: the `_cast` override in tables.py, which is the whole
+    reason `_execute` reaches past `sqlglot.executor.execute()` for an `env=`.
+
+    `env.cast` sends every one of `exp.DataType.NUMERIC_TYPES` through `int()`, and
+    DECIMAL is in that set: the first of these raises ValueError and the second is 9.
+    Every dialect sqlglot targets returns an exact 9.99 for both.
+    """
+    tables, schema = {"d": [{"n": Decimal("9.99")}]}, {"d": {"n": "DECIMAL"}}
+    assert _rows("SELECT CAST('9.99' AS NUMERIC) AS c FROM d", tables, schema) == [(Decimal("9.99"),)]
+    assert _rows("SELECT CAST(9.99 AS DECIMAL) AS c FROM d", tables, schema) == [(Decimal("9.99"),)]
+
+
+@pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
 def test_tablesample_is_applied():
     """https://github.com/jbylund/pg_mimic/issues/49
 

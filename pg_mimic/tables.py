@@ -46,16 +46,22 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from decimal import Decimal
 from functools import cmp_to_key
 from typing import Any, Mapping, Sequence
 
 import sqlglot
 from sqlglot import exp
 from sqlglot.errors import SqlglotError
-from sqlglot.executor import execute as sqlglot_execute
+from sqlglot.executor.env import ENV
+from sqlglot.executor.python import PythonExecutor
+from sqlglot.executor.table import ensure_tables
+from sqlglot.optimizer import optimize
 from sqlglot.optimizer.annotate_types import annotate_types
 from sqlglot.optimizer.normalize_identifiers import normalize_identifiers
 from sqlglot.optimizer.qualify import qualify
+from sqlglot.planner import Plan
+from sqlglot.schema import ensure_schema
 
 from .arrays import ARRAY_OID, element_oid_of, is_array_oid
 from .errors import (
@@ -143,6 +149,21 @@ _OID_FOR_SQLGLOT_TYPE.update(
 )
 
 _UNTYPED = (exp.DataType.Type.UNKNOWN, exp.DataType.Type.NULL)
+
+# What sqlglot spells a Postgres `numeric` as. Both, because the annotator reaches
+# for BIGDECIMAL on its own and a user may write either.
+_DECIMAL_TYPES = (exp.DataType.Type.DECIMAL, exp.DataType.Type.BIGDECIMAL)
+
+# Where a decimal constant has to be exact to give Postgres's answer. Named rather
+# than taken as exp.Predicate, which would sweep in LIKE and IS -- and every node
+# listed here has all of its operands in `_child_expressions`, which is what the
+# rewrite reads them with.
+_COMPARISONS = (exp.EQ, exp.NEQ, exp.NullSafeEQ, exp.NullSafeNEQ, exp.GT, exp.GTE, exp.LT, exp.LTE, exp.In, exp.Between)
+
+# The widths Postgres sizes an integer constant into: integer, then bigint, then
+# numeric. Signed, so that -2147483648 is an integer though 2147483648 is not.
+_INT4_RANGE = (-(2**31), 2**31 - 1)
+_INT8_RANGE = (-(2**63), 2**63 - 1)
 
 # Statements whose refusal is about being read-only rather than about coverage.
 # Only long-standing sqlglot node names: anything else (TRUNCATE, ALTER, ...)
@@ -280,7 +301,7 @@ class TableSession(Session):
         # parameters are literals.
         limit, offset = _take_row_window(expression) if plan.rows_sliced_here else (None, 0)
         try:
-            result = sqlglot_execute(expression, schema=self._sqlglot_schema, tables=self._rows, dialect="postgres")
+            result = _execute(expression, schema=self._sqlglot_schema, tables=self._rows)
         except Exception as exc:
             # Every Exception, not just SqlglotError: the executor compiles the
             # query to Python and evaluates it, so it also surfaces plain
@@ -370,6 +391,9 @@ class TableSession(Session):
             # Before annotate_types, so a DISTINCT ON key this adds to the select
             # list is typed like any other column rather than left bare.
             distinct_on, visible_columns = _distinct_on_keys(qualified)
+            # Also before it, so that the width the annotator then reads off a wide
+            # literal propagates through whatever the query does with it.
+            _size_integer_literals(qualified)
             annotated = annotate_types(qualified, schema=self._sqlglot_schema, dialect="postgres")
         except PgError:
             raise
@@ -378,6 +402,9 @@ class TableSession(Session):
             raise PgError(sqlstate, str(exc)) from None
 
         _rewrite_not_in(annotated)
+        # After it, because which decimal literals to make exact is a question only
+        # the annotator's types answer.
+        _make_decimal_comparisons_exact(annotated)
         sort_keys = _take_result_order(annotated)
         # Last: it puts a key in front of every ORDER BY term, which the two passes
         # above had to read as the query wrote them.
@@ -659,7 +686,116 @@ def _reject_silently_ignored(expression: exp.Expression) -> None:
             )
 
 
+# --- running it -----------------------------------------------------------------------
+
+
+def _cast(this: Any, to: Any) -> Any:
+    """The executor's CAST, with `numeric` made exact.
+
+    sqlglot's own sends every one of `exp.DataType.NUMERIC_TYPES` through `int()`,
+    and DECIMAL is in that set: `CAST(9.99 AS DECIMAL)` is 9, and `'9.99'::numeric`
+    raises ValueError. Postgres returns an exact 9.99 for both, and `Decimal(str(x))`
+    is the Python that says so -- via the text, because going through float would
+    reintroduce the very inexactness the cast is here to avoid.
+
+    Everything else is sqlglot's, including the NULL handling its decorator adds.
+    """
+    if this is not None and to in _DECIMAL_TYPES:
+        return Decimal(str(this))
+    return ENV["CAST"](this, to)
+
+
+def _execute(expression: exp.Query, schema: dict, tables: dict) -> Any:
+    """`sqlglot.executor.execute()`, opened up far enough to pass an env.
+
+    That function takes no `env`, and the env is where an exact `numeric` lives, so
+    the four lines it would have run are run here instead -- minus the branch that
+    infers a schema from the rows, which this session never needs because it always
+    has one.
+
+    Reaching past the public call couples pg_mimic to these internals, which is
+    what the `sqlglot>=` floor in pyproject.toml is for; a test asserts this
+    answers what `execute()` answers, so a drift shows up as a failure rather than
+    as wrong rows.
+
+    The env is built per query rather than once at import, because ENV is a module
+    global anyone may add to -- examples/git_sql.py does -- and a snapshot would
+    silently pin whatever it happened to hold when pg_mimic was imported.
+    """
+    resolved_tables = ensure_tables(tables, dialect="postgres")
+    optimized = optimize(expression, ensure_schema(schema, dialect="postgres"), leave_tables_isolated=True, dialect="postgres")
+    return PythonExecutor(env={**ENV, "CAST": _cast}, tables=resolved_tables).execute(Plan(optimized))
+
+
 # --- rewriting what the executor gets wrong -------------------------------------------
+
+
+def _size_integer_literals(expression: exp.Expression) -> None:
+    """Give each integer constant the width Postgres gives it.
+
+    Postgres sizes one by its value -- `integer` up to 2147483647, `bigint` to
+    9223372036854775807, `numeric` past that -- where sqlglot's annotator types
+    every one of them INT. Left alone, `select 3000000000` is described as int4 and
+    a binary client refuses to decode it: asyncpg raises "'i' format requires
+    -2147483648 <= number <= 2147483647", and psycopg only hides it by reading
+    results as text.
+
+    Widening the literal itself rather than the OID afterwards is what makes the
+    width carry: `3000000000 + 0` is then bigint, as Postgres has it, rather than
+    an int4 sum of an int4.
+
+    Only expression literals -- a declared `integer` column still describes as int4,
+    which is the round trip _TYPES exists to keep lossless.
+    """
+    for literal in list(expression.find_all(exp.Literal)):
+        if not literal.is_int:
+            continue
+        # A negation is sized by what it evaluates to, so the outermost one is the
+        # node to wrap: Postgres calls -2147483648 an integer, though 2147483648 on
+        # its own is a bigint.
+        node, value = literal, int(literal.name)
+        while isinstance(node.parent, exp.Neg):
+            node, value = node.parent, -value
+        if isinstance(node.parent, (exp.Limit, exp.Offset)):
+            # A row window is read back off the tree as a count by _take_row_window,
+            # which wants the literal it was handed and has no client to describe to.
+            continue
+        if _INT4_RANGE[0] <= value <= _INT4_RANGE[1]:
+            continue
+        wider = "BIGINT" if _INT8_RANGE[0] <= value <= _INT8_RANGE[1] else "DECIMAL"
+        node.replace(exp.Cast(this=node.copy(), to=exp.DataType.build(wider)))
+
+
+def _make_decimal_comparisons_exact(expression: exp.Expression) -> None:
+    """Compare a decimal constant as `numeric`, the way Postgres types it.
+
+    The executor evaluates a bare `9.99` as a Python float, and `Decimal("9.99") ==
+    9.99` is False -- the comparison is exact, and the float really is
+    9.99000000000000021316... So `where total = 9.99` misses the row, while
+    `where total = 10.00` matches, 10.0 being exactly representable. Intermittent
+    wrong rows are the worst shape a bug can take here.
+
+    A `CAST(... AS DECIMAL)` around the literal is Postgres's own answer, since
+    Postgres types an unadorned decimal constant as numeric. From the literal's
+    *text*, so that the value never passes through a float at all.
+
+    Scoped to comparisons, and only where something on the other side is already
+    numeric, because `Decimal * float` raises TypeError in Python: a decimal literal
+    in arithmetic, or against a `double precision` column, has to stay a float or it
+    would break where it works today.
+    """
+    for comparison in expression.find_all(*_COMPARISONS):
+        operands = _child_expressions(comparison)
+        if not any(operand.type is not None and operand.type.this in _DECIMAL_TYPES for operand in operands):
+            continue
+        for operand in operands:
+            if isinstance(operand, exp.Literal) and operand.is_number and not operand.is_int:
+                operand.replace(_decimal_literal(operand.name))
+
+
+def _decimal_literal(text: str) -> exp.Cast:
+    """`CAST('9.99' AS DECIMAL)` -- which _cast makes an exact Decimal("9.99")."""
+    return exp.Cast(this=exp.Literal.string(text), to=exp.DataType.build("DECIMAL"))
 
 
 def _rewrite_null_ordering(expression: exp.Expression) -> None:
@@ -1092,7 +1228,7 @@ _INTEGERS = {INT2, INT4, INT8}
 _NON_FINITE = {"inf", "infinity", "-inf", "-infinity", "nan"}
 
 
-def _number_literal(value: Any, oid: int) -> exp.Literal:
+def _number_literal(value: Any, oid: int) -> exp.Expression:
     text = str(value).strip()
     if oid not in _INTEGERS and text.lower() in _NON_FINITE:
         # Postgres takes these for float4/float8/numeric; sqlglot's executor has
@@ -1105,4 +1241,10 @@ def _number_literal(value: Any, oid: int) -> exp.Literal:
     pattern = _INTEGER_TEXT if oid in _INTEGERS else _DECIMAL_TEXT
     if not pattern.match(text):
         raise PgError(INVALID_TEXT_REPRESENTATION, f'invalid input syntax for type {_PG_NAME[oid]}: "{value}"')
+    if oid == NUMERIC:
+        # The same exactness _make_decimal_comparisons_exact gives a literal written
+        # inline, which is the promise this function is built on: a parameterised
+        # query and a literal one answer alike. A bare number literal would reach
+        # the executor as a float and miss the Decimal row it was compared against.
+        return _decimal_literal(text)
     return exp.Literal.number(text)

@@ -48,6 +48,22 @@ what shipped rather than what was written down at the time.
   worse failure. (#67)
 - Requires `sqlglot>=30.17.0`. Several workarounds for executor bugs were
   deleted because that release fixes them. (#70)
+- `TableSession` compares a decimal constant as `numeric`, which is how Postgres
+  types one, instead of as the Python float sqlglot's executor read it as.
+  `where total = 9.99` finds the `Decimal("9.99")` row it used to miss — and the
+  miss was intermittent, since `= 10.00` matched, 10.0 being exactly
+  representable in binary. `::numeric` and `cast(... as decimal)`, which raised
+  `ValueError` and truncated to an integer respectively, are exact. (#33)
+- **Breaking.** `TableSession` sizes an integer constant the way Postgres does:
+  `integer` up to 2147483647, `bigint` to 9223372036854775807, `numeric` past
+  that, and the width carries through arithmetic (`3000000000 + 0` is bigint).
+  Every integer expression used to describe as `int4`, which crashed asyncpg's
+  binary decoder outright — `select 3000000000` raised `'i' format requires
+  -2147483648 <= number <= 2147483647` — and psycopg only hid it by reading
+  results as text. Code reading the OID of a wide integer expression, or
+  expecting an `int` from one past the bigint range (now a `Decimal`, as in
+  Postgres), has to change. Declared columns are untouched: `columns={"n": INT4}`
+  still describes `int4`. (#40)
 - **Breaking.** `TableSession` folds identifiers the way Postgres does. A dict key
   is the identifier *as written*, so it is what a **quoted** reference matches,
   while an unquoted reference folds to lower case. Mixed-case keys change
