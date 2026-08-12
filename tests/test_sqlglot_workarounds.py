@@ -113,7 +113,7 @@ def test_limit_on_a_parenthesized_query_is_applied():
 def test_a_decimal_cast_is_exact():
     """https://github.com/jbylund/pg_mimic/issues/33
 
-    Workaround: the `CAST` override in `_ENV` in tables.py, which is the whole
+    Workaround: the `_cast` override in tables.py, which is the whole
     reason `_execute` reaches past `sqlglot.executor.execute()` for an `env=`.
 
     `env.cast` sends every one of `exp.DataType.NUMERIC_TYPES` through `int()`, and
