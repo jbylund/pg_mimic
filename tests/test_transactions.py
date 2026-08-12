@@ -320,6 +320,22 @@ def test_settings_follow_the_transaction(guc_conn, expected, steps):
         assert _search_path(cur) == expected
 
 
+def test_a_rolled_back_set_leaves_the_setting_known_but_blank(guc_conn):
+    """The value is transactional; the setting's *existence* is not. Verified
+    against PostgreSQL 18: a custom GUC first set inside a transaction that rolls
+    back reads back as the empty string afterwards, not as an unrecognised
+    parameter -- so `current_setting(name, true)` is not NULL either."""
+    with guc_conn.cursor() as cur:
+        cur.execute("BEGIN")
+        cur.execute("SET mytenant TO 'acme'")
+        cur.execute("ROLLBACK")
+
+        cur.execute("SHOW mytenant")
+        assert cur.fetchone() == ("",)
+        cur.execute("SELECT current_setting('mytenant', true) IS NULL")
+        assert cur.fetchone() == (False,)
+
+
 def test_a_rolled_back_setting_is_reported_to_the_client(dsn, mock_session):
     """A reported GUC that reverts owes the client a ParameterStatus just as one
     that changes does -- otherwise psycopg goes on decoding with the value the

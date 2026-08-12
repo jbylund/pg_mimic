@@ -174,6 +174,30 @@ def test_custom_gucs_reach_the_session(conn, mock_session):
     ]
 
 
+def test_show_of_a_setting_nothing_has_ever_set_raises(conn, mock_session):
+    """42704, the same as real Postgres, rather than the empty string that made an
+    unknown setting indistinguishable from a blank one (#32). Answered here, not
+    forwarded: a SHOW is connection boilerplate however it ends."""
+    with conn.cursor() as cur:
+        with pytest.raises(psycopg.errors.UndefinedObject) as excinfo:
+            cur.execute("SHOW no_such_setting")
+        assert excinfo.value.sqlstate == "42704"
+        assert 'unrecognized configuration parameter "no_such_setting"' in str(excinfo.value)
+    assert mock_session.queries == []
+
+
+def test_a_setting_stays_known_once_set(conn, mock_session):
+    """Setting a name is what makes it exist, and nothing that drops the *value*
+    unmakes it -- checked against PostgreSQL 18 for RESET, RESET ALL and DISCARD
+    ALL, all of which leave a custom GUC reading as the empty string."""
+    with conn.cursor() as cur:
+        cur.execute("SET mytenant TO 'acme'")
+        for forget in ("RESET mytenant", "RESET ALL", "DISCARD ALL"):
+            cur.execute(forget)
+            cur.execute("SHOW mytenant")
+            assert cur.fetchone() == ("",), f"unknown again after {forget}"
+
+
 def test_a_quoted_setting_name_is_the_same_setting(conn, mock_session):
     """GUC names are matched case-insensitively however they are spelled, so unlike
     an identifier a quoted one still folds."""

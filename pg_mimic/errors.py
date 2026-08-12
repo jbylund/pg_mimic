@@ -21,6 +21,7 @@ SYNTAX_ERROR = "42601"
 UNDEFINED_TABLE = "42P01"
 UNDEFINED_COLUMN = "42703"
 UNDEFINED_FUNCTION = "42883"
+UNDEFINED_OBJECT = "42704"  # here: a configuration parameter no one has ever heard of
 INVALID_TEXT_REPRESENTATION = "22P02"  # e.g. "abc" bound to an integer parameter
 INDETERMINATE_DATATYPE = "42P18"  # a parameter whose type nothing in the query settles
 INVALID_AUTHORIZATION_SPECIFICATION = "28000"

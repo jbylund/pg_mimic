@@ -436,6 +436,12 @@ before it ever reaches your `Session`, so real clients/ORMs/`psql` work without 
   can keep.
 - Session functions: `SELECT version()`, `current_user`, `current_database()`, `current_setting('x')`,
   `set_config()`, `pg_backend_pid()` — things only the connection can answer.
+
+  A setting nothing has ever set does not exist, as in real Postgres: `SHOW never.set` and
+  `current_setting('never.set')` raise `42704`, while `current_setting('never.set', true)` is `NULL`
+  — which is what `current_setting('app.tenant', true) IS NULL`, the usual row-level-security probe
+  for "was this ever set?", is actually asking. Setting a name is what makes it exist, and it stays
+  known and blank through `RESET`, `DISCARD ALL` and a rolled-back transaction, the same as there.
 - asyncpg's type introspection, so it can build codecs for array and other non-builtin types.
 - `information_schema.tables` / `information_schema.columns`, and the slice of `pg_catalog` psql's
   `\dt`, `\d <table>` and `\dn` read — both built from your `Session.schema()`.
