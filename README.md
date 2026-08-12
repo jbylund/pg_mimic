@@ -180,6 +180,55 @@ because a Postgres array OID carries no dimensionality; that rides in each value
 Arrays work in both wire formats, and must be rectangular — a ragged list is rejected rather than
 silently reshaped, since Postgres has no wire representation for one.
 
+### Bulk data: `COPY`
+
+`COPY ... FROM STDIN` and `COPY ... TO STDOUT` are the standard bulk path — `psql`'s `\copy`,
+`psycopg`'s `cursor.copy()`, `asyncpg`'s `copy_to_table()`/`copy_from_query()`, and most ETL tooling.
+pg_mimic handles the sub-protocol (`CopyInResponse`/`CopyOutResponse`, the `CopyData` stream,
+`CopyDone`/`CopyFail`, the `COPY <n>` command tag) and the text and CSV formats, so a session only
+ever sees rows:
+
+```python
+class LoaderSession(Session):
+    async def copy_in(self, sql, rows):
+        # rows: an async iterator of tuples of `str | None`, already split on the
+        # delimiter, un-escaped, with the null string turned into None
+        count = 0
+        async for row in rows:
+            await self.store(row)
+            count += 1
+        return count  # or None, to report however many pg_mimic decoded
+
+    async def copy_out(self, sql):
+        yield (1, "alice")
+        yield (2, None)  # None is NULL: `\N` in text format, an empty field in CSV
+```
+
+Iterate `rows` lazily — that's the point of `COPY`, and nothing is buffered on the way in. Both hooks
+are optional, and a missing one is refused with a `feature_not_supported` error *before* the server
+invites the client to start sending: a session that silently accepted and dropped bulk data would
+look exactly like a successful load.
+
+Options are read from the statement — `FORMAT text` (the default: tab-separated, `\N` for NULL, the
+documented backslash escapes), `FORMAT csv`, `DELIMITER`, `NULL`, `HEADER`, and CSV's
+`QUOTE`/`ESCAPE` — in both the modern `WITH (...)` syntax and the legacy bare-keyword one, since real
+clients write both. An option pg_mimic doesn't implement (`FREEZE`, `FORCE_QUOTE`, `HEADER MATCH`, a
+non-UTF-8 `ENCODING`) is **refused by name** rather than ignored, because silently dropping one would
+change the bytes on the wire.
+
+Two things a planner-less mimic can't know, and refuses rather than invents:
+
+- `HEADER` on the way out needs column names, which only the statement (`COPY t (a, b) TO STDOUT`) or
+  `Session.schema()` can supply.
+- The copy sub-protocol has no `RowDescription`, so there are no declared column types outbound: each
+  value is rendered from its own Python type, and a `list`/`dict` — equally an array or a json
+  document — is refused. Yield those already formatted.
+
+A `COPY` from a server-side file (`COPY t FROM '/path'`, `COPY t TO PROGRAM ...`) isn't a protocol
+exchange at all, so it falls through to your `describe()`/`query()` like any other statement. A
+session that overrides `prepare()` bypasses the middleware chain and so bypasses this too — call
+`pg_mimic.copy.copy_statement(self, sql)` to get the same `Statement` back.
+
 ### Why two methods instead of one
 
 Postgres's extended query protocol (`Parse`/`Bind`/`Describe`/`Execute`/`Sync`) genuinely separates "what
@@ -360,6 +409,8 @@ before it ever reaches your `Session`, so real clients/ORMs/`psql` work without 
 - Multi-statement simple-query batches (`"BEGIN; INSERT ...; COMMIT;"` sent as one `'Q'` message, e.g. by
   `psql -f script.sql`) are split into individual statements (via sqlglot), each getting its own
   `RowDescription`/`DataRow*`/`CommandComplete` — not silently merged or truncated.
+- The `COPY` sub-protocol and its text/CSV formats, so `copy_in()`/`copy_out()` see decoded rows — see
+  [Bulk data: `COPY`](#bulk-data-copy).
 
 Everything else — `SELECT 1` and `select *` included — falls through to your `describe()`/`query()`
 (or `prepare()`). The line is *state you've already declared*: the chain answers questions about the
@@ -462,6 +513,14 @@ emulation it delegates to is in [`pg_mimic/catalog.py`](pg_mimic/catalog.py).
   your `describe()`) can determine without real parameter values — inherent to being a planner-less mimic,
   not something a workaround can fully close. In practice this rarely matters: most drivers (including
   psycopg's default flow) `Describe` the *portal*, after `Bind`, which is always exact.
+- **Binary `COPY` is refused.** `COPY ... WITH (FORMAT binary)` gets a `feature_not_supported` error,
+  for the same reason binary result encoding refuses types it can't encode: the binary copy format is
+  a tuple layout keyed to a table's declared column types, and pg_mimic has no table. Text and CSV
+  `COPY` cover the same ground. asyncpg's `copy_records_to_table()` always asks for binary, so that
+  one method is unavailable; its `copy_to_table(source=..., format="csv")` and `copy_from_query()`
+  work.
+- **No `CopyBothResponse`.** That message exists only for streaming replication, which pg_mimic
+  doesn't emulate — there is no WAL behind it to stream.
 
 ## Development
 

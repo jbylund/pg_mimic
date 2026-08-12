@@ -37,6 +37,7 @@ from sqlglot import exp
 from sqlglot.executor import execute as sqlglot_execute
 
 from .catalog import information_schema_statement, pg_catalog_statement
+from .copy import copy_statement
 from .errors import (
     ACTIVE_SQL_TRANSACTION,
     INVALID_SAVEPOINT_SPECIFICATION,
@@ -176,6 +177,19 @@ Middleware = Callable[[MiddlewareContext], Awaitable[Statement | None]]
 # Each takes a MiddlewareContext and returns a Statement to answer with, or None
 # to pass the statement down the chain (and ultimately to the session author's
 # own describe()/query()).
+
+
+async def copy_stdio(ctx: MiddlewareContext) -> Statement | None:
+    """`COPY ... FROM STDIN` and `COPY ... TO STDOUT`.
+
+    Here rather than in the session because the copy sub-protocol is framing, not
+    query semantics -- `Session.copy_in()`/`copy_out()` deal in decoded rows. A
+    COPY that reached the session instead would leave the client waiting for a
+    CopyInResponse that never comes, so this link also raises (rather than passing
+    the statement along) for a COPY it recognises but can't serve. See
+    pg_mimic.copy.
+    """
+    return copy_statement(ctx.connection.session, ctx.sql)
 
 
 async def transaction_control(ctx: MiddlewareContext) -> Statement | None:
@@ -343,6 +357,9 @@ def _is_pg_catalog(table: exp.Table) -> bool:
 
 
 DEFAULT_MIDDLEWARE = (
+    # First, and cheap: COPY is the one statement whose classification the client
+    # is already blocked on, so nothing else gets a look at it.
+    copy_stdio,
     transaction_control,
     set_show,
     session_reset,

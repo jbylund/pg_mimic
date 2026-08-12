@@ -24,16 +24,22 @@ PASSWORD = b"p"
 QUERY = b"Q"
 SYNC = b"S"
 TERMINATE = b"X"
+# CopyData and CopyDone travel in both directions and keep the same tag either
+# way -- copy-in sends them frontend to backend, copy-out backend to frontend.
 COPY_DATA = b"d"
 COPY_DONE = b"c"
 COPY_FAIL = b"f"
 
-# Backend (server -> client) message tags
+# Backend (server -> client) message tags. Tags are scoped to their direction, so
+# a byte here can collide with a frontend one: CopyOutResponse ('H') is the same
+# byte as the frontend's Flush.
 AUTHENTICATION = b"R"
 BACKEND_KEY_DATA = b"K"
 BIND_COMPLETE = b"2"
 CLOSE_COMPLETE = b"3"
 COMMAND_COMPLETE = b"C"
+COPY_IN_RESPONSE = b"G"
+COPY_OUT_RESPONSE = b"H"
 DATA_ROW = b"D"
 EMPTY_QUERY_RESPONSE = b"I"
 ERROR_RESPONSE = b"E"
@@ -194,6 +200,34 @@ def make_parameter_description(oids: list[int]) -> bytes:
     return _message(PARAMETER_DESCRIPTION, payload)
 
 
+def _copy_response(tag: bytes, column_count: int) -> bytes:
+    """Int8 overall copy format, Int16 column count, then one Int16 format code
+    per column.
+
+    The format is always 0 (text): binary COPY is refused while the statement is
+    still being parsed, so a 1 never belongs here. There is no CopyBothResponse
+    ('W') builder either -- that one exists only for streaming replication, which
+    pg_mimic doesn't emulate.
+    """
+    return _message(tag, b"\x00" + pack_int16(column_count) + pack_int16(0) * column_count)
+
+
+def make_copy_in_response(column_count: int) -> bytes:
+    return _copy_response(COPY_IN_RESPONSE, column_count)
+
+
+def make_copy_out_response(column_count: int) -> bytes:
+    return _copy_response(COPY_OUT_RESPONSE, column_count)
+
+
+def make_copy_data(data: bytes) -> bytes:
+    return _message(COPY_DATA, data)
+
+
+def make_copy_done() -> bytes:
+    return _message(COPY_DONE)
+
+
 # --- Frontend -> backend parsers ---------------------------------------------------
 # Each parser takes the message *payload* (tag + length already stripped by stream.py).
 
@@ -304,6 +338,12 @@ def parse_describe(payload: bytes) -> ParsedDescribeOrClose:
 
 def parse_close(payload: bytes) -> ParsedDescribeOrClose:
     return parse_describe(payload)
+
+
+def parse_copy_fail(payload: bytes) -> str:
+    """The client's stated reason for aborting a copy-in."""
+    reason, _ = read_cstring(payload)
+    return reason
 
 
 def parse_startup_message(payload: bytes) -> dict[str, str]:
