@@ -333,7 +333,11 @@ class Connection:
             self.stream.write(messages.make_row_description(_field_specs(columns)))
             for row in rows:
                 self.stream.write(messages.make_data_row(encode_row(row, columns)))
-        self.stream.write(messages.make_command_complete(command_tag(sql, len(rows))))
+        # The statement's own text, not what the client typed. They are the same
+        # for everything except `EXECUTE p`, which Postgres completes with the tag
+        # of the statement it ran -- `SELECT 1`, not `EXECUTE`. The extended path
+        # already reads it this way, via PortalEntry.sql.
+        self.stream.write(messages.make_command_complete(command_tag(getattr(statement, "sql", sql) or sql, len(rows))))
 
     # --- extended query protocol -----------------------------------------------------
 

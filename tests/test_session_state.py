@@ -16,7 +16,7 @@ import psycopg
 import pytest
 from conftest import ServerThread
 from psycopg.pq import TransactionStatus
-from wire import connect_and_get_backend_key, make_query, read_message
+from wire import SYNC, connect_and_get_backend_key, make_parse, make_query, read_message
 
 from pg_mimic import PgServer
 
@@ -304,3 +304,135 @@ async def test_parameter_status_arrives_before_ready_for_query(mock_session):
         writer.close()
     finally:
         thread.stop()
+
+
+# --- SQL-level prepared statements ----------------------------------------------------
+#
+# One namespace with two entrances, as in Postgres: SQL PREPARE and the protocol's
+# Parse write to the same registry, and either can DEALLOCATE what the other made.
+# Every expectation below was checked against a real PostgreSQL 18.
+
+
+def _tables_conn(port):
+    return psycopg.Connection.connect(f"host=127.0.0.1 port={port} user=test dbname=test", autocommit=True)
+
+
+@pytest.fixture
+def rows_conn():
+    from pg_mimic import TableSession
+    from pg_mimic.testing import serve_in_thread
+
+    tables = {"t": [{"a": 1}, {"a": 2}, {"a": 3}]}
+    with serve_in_thread(lambda: TableSession(tables)) as server:
+        with psycopg.Connection.connect(server.dsn(), autocommit=True) as conn:
+            yield conn
+
+
+def test_prepare_and_execute_round_trip(rows_conn):
+    """The command tag is the prepared statement's, not EXECUTE's: Postgres
+    answers `EXECUTE p` of a SELECT with `SELECT n`."""
+    with rows_conn.cursor() as cur:
+        cur.execute("PREPARE p AS SELECT a FROM t ORDER BY a")
+        assert cur.statusmessage == "PREPARE"
+
+        cur.execute("EXECUTE p")
+        assert cur.fetchall() == [(1,), (2,), (3,)]
+        assert cur.statusmessage == "SELECT 3"
+
+
+def test_execute_passes_its_arguments(rows_conn):
+    with rows_conn.cursor() as cur:
+        cur.execute("PREPARE byval (bigint) AS SELECT a FROM t WHERE a = $1")
+        cur.execute("EXECUTE byval (2)")
+        assert cur.fetchall() == [(2,)]
+        assert cur.statusmessage == "SELECT 1"
+
+
+def test_deallocate_drops_a_sql_prepared_statement(rows_conn):
+    """The bug this whole change is for: PREPARE was accepted and its DEALLOCATE
+    refused, because the two lived in different places."""
+    with rows_conn.cursor() as cur:
+        cur.execute("PREPARE gone AS SELECT a FROM t")
+        cur.execute("DEALLOCATE gone")
+        assert cur.statusmessage == "DEALLOCATE"
+
+        with pytest.raises(psycopg.Error) as excinfo:
+            cur.execute("EXECUTE gone")
+        assert excinfo.value.sqlstate == "26000"
+
+
+async def test_sql_can_deallocate_a_protocol_level_statement(mock_session):
+    """The namespace is shared in both directions -- verified against PostgreSQL 18,
+    where SQL can DEALLOCATE a statement the protocol's Parse created.
+
+    Driven over the wire so the statement gets a name of our choosing, rather than
+    depending on how psycopg happens to name its own.
+    """
+    server = PgServer(session_factory=lambda: mock_session)
+    thread = ServerThread(server)
+    port = thread.start()
+    try:
+        reader, writer, _pid, _secret = await connect_and_get_backend_key(port)
+        writer.write(make_parse("SELECT 1", statement_name="mine") + SYNC)
+        await writer.drain()
+        await _drain_until_ready(reader)
+
+        writer.write(make_query('DEALLOCATE "mine"'))
+        await writer.drain()
+        tags = await _drain_until_ready(reader)
+        assert b"E" not in tags, "DEALLOCATE of a Parse-created statement must not error"
+
+        # ... and it is gone: a second one is 26000.
+        writer.write(make_query('DEALLOCATE "mine"'))
+        await writer.drain()
+        assert b"E" in await _drain_until_ready(reader)
+        writer.close()
+    finally:
+        thread.stop()
+
+
+async def _drain_until_ready(reader) -> list[bytes]:
+    tags = []
+    while True:
+        tag, _payload = await read_message(reader)
+        tags.append(tag)
+        if tag == b"Z":
+            return tags
+
+
+def test_execute_in_the_extended_protocol_describes_the_prepared_query(rows_conn):
+    """A client may Parse("EXECUTE p") and Describe before binding, so the rewrite
+    has to happen when the statement is resolved, not when it runs."""
+    with rows_conn.cursor() as cur:
+        cur.execute("PREPARE p AS SELECT a FROM t ORDER BY a")
+        cur.execute("EXECUTE p", prepare=True)  # forces Parse/Describe/Bind/Execute
+        assert [column.name for column in cur.description] == ["a"]
+        assert cur.fetchall() == [(1,), (2,), (3,)]
+
+
+def test_discard_all_drops_sql_prepared_statements(rows_conn):
+    with rows_conn.cursor() as cur:
+        cur.execute("PREPARE q AS SELECT a FROM t")
+        cur.execute("DISCARD ALL")
+        with pytest.raises(psycopg.Error) as excinfo:
+            cur.execute("EXECUTE q")
+        assert excinfo.value.sqlstate == "26000"
+
+
+def test_a_session_can_take_prepare_back(mock_session):
+    """Dropping the link hands PREPARE and EXECUTE to the session untouched, for a
+    session fronting a backend that has its own prepared statements."""
+    from pg_mimic import middleware as mw
+
+    mock_session.middleware = tuple(link for link in mw.DEFAULT_MIDDLEWARE if link is not mw.prepared_statements)
+    server = PgServer(session_factory=lambda: mock_session)
+    thread = ServerThread(server)
+    port = thread.start()
+    try:
+        with _tables_conn(port) as conn:
+            with conn.cursor() as cur:
+                cur.execute("PREPARE p AS SELECT 1")
+                cur.execute("EXECUTE p")
+    finally:
+        thread.stop()
+    assert [sql for sql, _params in mock_session.queries] == ["PREPARE p AS SELECT 1", "EXECUTE p"]
