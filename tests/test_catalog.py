@@ -161,3 +161,24 @@ def test_backslash_l_lists_the_connected_database(conn, mock_session):
     with conn.cursor() as cur:
         cur.execute("SELECT datname FROM pg_catalog.pg_database")
         assert cur.fetchall() == [("test",)]
+
+
+def test_every_declared_catalog_column_has_a_value_in_every_row():
+    """A column in the schema but absent from a row does not read as NULL -- the
+    executor raises `KeyError` on the missing key, which surfaces as an
+    ExecuteError. That is strictly worse than not declaring the column: on
+    information_schema it is a 0A000 to the client rather than an empty result.
+
+    So declaring a column and populating it are one step, and this is the guard.
+    """
+    from pg_mimic.catalog import _build_information_schema, _build_pg_catalog
+
+    for schema, tables in (
+        _build_pg_catalog({"t": {"id": "integer", "name": "text"}}, "testdb"),
+        _build_information_schema({"t": {"id": "integer"}}),
+    ):
+        namespace = next(iter(schema))
+        for table, columns in schema[namespace].items():
+            for position, row in enumerate(tables[namespace].get(table, [])):
+                missing = sorted(set(columns) - set(row))
+                assert not missing, f"{table} row {position} declares but does not carry {missing}"
