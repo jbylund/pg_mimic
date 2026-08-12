@@ -152,6 +152,66 @@ def test_typarray_points_at_the_real_array_type(conn, mock_session):
         assert cur.fetchone() == (ARRAY_OID[TEXT],)
 
 
+# --- the declared-type round trip -----------------------------------------------------
+#
+# TableSession names each column's type for Session.schema(), and the catalog maps
+# that name back to an OID; the two directions read different tables, so only a test
+# holds them together. They had come apart: no array spelling and no `character` was
+# in DECLARED_TYPE_OIDS, so a `tags text[]` column was catalogued as plain text (#43).
+#
+# Exhaustive over every name TableSession can emit rather than a handful of cases,
+# since a handful is exactly what let those two through.
+
+
+def _names_table_session_emits() -> dict[str, int]:
+    from pg_mimic.arrays import ARRAY_OID
+    from pg_mimic.tables import _PG_NAME, _pg_type_name
+
+    # Both halves of what _pg_type_name can return: a scalar it has a name for, and
+    # the array over one -- which is every scalar, arrays of arrays being no separate
+    # type in Postgres.
+    emitted = list(_PG_NAME) + [ARRAY_OID[oid] for oid in _PG_NAME if oid in ARRAY_OID]
+    return {_pg_type_name(oid): oid for oid in emitted}
+
+
+_TABLE_SESSION_TYPE_NAMES = _names_table_session_emits()
+
+
+@pytest.mark.parametrize(
+    argnames=["declared", "oid"],
+    argvalues=[(name, _TABLE_SESSION_TYPE_NAMES[name]) for name in sorted(_TABLE_SESSION_TYPE_NAMES)],
+    ids=sorted(_TABLE_SESSION_TYPE_NAMES),
+)
+def test_a_declared_type_maps_back_to_the_oid_it_was_named_from(declared, oid):
+    from pg_mimic.catalog import _oid_for_declared_type
+
+    assert _oid_for_declared_type(declared) == oid
+
+
+def test_an_array_column_is_catalogued_as_the_array_type(conn, mock_session):
+    """The user-visible half of #43. Any session declaring an array benefits, not
+    just TableSession, so it is declared here as the free text a schema() returns."""
+    from pg_mimic import TEXT
+    from pg_mimic.arrays import ARRAY_OID
+
+    async def schema():
+        return {"users": {"id": "integer", "tags": "text[]"}}
+
+    mock_session.schema = schema
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT atttypid FROM pg_catalog.pg_attribute WHERE attname = 'tags'")
+        assert cur.fetchone() == (ARRAY_OID[TEXT],)
+
+        # The join psql's \d does not do but a client reading the catalog will:
+        # pg_type has the row, and now the column points at it.
+        cur.execute(
+            "SELECT t.typname FROM pg_catalog.pg_attribute a "
+            "JOIN pg_catalog.pg_type t ON t.oid = a.atttypid WHERE a.attname = 'tags'"
+        )
+        assert cur.fetchone() == ("_text",)
+
+
 def test_backslash_l_lists_the_connected_database(conn, mock_session):
     """pg_database exists with one row -- the database from the startup packet --
     rather than being absent, which the executor reports as an unhelpful

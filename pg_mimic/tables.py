@@ -549,7 +549,8 @@ def _inferred_oid(name: str, column: str, values: list[Any]) -> int:
 
 def _pg_type_name(oid: int) -> str:
     """The type name `Session.schema()` declares -- one of the spellings
-    pg_mimic.catalog_data knows, so the catalog maps it back to this same OID."""
+    pg_mimic.catalog_data knows, or an array over one, so the catalog maps it back to
+    this same OID (see catalog._oid_for_declared_type, and #43 for when it didn't)."""
     if is_array_oid(oid):
         return f"{_pg_type_name(element_oid_of(oid))}[]"
     return _PG_NAME[oid]  # every OID here passed _sqlglot_type_name's check first
