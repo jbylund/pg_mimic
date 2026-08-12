@@ -54,6 +54,7 @@ from sqlglot import exp
 from sqlglot.errors import SqlglotError
 from sqlglot.executor import execute as sqlglot_execute
 from sqlglot.optimizer.annotate_types import annotate_types
+from sqlglot.optimizer.normalize_identifiers import normalize_identifiers
 from sqlglot.optimizer.qualify import qualify
 
 from .arrays import ARRAY_OID, element_oid_of, is_array_oid
@@ -159,7 +160,11 @@ class _Table:
     """One declared table: its columns in order, typed twice -- once the way
     `Session.schema()` spells a type and once the way sqlglot does -- and its rows
     normalised to dicts keyed by exactly those columns (what sqlglot's executor
-    reads, and what makes a missing key an explicit NULL)."""
+    reads, and what makes a missing key an explicit NULL).
+
+    The two sqlglot-facing halves are keyed by the quoted spelling of each column
+    (`_quoted`); `pg_types`, which is the catalog's, keeps the name as declared.
+    """
 
     pg_types: dict[str, str]
     sqlglot_types: dict[str, str]
@@ -228,6 +233,14 @@ class TableSession(Session):
 
         TableSession({"users": [(1, "alice")]}, columns={"users": ["id", "name"]})
 
+    A dict key is the identifier *as written*, exactly as `CREATE TABLE` reads
+    one: `{"users": ...}` answers `FROM users`, `FROM Users` and `FROM "users"`,
+    because Postgres folds an unquoted name to lower case, while `{"Users": ...}`
+    answers only `FROM "Users"` and reports `FROM Users` as a missing relation.
+    Column keys work the same way, so a `{"userId": ...}` row is reachable as
+    `"userId"` and not as `userId`. Lower-case keys are the ones that behave the
+    way hand-written SQL expects.
+
     Construction validates and copies the rows, so it is per-connection work
     (`session_factory` runs once per client). At test-data scale that is
     microseconds; a table large enough for it to matter wants a real database.
@@ -248,11 +261,13 @@ class TableSession(Session):
             raise ValueError(f"columns declares table(s) {unknown} that are not in tables ({sorted(tables)})")
 
         declared = {name: _declare_table(name, rows, declared_columns.get(name)) for name, rows in tables.items()}
-        self._rows = {name: table.rows for name, table in declared.items()}
         self._schema = {name: table.pg_types for name, table in declared.items()}
+        # Quoted, like the column names inside them: sqlglot folds a bare name it is
+        # handed, so `{"Users": ...}` would otherwise declare a table called `users`.
+        self._rows = {_quoted(name): table.rows for name, table in declared.items()}
         # sqlglot's own view of the same declaration: what qualify() resolves `*`
         # and bare column names against, and what the annotator reads types from.
-        self._sqlglot_schema = {name: table.sqlglot_types for name, table in declared.items()}
+        self._sqlglot_schema = {_quoted(name): table.sqlglot_types for name, table in declared.items()}
 
     async def describe(self, sql: str, param_oids: list[int | None]) -> list[ResultColumn] | None:
         plan = self._plan(sql)
@@ -336,6 +351,11 @@ class TableSession(Session):
         except SqlglotError as exc:
             raise PgError(SYNTAX_ERROR, str(exc)) from None
 
+        # Postgres's folding rule -- unquoted names to lower case, quoted ones left
+        # alone -- applied before anything below reads a name off the tree. qualify()
+        # does it too, but too late for _reject_unknown_tables, which would otherwise
+        # match `FROM Users` and `FROM "Users"` against the same declared table.
+        expression = normalize_identifiers(expression, dialect="postgres")
         _reject_non_select(sql, expression)
         expression = _flatten_parenthesized(expression)
         _reject_silently_ignored(expression)
@@ -386,7 +406,10 @@ class TableSession(Session):
             # `users` regardless, which would serve one schema's table as another's.
             if table.db and table.db != "public":
                 raise PgError(UNDEFINED_TABLE, f'relation "{table.db}.{table.name}" does not exist')
-            if table.name not in self._rows and table.name not in cte_names:
+            # Against `_schema`, the one view of the declaration still keyed by the
+            # names as written -- which, the tree having been folded already, is
+            # what `table.name` now is.
+            if table.name not in self._schema and table.name not in cte_names:
                 raise PgError(UNDEFINED_TABLE, f'relation "{table.name}" does not exist')
 
 
@@ -409,9 +432,21 @@ def _declare_table(name: str, rows: TableRows, declared: Mapping[str, DeclaredTy
     sqlglot_types = {column: _sqlglot_type_name(name, column, oid) for column, oid in oids.items()}
     return _Table(
         pg_types={column: _pg_type_name(oid) for column, oid in oids.items()},
-        sqlglot_types=sqlglot_types,
-        rows=normalised,
+        sqlglot_types={_quoted(column): type_name for column, type_name in sqlglot_types.items()},
+        rows=[{_quoted(column): value for column, value in row.items()} for row in normalised],
     )
+
+
+def _quoted(name: str) -> str:
+    """A declared name spelled the way SQL has to spell it to mean that exact
+    identifier -- `Id` as `"Id"`, and a name with a quote in it escaped.
+
+    Everything sqlglot is handed a name in -- the schema, the executor's tables,
+    the query -- goes through the same folding, so an unquoted `Id` would declare a
+    column called `id` and put the declaration out of reach of the only reference
+    Postgres would resolve to it.
+    """
+    return exp.to_identifier(name, quoted=True).sql(dialect="postgres")
 
 
 def _column_names(name: str, rows: TableRows, declared: Mapping[str, DeclaredType] | Sequence[str] | None) -> list[str]:
