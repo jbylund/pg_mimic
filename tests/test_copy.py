@@ -153,6 +153,9 @@ _option_testcases = {
     # forwards verbatim -- refusing it refuses the legacy form outright.
     "legacy_delimiter_as": {"sql": "COPY t FROM STDIN WITH DELIMITER AS '|'", "expected": ("text", "|", "\\N", False)},
     "legacy_null_as": {"sql": "COPY t FROM STDIN WITH NULL AS 'nil'", "expected": ("text", "\t", "nil", False)},
+    # A dollar-quoted constant is a string constant everywhere a literal is taken,
+    # option values included -- real Postgres runs this one.
+    "dollar_quoted_delimiter": {"sql": "COPY t FROM STDIN WITH (DELIMITER $$|$$)", "expected": ("text", "|", "\\N", False)},
 }
 
 
@@ -206,6 +209,13 @@ _not_copy_testcases = {
     # session like any other statement pg_mimic doesn't model.
     "server_side_file": "COPY t FROM '/tmp/x.csv'",
     "server_side_program": "COPY t TO PROGRAM 'gzip > /tmp/x.gz'",
+    # STDIN has to be a word of its own, not the start of one.
+    "stdin_is_only_a_prefix": "COPY t FROM STDINX",
+    "no_target": "COPY FROM STDIN",
+    # An unterminated literal leaves the scanner with no way to tell which words are
+    # inside it. Handing the statement to the session is the harmless way to be wrong
+    # about a COPY; claiming it and asking the client to start sending is not.
+    "unterminated_literal": "COPY (SELECT 'oops) TO STDOUT",
 }
 
 
@@ -221,6 +231,45 @@ def test_not_a_protocol_copy(sql):
 def test_copy_from_a_query_has_no_table_or_columns():
     parsed = parse_copy("COPY (SELECT a FROM t WHERE b = 1) TO STDOUT")
     assert (parsed.direction, parsed.table, parsed.columns) == ("out", None, None)
+
+
+_endpoint_testcases = {
+    "plain_from_stdin": {"sql": "COPY t FROM STDIN", "expected": ("in", "t")},
+    "plain_to_stdout": {"sql": "COPY t TO STDOUT", "expected": ("out", "t")},
+    "trailing_semicolon": {"sql": "COPY t FROM STDIN;", "expected": ("in", "t")},
+    "across_lines": {"sql": "COPY t\n  FROM STDIN\n", "expected": ("in", "t")},
+    # The query's own FROM is not the statement's endpoint.
+    "subquery_from": {"sql": "COPY (SELECT a FROM t) TO STDOUT", "expected": ("out", None)},
+    "nested_parens": {"sql": "COPY (SELECT a FROM (VALUES ('from stdin')) v(a)) TO STDOUT", "expected": ("out", None)},
+    # ... and neither is a FROM STDIN a row happens to spell. Read as flat text this
+    # is a copy-in whose target stops mid-literal, which is the worse half of the
+    # error: the client has been told to start sending before anything downstream
+    # notices. Real Postgres runs it as a copy-out of the query.
+    "literal_holding_from_stdin": {
+        "sql": "COPY (SELECT note FROM t WHERE note = 'copied from stdin yesterday') TO STDOUT",
+        "expected": ("out", None),
+    },
+    "literal_holding_to_stdout": {"sql": "COPY (SELECT 'send it to stdout now') TO STDOUT", "expected": ("out", None)},
+    "escaped_quote_in_the_literal": {"sql": "COPY (SELECT 'it''s from stdin') TO STDOUT", "expected": ("out", None)},
+    # A dollar-quoted body is a literal too, apostrophes and all -- and an apostrophe
+    # that ends no literal is exactly what loses a scanner its place.
+    "dollar_quoted": {"sql": "COPY (SELECT $$ from stdin $$) TO STDOUT", "expected": ("out", None)},
+    "tagged_dollar_quote": {"sql": "COPY (SELECT $q$it's from stdin$q$) TO STDOUT", "expected": ("out", None)},
+    # The same apostrophe, in the one other place Postgres lets it appear unpaired.
+    "apostrophe_in_a_quoted_name": {"sql": 'COPY "it\'s" FROM STDIN', "expected": ("in", "it's")},
+}
+
+
+@pytest.mark.parametrize(
+    argnames=sorted(next(iter(_endpoint_testcases.values()))),
+    argvalues=[[v for k, v in sorted(_endpoint_testcases[name].items())] for name in sorted(_endpoint_testcases)],
+    ids=sorted(_endpoint_testcases),
+)
+def test_the_endpoint_is_found_outside_literals_and_the_query(sql, expected):
+    """Which endpoint a COPY names is the classification the whole module hangs off,
+    so it is scanned with the tokenizer rather than matched against flat text."""
+    parsed = parse_copy(sql)
+    assert (parsed.direction, parsed.table) == expected
 
 
 _target_testcases = {
@@ -353,6 +402,16 @@ def test_psycopg_copy_out_text(copy_conn, copy_session):
         with cur.copy("COPY people TO STDOUT") as copy:
             assert list(copy.rows()) == [("1", "alice"), ("2", None)]
         assert cur.rowcount == 2
+
+
+def test_psycopg_copy_out_of_a_query_that_talks_about_stdin(copy_conn, copy_session):
+    """The whole cost of misreading the endpoint, through a real client: psycopg
+    asked to copy *out* would be sitting in copy-in mode with a CopyInResponse in
+    hand, and there is no way back from that once the invitation has gone out."""
+    copy_session.out_rows = [("copied from stdin yesterday",)]
+    with copy_conn.cursor() as cur:
+        with cur.copy("COPY (SELECT note FROM people WHERE note = 'copied from stdin yesterday') TO STDOUT") as copy:
+            assert list(copy.rows()) == [("copied from stdin yesterday",)]
 
 
 def test_psycopg_copy_out_csv_with_header_from_the_declared_schema(copy_conn, copy_session):
