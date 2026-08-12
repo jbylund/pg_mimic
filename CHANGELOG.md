@@ -67,6 +67,13 @@ what shipped rather than what was written down at the time.
   encodings, `search_path`, `server_version` and `port` — still come from the
   connection. (#32, #76)
 
+### Fixed
+
+- A column declared as an array (`text[]`) or as `character` is catalogued as
+  that type instead of falling back to `text`, so `pg_attribute.atttypid` points
+  at the array type a client joins `pg_type` on, and `\d+` reports its storage
+  as extended. (#43)
+
 ### Internal
 
 - `SessionState` is extracted and shared by the middleware and the session, so

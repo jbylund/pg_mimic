@@ -168,9 +168,12 @@ def _storage_for(oid: int) -> str:
     what psql's \\d+ "Storage" column is reporting anyway: variable-length types are
     TOASTable ('x'), fixed-width ones are laid out plain ('p').
     """
-    from .types import BYTEA, JSON, JSONB, NUMERIC, TEXT, VARCHAR
+    from .arrays import is_array_oid
+    from .types import BPCHAR, BYTEA, JSON, JSONB, NUMERIC, TEXT, VARCHAR
 
-    return "x" if oid in {TEXT, VARCHAR, BYTEA, JSON, JSONB, NUMERIC} else "p"
+    # Every array is variable-length whatever its element is, so they are all 'x'
+    # in Postgres and none of them need listing individually.
+    return "x" if is_array_oid(oid) or oid in {TEXT, VARCHAR, BPCHAR, BYTEA, JSON, JSONB, NUMERIC} else "p"
 
 
 def _typname_for(rows: list[dict], oid: int) -> str:
@@ -294,14 +297,28 @@ def _build_pg_catalog(user_schema: dict, database: str = "postgres") -> tuple[di
 
 
 def _oid_for_declared_type(declared: str) -> int:
-    """Session.schema() declares types as free text ("integer", "text"), so map the
+    """Session.schema() declares types as free text ("integer", "text[]"), so map the
     common spellings onto real OIDs and fall back to text for anything else."""
     from . import types as pg_types
+    from .arrays import ARRAY_OID
 
-    name = DECLARED_TYPE_OIDS.get(str(declared).strip().lower())
-    if name is not None:
-        return getattr(pg_types, name)
-    return oid_for_type(str)
+    name = str(declared).strip().lower()
+    # A trailing `[]` says array, and how many of them says nothing else: Postgres
+    # has one array type per element type however many dimensions the declaration
+    # spells, so `text[][]` is the same `_text` as `text[]`. Strip them all and
+    # resolve the element once.
+    element = name
+    while element.endswith("[]"):
+        element = element[:-2].rstrip()
+
+    type_name = DECLARED_TYPE_OIDS.get(element)
+    oid = getattr(pg_types, type_name) if type_name is not None else oid_for_type(str)
+    if element == name:
+        return oid
+    # An element with no array type over it is not a case pg_mimic can reach --
+    # everything in DECLARED_TYPE_OIDS has one, as does the text fallback -- so the
+    # element OID is only here to keep an unknown from becoming a KeyError.
+    return ARRAY_OID.get(oid, oid)
 
 
 # --- the statements the middleware hands back ----------------------------------------
