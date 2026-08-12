@@ -4,6 +4,11 @@ from importlib.metadata import version as _installed_version
 # middleware is exported because Session.middleware is a public extension point --
 # customising the chain needs middleware.DEFAULT_MIDDLEWARE / middleware.static_select.
 # catalog rides along for Session.schema()-driven information_schema emulation.
+#
+# `testing` is deliberately NOT imported here, unlike those two. Nothing in the
+# serving path refers to it, so importing it eagerly would make every process that
+# embeds a server -- production ones included -- pay for a threading-based test
+# harness it never calls. `import pg_mimic.testing` in your tests instead.
 from . import catalog, middleware
 from .arrays import ARRAY_OID
 from .auth import (

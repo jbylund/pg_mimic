@@ -8,6 +8,7 @@ import asyncio
 import inspect
 import os
 import struct
+from types import TracebackType
 from typing import Awaitable, Callable
 
 from . import messages
@@ -63,6 +64,28 @@ class PgServer:
         async with self._server:
             await self._server.serve_forever()
 
+    async def __aenter__(self) -> PgServer:
+        """Start on an ephemeral port, unless the caller already started us.
+
+        Deliberately no serve_forever() here: asyncio.start_server() is already
+        accepting connections by the time it returns, and serve_forever() only
+        parks a coroutine for a process whose whole job is running the server.
+        A test's job is the test, so it needs the server started and nothing
+        holding its own coroutine hostage.
+        """
+        if self._server is None:
+            await self.start_server(host="127.0.0.1", port=0)
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        self.close()
+        await self.wait_closed()
+
     def close(self) -> None:
         """Stop listening and drop live connections.
 
@@ -95,6 +118,27 @@ class PgServer:
 
     def sockets(self):
         return self._server.sockets if self._server is not None else None
+
+    @property
+    def port(self) -> int:
+        """The port actually bound -- the answer to starting on port 0, which is
+        what anything embedding the server in a test wants to do."""
+        sockets = self.sockets()
+        assert sockets, "not listening on a TCP socket -- call start_server() first"
+        return sockets[0].getsockname()[1]
+
+    def dsn(self, user: str = "postgres", dbname: str = "postgres", host: str = "127.0.0.1") -> str:
+        """A libpq connection string pointing at this server.
+
+        `user` and `dbname` are startup parameters, not credentials or real
+        databases: trust auth (the default) accepts any user, and a mimic has
+        whatever databases its session says it has. They are arguments because a
+        session -- or a test asserting on `current_user`/`current_database()` --
+        may care what it was told. `host` is not read back off the socket
+        because a server bound to 0.0.0.0 reports an address nothing can connect
+        to.
+        """
+        return f"host={host} port={self.port} user={user} dbname={dbname}"
 
     def cancel(self, pid: int, secret: int) -> None:
         conn = self._connections.get(pid)
