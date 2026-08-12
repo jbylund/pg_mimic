@@ -127,6 +127,7 @@ def _pg_type_rows() -> list[dict]:
                 "typcategory": "U",
                 "typdelim": ",",
                 "typcollation": 0,
+                "typarray": ARRAY_OID.get(oid, 0),
             }
         )
     for element_oid, array_oid in ARRAY_OID.items():
@@ -145,6 +146,7 @@ def _pg_type_rows() -> list[dict]:
                 "typcategory": "A",
                 "typdelim": ",",
                 "typcollation": 0,
+                "typarray": 0,
             }
         )
     return rows
@@ -157,6 +159,18 @@ def pg_type_by_oid() -> dict[int, dict]:
     ones psql sees and the same ones the wire codecs can actually handle.
     """
     return {row["oid"]: row for row in _pg_type_rows()}
+
+
+def _storage_for(oid: int) -> str:
+    """Postgres' storage mode for a column of this type.
+
+    pg_mimic stores nothing, so this is derived rather than observed -- but that is
+    what psql's \\d+ "Storage" column is reporting anyway: variable-length types are
+    TOASTable ('x'), fixed-width ones are laid out plain ('p').
+    """
+    from .types import BYTEA, JSON, JSONB, NUMERIC, TEXT, VARCHAR
+
+    return "x" if oid in {TEXT, VARCHAR, BYTEA, JSON, JSONB, NUMERIC} else "p"
 
 
 def _typname_for(rows: list[dict], oid: int) -> str:
@@ -212,6 +226,9 @@ def _build_pg_catalog(user_schema: dict) -> tuple[dict, dict]:
                     "atttypmod": -1,
                     "attstattarget": -1,
                     "attformattype": str(col_type),
+                    "attstorage": _storage_for(_oid_for_declared_type(col_type)),
+                    # '' is Postgres' own "no explicit compression set".
+                    "attcompression": "",
                 }
             )
 
@@ -235,7 +252,11 @@ def _build_pg_catalog(user_schema: dict) -> tuple[dict, dict]:
             "pg_trigger": [],
             "pg_policy": [],
             "pg_statistic_ext": [],
-            "pg_roles": [{"oid": _OWNER_OID, "rolname": "postgres"}],
+            # No privilege model here at all, so claiming superuser would be the more
+            # flattering lie. False is the safer one.
+            "pg_roles": [{"oid": _OWNER_OID, "rolname": "postgres", "rolsuper": False, "rolinherit": True, "rolcreaterole": False}],
+            "pg_publication": [],
+            "pg_publication_rel": [],
         }
     }
     return PG_CATALOG_SCHEMA, tables
