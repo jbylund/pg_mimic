@@ -248,6 +248,45 @@ def test_a_scalar_subquery_in_the_select_list_runs():
     assert _rows("SELECT a, (SELECT max(b) FROM u) FROM t", tables, schema) == [(1, 9), (2, 9)]
 
 
+@pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
+def test_a_correlated_scalar_subquery_runs():
+    """https://github.com/jbylund/pg_mimic/issues/58
+
+    Its own tripwire because the uncorrelated one above can be worked around
+    downstream -- rewritten to a CROSS JOIN, or evaluated once and spliced in as a
+    literal -- and this cannot: a correlated subquery has to be evaluated per outer
+    row, which is the thing the executor fails at. psql's \\dT sends this form, so
+    a fix for the uncorrelated case alone would flip that test and leave \\dT empty.
+    """
+    tables = {"t": [{"a": 1}, {"a": 20}], "u": [{"b": 9}]}
+    schema = {"t": {"a": "INT"}, "u": {"b": "INT"}}
+    assert _rows("SELECT a, (SELECT max(b) FROM u WHERE b < t.a) FROM t", tables, schema) == [(1, None), (20, 9)]
+
+
+@pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
+def test_an_inline_values_list_can_be_selected_from():
+    """https://github.com/jbylund/pg_mimic/issues/58
+
+    `'Values' object has no attribute 'parts'`. psql's \\d foreign-key footer sends
+    exactly this shape, inside an IN (...).
+    """
+    tables, schema = {"t": [{"a": 1}]}, {"t": {"a": "INT"}}
+    assert _rows("SELECT * FROM (VALUES ('16384')) AS v", tables, schema) == [("16384",)]
+
+
+@pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
+def test_in_takes_a_from_less_subquery():
+    """https://github.com/jbylund/pg_mimic/issues/58
+
+    Found underneath the inline VALUES: the obvious rewrite of `IN (SELECT * FROM
+    (VALUES (x)))` is `IN (SELECT x)`, and that fails too. `IN` over a real table
+    or a literal list is fine, and a FROM-less SELECT on its own is fine -- it is
+    the combination.
+    """
+    tables, schema = {"t": [{"a": 1}]}, {"t": {"a": "INT"}}
+    assert _rows("SELECT a FROM t WHERE a IN (SELECT 1)", tables, schema) == [(1,)]
+
+
 def test_full_outer_join_preserves_unmatched_rows():
     """Not xfail: fixed upstream in v30.15.0 (commit f85ea4c2), which is why
     `sqlglot>=30.16.0` is pinned and TableSession no longer refuses it:
