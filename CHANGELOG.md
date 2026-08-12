@@ -48,6 +48,24 @@ what shipped rather than what was written down at the time.
   worse failure. (#67)
 - Requires `sqlglot>=30.17.0`. Several workarounds for executor bugs were
   deleted because that release fixes them. (#70)
+- **Breaking.** `TableSession` folds identifiers the way Postgres does. A dict key
+  is the identifier *as written*, so it is what a **quoted** reference matches,
+  while an unquoted reference folds to lower case. Mixed-case keys change
+  behaviour in both directions: against `{"userId": 1}`, `SELECT "userId"` now
+  works where it used to raise, and `SELECT userId` now raises where it used to
+  work. `SELECT *` is unaffected, as are all-lower-case keys. (#41, #42, #75)
+- **Breaking.** A configuration parameter that was never set no longer reads as
+  the empty string. `SHOW never.set` and `current_setting('never.set')` raise
+  `42704`, while `current_setting('never.set', true)` is `NULL` — which is what
+  `current_setting('app.tenant', true) IS NULL`, the usual row-level-security
+  probe, is actually asking. Code relying on an unknown parameter reading as `''`
+  has to change. (#32, #76)
+- pg_mimic carries the ~400 parameters a real server is born knowing, generated
+  from `pg_settings` by `tools/generate_pg_settings.py`, so `SHOW work_mem`
+  answers `4MB` rather than erroring, `RESET` restores a parameter's default
+  instead of blanking it, and `SHOW ALL` lists them. Values pg_mimic owns —
+  encodings, `search_path`, `server_version` and `port` — still come from the
+  connection. (#32, #76)
 
 ### Internal
 
