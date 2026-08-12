@@ -6,2389 +6,4182 @@
    "default": "on",
    "vartype": "bool",
    "context": "sighup",
-   "short_desc": "Allows running the ALTER SYSTEM command."
+   "short_desc": "Allows running the ALTER SYSTEM command.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "allow_in_place_tablespaces": {
    "default": "off",
    "vartype": "bool",
    "context": "superuser",
-   "short_desc": "Allows tablespaces directly inside pg_tblspc, for testing."
+   "short_desc": "Allows tablespaces directly inside pg_tblspc, for testing.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "allow_system_table_mods": {
    "default": "off",
    "vartype": "bool",
    "context": "superuser",
-   "short_desc": "Allows modifications of the structure of system tables."
+   "short_desc": "Allows modifications of the structure of system tables.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "application_name": {
    "default": "",
    "vartype": "string",
    "context": "user",
-   "short_desc": "Sets the application name to be reported in statistics and logs."
+   "short_desc": "Sets the application name to be reported in statistics and logs.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "archive_cleanup_command": {
    "default": "",
    "vartype": "string",
    "context": "sighup",
-   "short_desc": "Sets the shell command that will be executed at every restart point."
+   "short_desc": "Sets the shell command that will be executed at every restart point.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "archive_command": {
    "default": "",
    "vartype": "string",
    "context": "sighup",
-   "short_desc": "Sets the shell command that will be called to archive a WAL file."
+   "short_desc": "Sets the shell command that will be called to archive a WAL file.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "archive_library": {
    "default": "",
    "vartype": "string",
    "context": "sighup",
-   "short_desc": "Sets the library that will be called to archive a WAL file."
+   "short_desc": "Sets the library that will be called to archive a WAL file.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "archive_mode": {
    "default": "off",
    "vartype": "enum",
    "context": "postmaster",
-   "short_desc": "Allows archiving of WAL files using \"archive_command\"."
+   "short_desc": "Allows archiving of WAL files using \"archive_command\".",
+   "unit": "",
+   "enumvals": [
+    "always",
+    "on",
+    "off"
+   ],
+   "min_val": "",
+   "max_val": ""
   },
   "archive_timeout": {
    "default": "0",
    "vartype": "integer",
    "context": "sighup",
-   "short_desc": "Sets the amount of time to wait before forcing a switch to the next WAL file."
+   "short_desc": "Sets the amount of time to wait before forcing a switch to the next WAL file.",
+   "unit": "s",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "1073741823"
   },
   "array_nulls": {
    "default": "on",
    "vartype": "bool",
    "context": "user",
-   "short_desc": "Enables input of NULL elements in arrays."
+   "short_desc": "Enables input of NULL elements in arrays.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "authentication_timeout": {
    "default": "1min",
    "vartype": "integer",
    "context": "sighup",
-   "short_desc": "Sets the maximum allowed time to complete client authentication."
+   "short_desc": "Sets the maximum allowed time to complete client authentication.",
+   "unit": "s",
+   "enumvals": [],
+   "min_val": "1",
+   "max_val": "600"
   },
   "autovacuum": {
    "default": "on",
    "vartype": "bool",
    "context": "sighup",
-   "short_desc": "Starts the autovacuum subprocess."
+   "short_desc": "Starts the autovacuum subprocess.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "autovacuum_analyze_scale_factor": {
    "default": "0.1",
    "vartype": "real",
    "context": "sighup",
-   "short_desc": "Number of tuple inserts, updates, or deletes prior to analyze as a fraction of reltuples."
+   "short_desc": "Number of tuple inserts, updates, or deletes prior to analyze as a fraction of reltuples.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "100"
   },
   "autovacuum_analyze_threshold": {
    "default": "50",
    "vartype": "integer",
    "context": "sighup",
-   "short_desc": "Minimum number of tuple inserts, updates, or deletes prior to analyze."
+   "short_desc": "Minimum number of tuple inserts, updates, or deletes prior to analyze.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "2147483647"
   },
   "autovacuum_freeze_max_age": {
    "default": "200000000",
    "vartype": "integer",
    "context": "postmaster",
-   "short_desc": "Age at which to autovacuum a table to prevent transaction ID wraparound."
+   "short_desc": "Age at which to autovacuum a table to prevent transaction ID wraparound.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "100000",
+   "max_val": "2000000000"
   },
   "autovacuum_max_workers": {
    "default": "3",
    "vartype": "integer",
    "context": "sighup",
-   "short_desc": "Sets the maximum number of simultaneously running autovacuum worker processes."
+   "short_desc": "Sets the maximum number of simultaneously running autovacuum worker processes.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "1",
+   "max_val": "262143"
   },
   "autovacuum_multixact_freeze_max_age": {
    "default": "400000000",
    "vartype": "integer",
    "context": "postmaster",
-   "short_desc": "Multixact age at which to autovacuum a table to prevent multixact wraparound."
+   "short_desc": "Multixact age at which to autovacuum a table to prevent multixact wraparound.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "10000",
+   "max_val": "2000000000"
   },
   "autovacuum_naptime": {
    "default": "1min",
    "vartype": "integer",
    "context": "sighup",
-   "short_desc": "Time to sleep between autovacuum runs."
+   "short_desc": "Time to sleep between autovacuum runs.",
+   "unit": "s",
+   "enumvals": [],
+   "min_val": "1",
+   "max_val": "2147483"
   },
   "autovacuum_vacuum_cost_delay": {
    "default": "2ms",
    "vartype": "real",
    "context": "sighup",
-   "short_desc": "Vacuum cost delay in milliseconds, for autovacuum."
+   "short_desc": "Vacuum cost delay in milliseconds, for autovacuum.",
+   "unit": "ms",
+   "enumvals": [],
+   "min_val": "-1",
+   "max_val": "100"
   },
   "autovacuum_vacuum_cost_limit": {
    "default": "-1",
    "vartype": "integer",
    "context": "sighup",
-   "short_desc": "Vacuum cost amount available before napping, for autovacuum."
+   "short_desc": "Vacuum cost amount available before napping, for autovacuum.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "-1",
+   "max_val": "10000"
   },
   "autovacuum_vacuum_insert_scale_factor": {
    "default": "0.2",
    "vartype": "real",
    "context": "sighup",
-   "short_desc": "Number of tuple inserts prior to vacuum as a fraction of reltuples."
+   "short_desc": "Number of tuple inserts prior to vacuum as a fraction of reltuples.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "100"
   },
   "autovacuum_vacuum_insert_threshold": {
    "default": "1000",
    "vartype": "integer",
    "context": "sighup",
-   "short_desc": "Minimum number of tuple inserts prior to vacuum."
+   "short_desc": "Minimum number of tuple inserts prior to vacuum.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "-1",
+   "max_val": "2147483647"
   },
   "autovacuum_vacuum_max_threshold": {
    "default": "100000000",
    "vartype": "integer",
    "context": "sighup",
-   "short_desc": "Maximum number of tuple updates or deletes prior to vacuum."
+   "short_desc": "Maximum number of tuple updates or deletes prior to vacuum.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "-1",
+   "max_val": "2147483647"
   },
   "autovacuum_vacuum_scale_factor": {
    "default": "0.2",
    "vartype": "real",
    "context": "sighup",
-   "short_desc": "Number of tuple updates or deletes prior to vacuum as a fraction of reltuples."
+   "short_desc": "Number of tuple updates or deletes prior to vacuum as a fraction of reltuples.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "100"
   },
   "autovacuum_vacuum_threshold": {
    "default": "50",
    "vartype": "integer",
    "context": "sighup",
-   "short_desc": "Minimum number of tuple updates or deletes prior to vacuum."
+   "short_desc": "Minimum number of tuple updates or deletes prior to vacuum.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "2147483647"
   },
   "autovacuum_work_mem": {
    "default": "-1",
    "vartype": "integer",
    "context": "sighup",
-   "short_desc": "Sets the maximum memory to be used by each autovacuum worker process."
+   "short_desc": "Sets the maximum memory to be used by each autovacuum worker process.",
+   "unit": "kB",
+   "enumvals": [],
+   "min_val": "-1",
+   "max_val": "2147483647"
   },
   "autovacuum_worker_slots": {
    "default": "16",
    "vartype": "integer",
    "context": "postmaster",
-   "short_desc": "Sets the number of backend slots to allocate for autovacuum workers."
+   "short_desc": "Sets the number of backend slots to allocate for autovacuum workers.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "1",
+   "max_val": "262143"
   },
   "backend_flush_after": {
    "default": "0",
    "vartype": "integer",
    "context": "user",
-   "short_desc": "Number of pages after which previously performed writes are flushed to disk."
+   "short_desc": "Number of pages after which previously performed writes are flushed to disk.",
+   "unit": "8kB",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "256"
   },
   "backslash_quote": {
    "default": "safe_encoding",
    "vartype": "enum",
    "context": "user",
-   "short_desc": "Sets whether \"\\'\" is allowed in string literals."
+   "short_desc": "Sets whether \"\\'\" is allowed in string literals.",
+   "unit": "",
+   "enumvals": [
+    "safe_encoding",
+    "on",
+    "off"
+   ],
+   "min_val": "",
+   "max_val": ""
   },
   "backtrace_functions": {
    "default": "",
    "vartype": "string",
    "context": "superuser",
-   "short_desc": "Log backtrace for errors in these functions."
+   "short_desc": "Log backtrace for errors in these functions.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "bgwriter_delay": {
    "default": "200ms",
    "vartype": "integer",
    "context": "sighup",
-   "short_desc": "Background writer sleep time between rounds."
+   "short_desc": "Background writer sleep time between rounds.",
+   "unit": "ms",
+   "enumvals": [],
+   "min_val": "10",
+   "max_val": "10000"
   },
   "bgwriter_flush_after": {
    "default": "0",
    "vartype": "integer",
    "context": "sighup",
-   "short_desc": "Number of pages after which previously performed writes are flushed to disk."
+   "short_desc": "Number of pages after which previously performed writes are flushed to disk.",
+   "unit": "8kB",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "256"
   },
   "bgwriter_lru_maxpages": {
    "default": "100",
    "vartype": "integer",
    "context": "sighup",
-   "short_desc": "Background writer maximum number of LRU pages to flush per round."
+   "short_desc": "Background writer maximum number of LRU pages to flush per round.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "1073741823"
   },
   "bgwriter_lru_multiplier": {
    "default": "2",
    "vartype": "real",
    "context": "sighup",
-   "short_desc": "Multiple of the average buffer usage to free per round."
+   "short_desc": "Multiple of the average buffer usage to free per round.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "10"
   },
   "block_size": {
    "default": "8192",
    "vartype": "integer",
    "context": "internal",
-   "short_desc": "Shows the size of a disk block."
+   "short_desc": "Shows the size of a disk block.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "8192",
+   "max_val": "8192"
   },
   "bonjour": {
    "default": "off",
    "vartype": "bool",
    "context": "postmaster",
-   "short_desc": "Enables advertising the server via Bonjour."
+   "short_desc": "Enables advertising the server via Bonjour.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "bonjour_name": {
    "default": "",
    "vartype": "string",
    "context": "postmaster",
-   "short_desc": "Sets the Bonjour service name."
+   "short_desc": "Sets the Bonjour service name.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "bytea_output": {
    "default": "hex",
    "vartype": "enum",
    "context": "user",
-   "short_desc": "Sets the output format for bytea."
+   "short_desc": "Sets the output format for bytea.",
+   "unit": "",
+   "enumvals": [
+    "escape",
+    "hex"
+   ],
+   "min_val": "",
+   "max_val": ""
   },
   "check_function_bodies": {
    "default": "on",
    "vartype": "bool",
    "context": "user",
-   "short_desc": "Check routine bodies during CREATE FUNCTION and CREATE PROCEDURE."
+   "short_desc": "Check routine bodies during CREATE FUNCTION and CREATE PROCEDURE.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "checkpoint_completion_target": {
    "default": "0.9",
    "vartype": "real",
    "context": "sighup",
-   "short_desc": "Time spent flushing dirty buffers during checkpoint, as fraction of checkpoint interval."
+   "short_desc": "Time spent flushing dirty buffers during checkpoint, as fraction of checkpoint interval.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "1"
   },
   "checkpoint_flush_after": {
    "default": "0",
    "vartype": "integer",
    "context": "sighup",
-   "short_desc": "Number of pages after which previously performed writes are flushed to disk."
+   "short_desc": "Number of pages after which previously performed writes are flushed to disk.",
+   "unit": "8kB",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "256"
   },
   "checkpoint_timeout": {
    "default": "5min",
    "vartype": "integer",
    "context": "sighup",
-   "short_desc": "Sets the maximum time between automatic WAL checkpoints."
+   "short_desc": "Sets the maximum time between automatic WAL checkpoints.",
+   "unit": "s",
+   "enumvals": [],
+   "min_val": "30",
+   "max_val": "86400"
   },
   "checkpoint_warning": {
    "default": "30s",
    "vartype": "integer",
    "context": "sighup",
-   "short_desc": "Sets the maximum time before warning if checkpoints triggered by WAL volume happen too frequently."
+   "short_desc": "Sets the maximum time before warning if checkpoints triggered by WAL volume happen too frequently.",
+   "unit": "s",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "2147483647"
   },
   "client_connection_check_interval": {
    "default": "0",
    "vartype": "integer",
    "context": "user",
-   "short_desc": "Sets the time interval between checks for disconnection while running queries."
+   "short_desc": "Sets the time interval between checks for disconnection while running queries.",
+   "unit": "ms",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "2147483647"
   },
   "client_encoding": {
    "default": "SQL_ASCII",
    "vartype": "string",
    "context": "user",
-   "short_desc": "Sets the client's character set encoding."
+   "short_desc": "Sets the client's character set encoding.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "client_min_messages": {
    "default": "notice",
    "vartype": "enum",
    "context": "user",
-   "short_desc": "Sets the message levels that are sent to the client."
+   "short_desc": "Sets the message levels that are sent to the client.",
+   "unit": "",
+   "enumvals": [
+    "debug5",
+    "debug4",
+    "debug3",
+    "debug2",
+    "debug1",
+    "log",
+    "notice",
+    "warning",
+    "error"
+   ],
+   "min_val": "",
+   "max_val": ""
   },
   "cluster_name": {
    "default": "",
    "vartype": "string",
    "context": "postmaster",
-   "short_desc": "Sets the name of the cluster, which is included in the process title."
+   "short_desc": "Sets the name of the cluster, which is included in the process title.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "commit_delay": {
    "default": "0",
    "vartype": "integer",
    "context": "superuser",
-   "short_desc": "Sets the delay in microseconds between transaction commit and flushing WAL to disk."
+   "short_desc": "Sets the delay in microseconds between transaction commit and flushing WAL to disk.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "100000"
   },
   "commit_siblings": {
    "default": "5",
    "vartype": "integer",
    "context": "user",
-   "short_desc": "Sets the minimum number of concurrent open transactions required before performing \"commit_delay\"."
+   "short_desc": "Sets the minimum number of concurrent open transactions required before performing \"commit_delay\".",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "1000"
   },
   "commit_timestamp_buffers": {
    "default": "0",
    "vartype": "integer",
    "context": "postmaster",
-   "short_desc": "Sets the size of the dedicated buffer pool used for the commit timestamp cache."
+   "short_desc": "Sets the size of the dedicated buffer pool used for the commit timestamp cache.",
+   "unit": "8kB",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "131072"
   },
   "compute_query_id": {
    "default": "auto",
    "vartype": "enum",
    "context": "superuser",
-   "short_desc": "Enables in-core computation of query identifiers."
+   "short_desc": "Enables in-core computation of query identifiers.",
+   "unit": "",
+   "enumvals": [
+    "auto",
+    "regress",
+    "on",
+    "off"
+   ],
+   "min_val": "",
+   "max_val": ""
   },
   "config_file": {
    "default": "",
    "vartype": "string",
    "context": "postmaster",
-   "short_desc": "Sets the server's main configuration file."
+   "short_desc": "Sets the server's main configuration file.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "constraint_exclusion": {
    "default": "partition",
    "vartype": "enum",
    "context": "user",
-   "short_desc": "Enables the planner to use constraints to optimize queries."
+   "short_desc": "Enables the planner to use constraints to optimize queries.",
+   "unit": "",
+   "enumvals": [
+    "partition",
+    "on",
+    "off"
+   ],
+   "min_val": "",
+   "max_val": ""
   },
   "cpu_index_tuple_cost": {
    "default": "0.005",
    "vartype": "real",
    "context": "user",
-   "short_desc": "Sets the planner's estimate of the cost of processing each index entry during an index scan."
+   "short_desc": "Sets the planner's estimate of the cost of processing each index entry during an index scan.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "1.79769e+308"
   },
   "cpu_operator_cost": {
    "default": "0.0025",
    "vartype": "real",
    "context": "user",
-   "short_desc": "Sets the planner's estimate of the cost of processing each operator or function call."
+   "short_desc": "Sets the planner's estimate of the cost of processing each operator or function call.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "1.79769e+308"
   },
   "cpu_tuple_cost": {
    "default": "0.01",
    "vartype": "real",
    "context": "user",
-   "short_desc": "Sets the planner's estimate of the cost of processing each tuple (row)."
+   "short_desc": "Sets the planner's estimate of the cost of processing each tuple (row).",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "1.79769e+308"
   },
   "createrole_self_grant": {
    "default": "",
    "vartype": "string",
    "context": "user",
-   "short_desc": "Sets whether a CREATEROLE user automatically grants the role to themselves, and with which options."
+   "short_desc": "Sets whether a CREATEROLE user automatically grants the role to themselves, and with which options.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "cursor_tuple_fraction": {
    "default": "0.1",
    "vartype": "real",
    "context": "user",
-   "short_desc": "Sets the planner's estimate of the fraction of a cursor's rows that will be retrieved."
+   "short_desc": "Sets the planner's estimate of the fraction of a cursor's rows that will be retrieved.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "1"
   },
   "data_checksums": {
    "default": "off",
    "vartype": "bool",
    "context": "internal",
-   "short_desc": "Shows whether data checksums are turned on for this cluster."
+   "short_desc": "Shows whether data checksums are turned on for this cluster.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "data_directory": {
    "default": "",
    "vartype": "string",
    "context": "postmaster",
-   "short_desc": "Sets the server's data directory."
+   "short_desc": "Sets the server's data directory.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "data_directory_mode": {
    "default": "448",
    "vartype": "integer",
    "context": "internal",
-   "short_desc": "Shows the mode of the data directory."
+   "short_desc": "Shows the mode of the data directory.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "511"
   },
   "data_sync_retry": {
    "default": "off",
    "vartype": "bool",
    "context": "postmaster",
-   "short_desc": "Whether to continue running after a failure to sync data files."
+   "short_desc": "Whether to continue running after a failure to sync data files.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "datestyle": {
    "default": "ISO, MDY",
    "vartype": "string",
    "context": "user",
-   "short_desc": "Sets the display format for date and time values."
+   "short_desc": "Sets the display format for date and time values.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "deadlock_timeout": {
    "default": "1s",
    "vartype": "integer",
    "context": "superuser",
-   "short_desc": "Sets the time to wait on a lock before checking for deadlock."
+   "short_desc": "Sets the time to wait on a lock before checking for deadlock.",
+   "unit": "ms",
+   "enumvals": [],
+   "min_val": "1",
+   "max_val": "2147483647"
   },
   "debug_assertions": {
    "default": "off",
    "vartype": "bool",
    "context": "internal",
-   "short_desc": "Shows whether the running server has assertion checks enabled."
+   "short_desc": "Shows whether the running server has assertion checks enabled.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "debug_discard_caches": {
    "default": "0",
    "vartype": "integer",
    "context": "superuser",
-   "short_desc": "Aggressively flush system caches for debugging purposes."
+   "short_desc": "Aggressively flush system caches for debugging purposes.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "0"
   },
   "debug_io_direct": {
    "default": "",
    "vartype": "string",
    "context": "postmaster",
-   "short_desc": "Use direct I/O for file access."
+   "short_desc": "Use direct I/O for file access.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "debug_logical_replication_streaming": {
    "default": "buffered",
    "vartype": "enum",
    "context": "user",
-   "short_desc": "Forces immediate streaming or serialization of changes in large transactions."
+   "short_desc": "Forces immediate streaming or serialization of changes in large transactions.",
+   "unit": "",
+   "enumvals": [
+    "buffered",
+    "immediate"
+   ],
+   "min_val": "",
+   "max_val": ""
   },
   "debug_parallel_query": {
    "default": "off",
    "vartype": "enum",
    "context": "user",
-   "short_desc": "Forces the planner's use parallel query nodes."
+   "short_desc": "Forces the planner's use parallel query nodes.",
+   "unit": "",
+   "enumvals": [
+    "off",
+    "on",
+    "regress"
+   ],
+   "min_val": "",
+   "max_val": ""
   },
   "debug_pretty_print": {
    "default": "on",
    "vartype": "bool",
    "context": "user",
-   "short_desc": "Indents parse and plan tree displays."
+   "short_desc": "Indents parse and plan tree displays.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "debug_print_parse": {
    "default": "off",
    "vartype": "bool",
    "context": "user",
-   "short_desc": "Logs each query's parse tree."
+   "short_desc": "Logs each query's parse tree.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "debug_print_plan": {
    "default": "off",
    "vartype": "bool",
    "context": "user",
-   "short_desc": "Logs each query's execution plan."
+   "short_desc": "Logs each query's execution plan.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "debug_print_rewritten": {
    "default": "off",
    "vartype": "bool",
    "context": "user",
-   "short_desc": "Logs each query's rewritten parse tree."
+   "short_desc": "Logs each query's rewritten parse tree.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "default_statistics_target": {
    "default": "100",
    "vartype": "integer",
    "context": "user",
-   "short_desc": "Sets the default statistics target."
+   "short_desc": "Sets the default statistics target.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "1",
+   "max_val": "10000"
   },
   "default_table_access_method": {
    "default": "heap",
    "vartype": "string",
    "context": "user",
-   "short_desc": "Sets the default table access method for new tables."
+   "short_desc": "Sets the default table access method for new tables.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "default_tablespace": {
    "default": "",
    "vartype": "string",
    "context": "user",
-   "short_desc": "Sets the default tablespace to create tables and indexes in."
+   "short_desc": "Sets the default tablespace to create tables and indexes in.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "default_text_search_config": {
    "default": "pg_catalog.simple",
    "vartype": "string",
    "context": "user",
-   "short_desc": "Sets default text search configuration."
+   "short_desc": "Sets default text search configuration.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "default_toast_compression": {
    "default": "pglz",
    "vartype": "enum",
    "context": "user",
-   "short_desc": "Sets the default compression method for compressible values."
+   "short_desc": "Sets the default compression method for compressible values.",
+   "unit": "",
+   "enumvals": [
+    "pglz",
+    "lz4"
+   ],
+   "min_val": "",
+   "max_val": ""
   },
   "default_transaction_deferrable": {
    "default": "off",
    "vartype": "bool",
    "context": "user",
-   "short_desc": "Sets the default deferrable status of new transactions."
+   "short_desc": "Sets the default deferrable status of new transactions.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "default_transaction_isolation": {
    "default": "read committed",
    "vartype": "enum",
    "context": "user",
-   "short_desc": "Sets the transaction isolation level of each new transaction."
+   "short_desc": "Sets the transaction isolation level of each new transaction.",
+   "unit": "",
+   "enumvals": [
+    "serializable",
+    "repeatable read",
+    "read committed",
+    "read uncommitted"
+   ],
+   "min_val": "",
+   "max_val": ""
   },
   "default_transaction_read_only": {
    "default": "off",
    "vartype": "bool",
    "context": "user",
-   "short_desc": "Sets the default read-only status of new transactions."
+   "short_desc": "Sets the default read-only status of new transactions.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "dynamic_library_path": {
    "default": "$libdir",
    "vartype": "string",
    "context": "superuser",
-   "short_desc": "Sets the path for dynamically loadable modules."
+   "short_desc": "Sets the path for dynamically loadable modules.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "dynamic_shared_memory_type": {
    "default": "posix",
    "vartype": "enum",
    "context": "postmaster",
-   "short_desc": "Selects the dynamic shared memory implementation used."
+   "short_desc": "Selects the dynamic shared memory implementation used.",
+   "unit": "",
+   "enumvals": [
+    "posix",
+    "sysv",
+    "mmap"
+   ],
+   "min_val": "",
+   "max_val": ""
   },
   "effective_cache_size": {
    "default": "4GB",
    "vartype": "integer",
    "context": "user",
-   "short_desc": "Sets the planner's assumption about the total size of the data caches."
+   "short_desc": "Sets the planner's assumption about the total size of the data caches.",
+   "unit": "8kB",
+   "enumvals": [],
+   "min_val": "1",
+   "max_val": "2147483647"
   },
   "effective_io_concurrency": {
    "default": "16",
    "vartype": "integer",
    "context": "user",
-   "short_desc": "Number of simultaneous requests that can be handled efficiently by the disk subsystem."
+   "short_desc": "Number of simultaneous requests that can be handled efficiently by the disk subsystem.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "1000"
   },
   "enable_async_append": {
    "default": "on",
    "vartype": "bool",
    "context": "user",
-   "short_desc": "Enables the planner's use of async append plans."
+   "short_desc": "Enables the planner's use of async append plans.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "enable_bitmapscan": {
    "default": "on",
    "vartype": "bool",
    "context": "user",
-   "short_desc": "Enables the planner's use of bitmap-scan plans."
+   "short_desc": "Enables the planner's use of bitmap-scan plans.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "enable_distinct_reordering": {
    "default": "on",
    "vartype": "bool",
    "context": "user",
-   "short_desc": "Enables reordering of DISTINCT keys."
+   "short_desc": "Enables reordering of DISTINCT keys.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "enable_gathermerge": {
    "default": "on",
    "vartype": "bool",
    "context": "user",
-   "short_desc": "Enables the planner's use of gather merge plans."
+   "short_desc": "Enables the planner's use of gather merge plans.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "enable_group_by_reordering": {
    "default": "on",
    "vartype": "bool",
    "context": "user",
-   "short_desc": "Enables reordering of GROUP BY keys."
+   "short_desc": "Enables reordering of GROUP BY keys.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "enable_hashagg": {
    "default": "on",
    "vartype": "bool",
    "context": "user",
-   "short_desc": "Enables the planner's use of hashed aggregation plans."
+   "short_desc": "Enables the planner's use of hashed aggregation plans.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "enable_hashjoin": {
    "default": "on",
    "vartype": "bool",
    "context": "user",
-   "short_desc": "Enables the planner's use of hash join plans."
+   "short_desc": "Enables the planner's use of hash join plans.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "enable_incremental_sort": {
    "default": "on",
    "vartype": "bool",
    "context": "user",
-   "short_desc": "Enables the planner's use of incremental sort steps."
+   "short_desc": "Enables the planner's use of incremental sort steps.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "enable_indexonlyscan": {
    "default": "on",
    "vartype": "bool",
    "context": "user",
-   "short_desc": "Enables the planner's use of index-only-scan plans."
+   "short_desc": "Enables the planner's use of index-only-scan plans.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "enable_indexscan": {
    "default": "on",
    "vartype": "bool",
    "context": "user",
-   "short_desc": "Enables the planner's use of index-scan plans."
+   "short_desc": "Enables the planner's use of index-scan plans.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "enable_material": {
    "default": "on",
    "vartype": "bool",
    "context": "user",
-   "short_desc": "Enables the planner's use of materialization."
+   "short_desc": "Enables the planner's use of materialization.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "enable_memoize": {
    "default": "on",
    "vartype": "bool",
    "context": "user",
-   "short_desc": "Enables the planner's use of memoization."
+   "short_desc": "Enables the planner's use of memoization.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "enable_mergejoin": {
    "default": "on",
    "vartype": "bool",
    "context": "user",
-   "short_desc": "Enables the planner's use of merge join plans."
+   "short_desc": "Enables the planner's use of merge join plans.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "enable_nestloop": {
    "default": "on",
    "vartype": "bool",
    "context": "user",
-   "short_desc": "Enables the planner's use of nested-loop join plans."
+   "short_desc": "Enables the planner's use of nested-loop join plans.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "enable_parallel_append": {
    "default": "on",
    "vartype": "bool",
    "context": "user",
-   "short_desc": "Enables the planner's use of parallel append plans."
+   "short_desc": "Enables the planner's use of parallel append plans.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "enable_parallel_hash": {
    "default": "on",
    "vartype": "bool",
    "context": "user",
-   "short_desc": "Enables the planner's use of parallel hash plans."
+   "short_desc": "Enables the planner's use of parallel hash plans.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "enable_partition_pruning": {
    "default": "on",
    "vartype": "bool",
    "context": "user",
-   "short_desc": "Enables plan-time and execution-time partition pruning."
+   "short_desc": "Enables plan-time and execution-time partition pruning.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "enable_partitionwise_aggregate": {
    "default": "off",
    "vartype": "bool",
    "context": "user",
-   "short_desc": "Enables partitionwise aggregation and grouping."
+   "short_desc": "Enables partitionwise aggregation and grouping.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "enable_partitionwise_join": {
    "default": "off",
    "vartype": "bool",
    "context": "user",
-   "short_desc": "Enables partitionwise join."
+   "short_desc": "Enables partitionwise join.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "enable_presorted_aggregate": {
    "default": "on",
    "vartype": "bool",
    "context": "user",
-   "short_desc": "Enables the planner's ability to produce plans that provide presorted input for ORDER BY / DISTINCT aggregate functions."
+   "short_desc": "Enables the planner's ability to produce plans that provide presorted input for ORDER BY / DISTINCT aggregate functions.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "enable_self_join_elimination": {
    "default": "on",
    "vartype": "bool",
    "context": "user",
-   "short_desc": "Enables removal of unique self-joins."
+   "short_desc": "Enables removal of unique self-joins.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "enable_seqscan": {
    "default": "on",
    "vartype": "bool",
    "context": "user",
-   "short_desc": "Enables the planner's use of sequential-scan plans."
+   "short_desc": "Enables the planner's use of sequential-scan plans.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "enable_sort": {
    "default": "on",
    "vartype": "bool",
    "context": "user",
-   "short_desc": "Enables the planner's use of explicit sort steps."
+   "short_desc": "Enables the planner's use of explicit sort steps.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "enable_tidscan": {
    "default": "on",
    "vartype": "bool",
    "context": "user",
-   "short_desc": "Enables the planner's use of TID scan plans."
+   "short_desc": "Enables the planner's use of TID scan plans.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "escape_string_warning": {
    "default": "on",
    "vartype": "bool",
    "context": "user",
-   "short_desc": "Warn about backslash escapes in ordinary string literals."
+   "short_desc": "Warn about backslash escapes in ordinary string literals.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "event_source": {
    "default": "PostgreSQL",
    "vartype": "string",
    "context": "postmaster",
-   "short_desc": "Sets the application name used to identify PostgreSQL messages in the event log."
+   "short_desc": "Sets the application name used to identify PostgreSQL messages in the event log.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "event_triggers": {
    "default": "on",
    "vartype": "bool",
    "context": "superuser",
-   "short_desc": "Enables event triggers."
+   "short_desc": "Enables event triggers.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "exit_on_error": {
    "default": "off",
    "vartype": "bool",
    "context": "user",
-   "short_desc": "Terminate session on any error."
+   "short_desc": "Terminate session on any error.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "extension_control_path": {
    "default": "$system",
    "vartype": "string",
    "context": "superuser",
-   "short_desc": "Sets the path for extension control files."
+   "short_desc": "Sets the path for extension control files.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "external_pid_file": {
    "default": "",
    "vartype": "string",
    "context": "postmaster",
-   "short_desc": "Writes the postmaster PID to the specified file."
+   "short_desc": "Writes the postmaster PID to the specified file.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "extra_float_digits": {
    "default": "1",
    "vartype": "integer",
    "context": "user",
-   "short_desc": "Sets the number of digits displayed for floating-point values."
+   "short_desc": "Sets the number of digits displayed for floating-point values.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "-15",
+   "max_val": "3"
   },
   "file_copy_method": {
    "default": "copy",
    "vartype": "enum",
    "context": "user",
-   "short_desc": "Selects the file copy method."
+   "short_desc": "Selects the file copy method.",
+   "unit": "",
+   "enumvals": [
+    "copy",
+    "clone"
+   ],
+   "min_val": "",
+   "max_val": ""
   },
   "file_extend_method": {
    "default": "write_zeros",
    "vartype": "enum",
    "context": "sighup",
-   "short_desc": "Selects the method used for extending data files."
+   "short_desc": "Selects the method used for extending data files.",
+   "unit": "",
+   "enumvals": [
+    "write_zeros"
+   ],
+   "min_val": "",
+   "max_val": ""
   },
   "from_collapse_limit": {
    "default": "8",
    "vartype": "integer",
    "context": "user",
-   "short_desc": "Sets the FROM-list size beyond which subqueries are not collapsed."
+   "short_desc": "Sets the FROM-list size beyond which subqueries are not collapsed.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "1",
+   "max_val": "2147483647"
   },
   "fsync": {
    "default": "on",
    "vartype": "bool",
    "context": "sighup",
-   "short_desc": "Forces synchronization of updates to disk."
+   "short_desc": "Forces synchronization of updates to disk.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "full_page_writes": {
    "default": "on",
    "vartype": "bool",
    "context": "sighup",
-   "short_desc": "Writes full pages to WAL when first modified after a checkpoint."
+   "short_desc": "Writes full pages to WAL when first modified after a checkpoint.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "geqo": {
    "default": "on",
    "vartype": "bool",
    "context": "user",
-   "short_desc": "Enables genetic query optimization."
+   "short_desc": "Enables genetic query optimization.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "geqo_effort": {
    "default": "5",
    "vartype": "integer",
    "context": "user",
-   "short_desc": "GEQO: effort is used to set the default for other GEQO parameters."
+   "short_desc": "GEQO: effort is used to set the default for other GEQO parameters.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "1",
+   "max_val": "10"
   },
   "geqo_generations": {
    "default": "0",
    "vartype": "integer",
    "context": "user",
-   "short_desc": "GEQO: number of iterations of the algorithm."
+   "short_desc": "GEQO: number of iterations of the algorithm.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "2147483647"
   },
   "geqo_pool_size": {
    "default": "0",
    "vartype": "integer",
    "context": "user",
-   "short_desc": "GEQO: number of individuals in the population."
+   "short_desc": "GEQO: number of individuals in the population.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "2147483647"
   },
   "geqo_seed": {
    "default": "0",
    "vartype": "real",
    "context": "user",
-   "short_desc": "GEQO: seed for random path selection."
+   "short_desc": "GEQO: seed for random path selection.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "1"
   },
   "geqo_selection_bias": {
    "default": "2",
    "vartype": "real",
    "context": "user",
-   "short_desc": "GEQO: selective pressure within the population."
+   "short_desc": "GEQO: selective pressure within the population.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "1.5",
+   "max_val": "2"
   },
   "geqo_threshold": {
    "default": "12",
    "vartype": "integer",
    "context": "user",
-   "short_desc": "Sets the threshold of FROM items beyond which GEQO is used."
+   "short_desc": "Sets the threshold of FROM items beyond which GEQO is used.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "2",
+   "max_val": "2147483647"
   },
   "gin_fuzzy_search_limit": {
    "default": "0",
    "vartype": "integer",
    "context": "user",
-   "short_desc": "Sets the maximum allowed result for exact search by GIN."
+   "short_desc": "Sets the maximum allowed result for exact search by GIN.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "2147483647"
   },
   "gin_pending_list_limit": {
    "default": "4MB",
    "vartype": "integer",
    "context": "user",
-   "short_desc": "Sets the maximum size of the pending list for GIN index."
+   "short_desc": "Sets the maximum size of the pending list for GIN index.",
+   "unit": "kB",
+   "enumvals": [],
+   "min_val": "64",
+   "max_val": "2147483647"
   },
   "gss_accept_delegation": {
    "default": "off",
    "vartype": "bool",
    "context": "sighup",
-   "short_desc": "Sets whether GSSAPI delegation should be accepted from the client."
+   "short_desc": "Sets whether GSSAPI delegation should be accepted from the client.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "hash_mem_multiplier": {
    "default": "2",
    "vartype": "real",
    "context": "user",
-   "short_desc": "Multiple of \"work_mem\" to use for hash tables."
+   "short_desc": "Multiple of \"work_mem\" to use for hash tables.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "1",
+   "max_val": "1000"
   },
   "hba_file": {
    "default": "",
    "vartype": "string",
    "context": "postmaster",
-   "short_desc": "Sets the server's \"hba\" configuration file."
+   "short_desc": "Sets the server's \"hba\" configuration file.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "hot_standby": {
    "default": "on",
    "vartype": "bool",
    "context": "postmaster",
-   "short_desc": "Allows connections and queries during recovery."
+   "short_desc": "Allows connections and queries during recovery.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "hot_standby_feedback": {
    "default": "off",
    "vartype": "bool",
    "context": "sighup",
-   "short_desc": "Allows feedback from a hot standby to the primary that will avoid query conflicts."
+   "short_desc": "Allows feedback from a hot standby to the primary that will avoid query conflicts.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "huge_page_size": {
    "default": "0",
    "vartype": "integer",
    "context": "postmaster",
-   "short_desc": "The size of huge page that should be requested."
+   "short_desc": "The size of huge page that should be requested.",
+   "unit": "kB",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "2147483647"
   },
   "huge_pages": {
    "default": "try",
    "vartype": "enum",
    "context": "postmaster",
-   "short_desc": "Use of huge pages on Linux or Windows."
+   "short_desc": "Use of huge pages on Linux or Windows.",
+   "unit": "",
+   "enumvals": [
+    "off",
+    "on",
+    "try"
+   ],
+   "min_val": "",
+   "max_val": ""
   },
   "huge_pages_status": {
    "default": "unknown",
    "vartype": "enum",
    "context": "internal",
-   "short_desc": "Indicates the status of huge pages."
+   "short_desc": "Indicates the status of huge pages.",
+   "unit": "",
+   "enumvals": [
+    "off",
+    "on",
+    "unknown"
+   ],
+   "min_val": "",
+   "max_val": ""
   },
   "icu_validation_level": {
    "default": "warning",
    "vartype": "enum",
    "context": "user",
-   "short_desc": "Log level for reporting invalid ICU locale strings."
+   "short_desc": "Log level for reporting invalid ICU locale strings.",
+   "unit": "",
+   "enumvals": [
+    "disabled",
+    "debug5",
+    "debug4",
+    "debug3",
+    "debug2",
+    "debug1",
+    "log",
+    "notice",
+    "warning",
+    "error"
+   ],
+   "min_val": "",
+   "max_val": ""
   },
   "ident_file": {
    "default": "",
    "vartype": "string",
    "context": "postmaster",
-   "short_desc": "Sets the server's \"ident\" configuration file."
+   "short_desc": "Sets the server's \"ident\" configuration file.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "idle_in_transaction_session_timeout": {
    "default": "0",
    "vartype": "integer",
    "context": "user",
-   "short_desc": "Sets the maximum allowed idle time between queries, when in a transaction."
+   "short_desc": "Sets the maximum allowed idle time between queries, when in a transaction.",
+   "unit": "ms",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "2147483647"
   },
   "idle_replication_slot_timeout": {
    "default": "0",
    "vartype": "integer",
    "context": "sighup",
-   "short_desc": "Sets the duration a replication slot can remain idle before it is invalidated."
+   "short_desc": "Sets the duration a replication slot can remain idle before it is invalidated.",
+   "unit": "s",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "2147483647"
   },
   "idle_session_timeout": {
    "default": "0",
    "vartype": "integer",
    "context": "user",
-   "short_desc": "Sets the maximum allowed idle time between queries, when not in a transaction."
+   "short_desc": "Sets the maximum allowed idle time between queries, when not in a transaction.",
+   "unit": "ms",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "2147483647"
   },
   "ignore_checksum_failure": {
    "default": "off",
    "vartype": "bool",
    "context": "superuser",
-   "short_desc": "Continues processing after a checksum failure."
+   "short_desc": "Continues processing after a checksum failure.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "ignore_invalid_pages": {
    "default": "off",
    "vartype": "bool",
    "context": "postmaster",
-   "short_desc": "Continues recovery after an invalid pages failure."
+   "short_desc": "Continues recovery after an invalid pages failure.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "ignore_system_indexes": {
    "default": "off",
    "vartype": "bool",
    "context": "backend",
-   "short_desc": "Disables reading from system indexes."
+   "short_desc": "Disables reading from system indexes.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "in_hot_standby": {
    "default": "off",
    "vartype": "bool",
    "context": "internal",
-   "short_desc": "Shows whether hot standby is currently active."
+   "short_desc": "Shows whether hot standby is currently active.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "integer_datetimes": {
    "default": "on",
    "vartype": "bool",
    "context": "internal",
-   "short_desc": "Shows whether datetimes are integer based."
+   "short_desc": "Shows whether datetimes are integer based.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "intervalstyle": {
    "default": "postgres",
    "vartype": "enum",
    "context": "user",
-   "short_desc": "Sets the display format for interval values."
+   "short_desc": "Sets the display format for interval values.",
+   "unit": "",
+   "enumvals": [
+    "postgres",
+    "postgres_verbose",
+    "sql_standard",
+    "iso_8601"
+   ],
+   "min_val": "",
+   "max_val": ""
   },
   "io_combine_limit": {
    "default": "128kB",
    "vartype": "integer",
    "context": "user",
-   "short_desc": "Limit on the size of data reads and writes."
+   "short_desc": "Limit on the size of data reads and writes.",
+   "unit": "8kB",
+   "enumvals": [],
+   "min_val": "1",
+   "max_val": "128"
   },
   "io_max_combine_limit": {
    "default": "128kB",
    "vartype": "integer",
    "context": "postmaster",
-   "short_desc": "Server-wide limit that clamps io_combine_limit."
+   "short_desc": "Server-wide limit that clamps io_combine_limit.",
+   "unit": "8kB",
+   "enumvals": [],
+   "min_val": "1",
+   "max_val": "128"
   },
   "io_max_concurrency": {
    "default": "-1",
    "vartype": "integer",
    "context": "postmaster",
-   "short_desc": "Max number of IOs that one process can execute simultaneously."
+   "short_desc": "Max number of IOs that one process can execute simultaneously.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "-1",
+   "max_val": "1024"
   },
   "io_method": {
    "default": "worker",
    "vartype": "enum",
    "context": "postmaster",
-   "short_desc": "Selects the method for executing asynchronous I/O."
+   "short_desc": "Selects the method for executing asynchronous I/O.",
+   "unit": "",
+   "enumvals": [
+    "sync",
+    "worker"
+   ],
+   "min_val": "",
+   "max_val": ""
   },
   "io_workers": {
    "default": "3",
    "vartype": "integer",
    "context": "sighup",
-   "short_desc": "Number of IO worker processes, for io_method=worker."
+   "short_desc": "Number of IO worker processes, for io_method=worker.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "1",
+   "max_val": "32"
   },
   "jit": {
    "default": "on",
    "vartype": "bool",
    "context": "user",
-   "short_desc": "Allow JIT compilation."
+   "short_desc": "Allow JIT compilation.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "jit_above_cost": {
    "default": "100000",
    "vartype": "real",
    "context": "user",
-   "short_desc": "Perform JIT compilation if query is more expensive."
+   "short_desc": "Perform JIT compilation if query is more expensive.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "-1",
+   "max_val": "1.79769e+308"
   },
   "jit_debugging_support": {
    "default": "off",
    "vartype": "bool",
    "context": "superuser-backend",
-   "short_desc": "Register JIT-compiled functions with debugger."
+   "short_desc": "Register JIT-compiled functions with debugger.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "jit_dump_bitcode": {
    "default": "off",
    "vartype": "bool",
    "context": "superuser",
-   "short_desc": "Write out LLVM bitcode to facilitate JIT debugging."
+   "short_desc": "Write out LLVM bitcode to facilitate JIT debugging.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "jit_expressions": {
    "default": "on",
    "vartype": "bool",
    "context": "user",
-   "short_desc": "Allow JIT compilation of expressions."
+   "short_desc": "Allow JIT compilation of expressions.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "jit_inline_above_cost": {
    "default": "500000",
    "vartype": "real",
    "context": "user",
-   "short_desc": "Perform JIT inlining if query is more expensive."
+   "short_desc": "Perform JIT inlining if query is more expensive.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "-1",
+   "max_val": "1.79769e+308"
   },
   "jit_optimize_above_cost": {
    "default": "500000",
    "vartype": "real",
    "context": "user",
-   "short_desc": "Optimize JIT-compiled functions if query is more expensive."
+   "short_desc": "Optimize JIT-compiled functions if query is more expensive.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "-1",
+   "max_val": "1.79769e+308"
   },
   "jit_profiling_support": {
    "default": "off",
    "vartype": "bool",
    "context": "superuser-backend",
-   "short_desc": "Register JIT-compiled functions with perf profiler."
+   "short_desc": "Register JIT-compiled functions with perf profiler.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "jit_provider": {
    "default": "llvmjit",
    "vartype": "string",
    "context": "postmaster",
-   "short_desc": "JIT provider to use."
+   "short_desc": "JIT provider to use.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "jit_tuple_deforming": {
    "default": "on",
    "vartype": "bool",
    "context": "user",
-   "short_desc": "Allow JIT compilation of tuple deforming."
+   "short_desc": "Allow JIT compilation of tuple deforming.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "join_collapse_limit": {
    "default": "8",
    "vartype": "integer",
    "context": "user",
-   "short_desc": "Sets the FROM-list size beyond which JOIN constructs are not flattened."
+   "short_desc": "Sets the FROM-list size beyond which JOIN constructs are not flattened.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "1",
+   "max_val": "2147483647"
   },
   "krb_caseins_users": {
    "default": "off",
    "vartype": "bool",
    "context": "sighup",
-   "short_desc": "Sets whether Kerberos and GSSAPI user names should be treated as case-insensitive."
+   "short_desc": "Sets whether Kerberos and GSSAPI user names should be treated as case-insensitive.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "krb_server_keyfile": {
    "default": "",
    "vartype": "string",
    "context": "sighup",
-   "short_desc": "Sets the location of the Kerberos server key file."
+   "short_desc": "Sets the location of the Kerberos server key file.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "lc_messages": {
    "default": "",
    "vartype": "string",
    "context": "superuser",
-   "short_desc": "Sets the language in which messages are displayed."
+   "short_desc": "Sets the language in which messages are displayed.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "lc_monetary": {
    "default": "C",
    "vartype": "string",
    "context": "user",
-   "short_desc": "Sets the locale for formatting monetary amounts."
+   "short_desc": "Sets the locale for formatting monetary amounts.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "lc_numeric": {
    "default": "C",
    "vartype": "string",
    "context": "user",
-   "short_desc": "Sets the locale for formatting numbers."
+   "short_desc": "Sets the locale for formatting numbers.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "lc_time": {
    "default": "C",
    "vartype": "string",
    "context": "user",
-   "short_desc": "Sets the locale for formatting date and time values."
+   "short_desc": "Sets the locale for formatting date and time values.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "listen_addresses": {
    "default": "localhost",
    "vartype": "string",
    "context": "postmaster",
-   "short_desc": "Sets the host name or IP address(es) to listen to."
+   "short_desc": "Sets the host name or IP address(es) to listen to.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "lo_compat_privileges": {
    "default": "off",
    "vartype": "bool",
    "context": "superuser",
-   "short_desc": "Enables backward compatibility mode for privilege checks on large objects."
+   "short_desc": "Enables backward compatibility mode for privilege checks on large objects.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "local_preload_libraries": {
    "default": "",
    "vartype": "string",
    "context": "user",
-   "short_desc": "Lists unprivileged shared libraries to preload into each backend."
+   "short_desc": "Lists unprivileged shared libraries to preload into each backend.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "lock_timeout": {
    "default": "0",
    "vartype": "integer",
    "context": "user",
-   "short_desc": "Sets the maximum allowed duration of any wait for a lock."
+   "short_desc": "Sets the maximum allowed duration of any wait for a lock.",
+   "unit": "ms",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "2147483647"
   },
   "log_autovacuum_min_duration": {
    "default": "10min",
    "vartype": "integer",
    "context": "sighup",
-   "short_desc": "Sets the minimum execution time above which autovacuum actions will be logged."
+   "short_desc": "Sets the minimum execution time above which autovacuum actions will be logged.",
+   "unit": "ms",
+   "enumvals": [],
+   "min_val": "-1",
+   "max_val": "2147483647"
   },
   "log_checkpoints": {
    "default": "on",
    "vartype": "bool",
    "context": "sighup",
-   "short_desc": "Logs each checkpoint."
+   "short_desc": "Logs each checkpoint.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "log_connections": {
    "default": "",
    "vartype": "string",
    "context": "superuser-backend",
-   "short_desc": "Logs specified aspects of connection establishment and setup."
+   "short_desc": "Logs specified aspects of connection establishment and setup.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "log_destination": {
    "default": "stderr",
    "vartype": "string",
    "context": "sighup",
-   "short_desc": "Sets the destination for server log output."
+   "short_desc": "Sets the destination for server log output.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "log_directory": {
    "default": "log",
    "vartype": "string",
    "context": "sighup",
-   "short_desc": "Sets the destination directory for log files."
+   "short_desc": "Sets the destination directory for log files.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "log_disconnections": {
    "default": "off",
    "vartype": "bool",
    "context": "superuser-backend",
-   "short_desc": "Logs end of a session, including duration."
+   "short_desc": "Logs end of a session, including duration.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "log_duration": {
    "default": "off",
    "vartype": "bool",
    "context": "superuser",
-   "short_desc": "Logs the duration of each completed SQL statement."
+   "short_desc": "Logs the duration of each completed SQL statement.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "log_error_verbosity": {
    "default": "default",
    "vartype": "enum",
    "context": "superuser",
-   "short_desc": "Sets the verbosity of logged messages."
+   "short_desc": "Sets the verbosity of logged messages.",
+   "unit": "",
+   "enumvals": [
+    "terse",
+    "default",
+    "verbose"
+   ],
+   "min_val": "",
+   "max_val": ""
   },
   "log_executor_stats": {
    "default": "off",
    "vartype": "bool",
    "context": "superuser",
-   "short_desc": "Writes executor performance statistics to the server log."
+   "short_desc": "Writes executor performance statistics to the server log.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "log_file_mode": {
    "default": "384",
    "vartype": "integer",
    "context": "sighup",
-   "short_desc": "Sets the file permissions for log files."
+   "short_desc": "Sets the file permissions for log files.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "511"
   },
   "log_filename": {
    "default": "postgresql-%Y-%m-%d_%H%M%S.log",
    "vartype": "string",
    "context": "sighup",
-   "short_desc": "Sets the file name pattern for log files."
+   "short_desc": "Sets the file name pattern for log files.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "log_hostname": {
    "default": "off",
    "vartype": "bool",
    "context": "sighup",
-   "short_desc": "Logs the host name in the connection logs."
+   "short_desc": "Logs the host name in the connection logs.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "log_line_prefix": {
    "default": "%m [%p] ",
    "vartype": "string",
    "context": "sighup",
-   "short_desc": "Controls information prefixed to each log line."
+   "short_desc": "Controls information prefixed to each log line.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "log_lock_failures": {
    "default": "off",
    "vartype": "bool",
    "context": "superuser",
-   "short_desc": "Logs lock failures."
+   "short_desc": "Logs lock failures.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "log_lock_waits": {
    "default": "off",
    "vartype": "bool",
    "context": "superuser",
-   "short_desc": "Logs long lock waits."
+   "short_desc": "Logs long lock waits.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "log_min_duration_sample": {
    "default": "-1",
    "vartype": "integer",
    "context": "superuser",
-   "short_desc": "Sets the minimum execution time above which a sample of statements will be logged. Sampling is determined by \"log_statement_sample_rate\"."
+   "short_desc": "Sets the minimum execution time above which a sample of statements will be logged. Sampling is determined by \"log_statement_sample_rate\".",
+   "unit": "ms",
+   "enumvals": [],
+   "min_val": "-1",
+   "max_val": "2147483647"
   },
   "log_min_duration_statement": {
    "default": "-1",
    "vartype": "integer",
    "context": "superuser",
-   "short_desc": "Sets the minimum execution time above which all statements will be logged."
+   "short_desc": "Sets the minimum execution time above which all statements will be logged.",
+   "unit": "ms",
+   "enumvals": [],
+   "min_val": "-1",
+   "max_val": "2147483647"
   },
   "log_min_error_statement": {
    "default": "error",
    "vartype": "enum",
    "context": "superuser",
-   "short_desc": "Causes all statements generating error at or above this level to be logged."
+   "short_desc": "Causes all statements generating error at or above this level to be logged.",
+   "unit": "",
+   "enumvals": [
+    "debug5",
+    "debug4",
+    "debug3",
+    "debug2",
+    "debug1",
+    "info",
+    "notice",
+    "warning",
+    "error",
+    "log",
+    "fatal",
+    "panic"
+   ],
+   "min_val": "",
+   "max_val": ""
   },
   "log_min_messages": {
    "default": "warning",
    "vartype": "enum",
    "context": "superuser",
-   "short_desc": "Sets the message levels that are logged."
+   "short_desc": "Sets the message levels that are logged.",
+   "unit": "",
+   "enumvals": [
+    "debug5",
+    "debug4",
+    "debug3",
+    "debug2",
+    "debug1",
+    "info",
+    "notice",
+    "warning",
+    "error",
+    "log",
+    "fatal",
+    "panic"
+   ],
+   "min_val": "",
+   "max_val": ""
   },
   "log_parameter_max_length": {
    "default": "-1",
    "vartype": "integer",
    "context": "superuser",
-   "short_desc": "Sets the maximum length in bytes of data logged for bind parameter values when logging statements."
+   "short_desc": "Sets the maximum length in bytes of data logged for bind parameter values when logging statements.",
+   "unit": "B",
+   "enumvals": [],
+   "min_val": "-1",
+   "max_val": "1073741823"
   },
   "log_parameter_max_length_on_error": {
    "default": "0",
    "vartype": "integer",
    "context": "user",
-   "short_desc": "Sets the maximum length in bytes of data logged for bind parameter values when logging statements, on error."
+   "short_desc": "Sets the maximum length in bytes of data logged for bind parameter values when logging statements, on error.",
+   "unit": "B",
+   "enumvals": [],
+   "min_val": "-1",
+   "max_val": "1073741823"
   },
   "log_parser_stats": {
    "default": "off",
    "vartype": "bool",
    "context": "superuser",
-   "short_desc": "Writes parser performance statistics to the server log."
+   "short_desc": "Writes parser performance statistics to the server log.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "log_planner_stats": {
    "default": "off",
    "vartype": "bool",
    "context": "superuser",
-   "short_desc": "Writes planner performance statistics to the server log."
+   "short_desc": "Writes planner performance statistics to the server log.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "log_recovery_conflict_waits": {
    "default": "off",
    "vartype": "bool",
    "context": "sighup",
-   "short_desc": "Logs standby recovery conflict waits."
+   "short_desc": "Logs standby recovery conflict waits.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "log_replication_commands": {
    "default": "off",
    "vartype": "bool",
    "context": "superuser",
-   "short_desc": "Logs each replication command."
+   "short_desc": "Logs each replication command.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "log_rotation_age": {
    "default": "1d",
    "vartype": "integer",
    "context": "sighup",
-   "short_desc": "Sets the amount of time to wait before forcing log file rotation."
+   "short_desc": "Sets the amount of time to wait before forcing log file rotation.",
+   "unit": "min",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "35791394"
   },
   "log_rotation_size": {
    "default": "10MB",
    "vartype": "integer",
    "context": "sighup",
-   "short_desc": "Sets the maximum size a log file can reach before being rotated."
+   "short_desc": "Sets the maximum size a log file can reach before being rotated.",
+   "unit": "kB",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "2147483647"
   },
   "log_startup_progress_interval": {
    "default": "10s",
    "vartype": "integer",
    "context": "sighup",
-   "short_desc": "Time between progress updates for long-running startup operations."
+   "short_desc": "Time between progress updates for long-running startup operations.",
+   "unit": "ms",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "2147483647"
   },
   "log_statement": {
    "default": "none",
    "vartype": "enum",
    "context": "superuser",
-   "short_desc": "Sets the type of statements logged."
+   "short_desc": "Sets the type of statements logged.",
+   "unit": "",
+   "enumvals": [
+    "none",
+    "ddl",
+    "mod",
+    "all"
+   ],
+   "min_val": "",
+   "max_val": ""
   },
   "log_statement_sample_rate": {
    "default": "1",
    "vartype": "real",
    "context": "superuser",
-   "short_desc": "Fraction of statements exceeding \"log_min_duration_sample\" to be logged."
+   "short_desc": "Fraction of statements exceeding \"log_min_duration_sample\" to be logged.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "1"
   },
   "log_statement_stats": {
    "default": "off",
    "vartype": "bool",
    "context": "superuser",
-   "short_desc": "Writes cumulative performance statistics to the server log."
+   "short_desc": "Writes cumulative performance statistics to the server log.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "log_temp_files": {
    "default": "-1",
    "vartype": "integer",
    "context": "superuser",
-   "short_desc": "Log the use of temporary files larger than this number of kilobytes."
+   "short_desc": "Log the use of temporary files larger than this number of kilobytes.",
+   "unit": "kB",
+   "enumvals": [],
+   "min_val": "-1",
+   "max_val": "2147483647"
   },
   "log_timezone": {
    "default": "GMT",
    "vartype": "string",
    "context": "sighup",
-   "short_desc": "Sets the time zone to use in log messages."
+   "short_desc": "Sets the time zone to use in log messages.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "log_transaction_sample_rate": {
    "default": "0",
    "vartype": "real",
    "context": "superuser",
-   "short_desc": "Sets the fraction of transactions from which to log all statements."
+   "short_desc": "Sets the fraction of transactions from which to log all statements.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "1"
   },
   "log_truncate_on_rotation": {
    "default": "off",
    "vartype": "bool",
    "context": "sighup",
-   "short_desc": "Truncate existing log files of same name during log rotation."
+   "short_desc": "Truncate existing log files of same name during log rotation.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "logging_collector": {
    "default": "off",
    "vartype": "bool",
    "context": "postmaster",
-   "short_desc": "Start a subprocess to capture stderr, csvlog and/or jsonlog into log files."
+   "short_desc": "Start a subprocess to capture stderr, csvlog and/or jsonlog into log files.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "logical_decoding_work_mem": {
    "default": "64MB",
    "vartype": "integer",
    "context": "user",
-   "short_desc": "Sets the maximum memory to be used for logical decoding."
+   "short_desc": "Sets the maximum memory to be used for logical decoding.",
+   "unit": "kB",
+   "enumvals": [],
+   "min_val": "64",
+   "max_val": "2147483647"
   },
   "maintenance_io_concurrency": {
    "default": "16",
    "vartype": "integer",
    "context": "user",
-   "short_desc": "A variant of \"effective_io_concurrency\" that is used for maintenance work."
+   "short_desc": "A variant of \"effective_io_concurrency\" that is used for maintenance work.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "1000"
   },
   "maintenance_work_mem": {
    "default": "64MB",
    "vartype": "integer",
    "context": "user",
-   "short_desc": "Sets the maximum memory to be used for maintenance operations."
+   "short_desc": "Sets the maximum memory to be used for maintenance operations.",
+   "unit": "kB",
+   "enumvals": [],
+   "min_val": "64",
+   "max_val": "2147483647"
   },
   "max_active_replication_origins": {
    "default": "10",
    "vartype": "integer",
    "context": "postmaster",
-   "short_desc": "Sets the maximum number of active replication origins."
+   "short_desc": "Sets the maximum number of active replication origins.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "262143"
   },
   "max_connections": {
    "default": "100",
    "vartype": "integer",
    "context": "postmaster",
-   "short_desc": "Sets the maximum number of concurrent connections."
+   "short_desc": "Sets the maximum number of concurrent connections.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "1",
+   "max_val": "262143"
   },
   "max_files_per_process": {
    "default": "1000",
    "vartype": "integer",
    "context": "postmaster",
-   "short_desc": "Sets the maximum number of files each server process is allowed to open simultaneously."
+   "short_desc": "Sets the maximum number of files each server process is allowed to open simultaneously.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "64",
+   "max_val": "2147483647"
   },
   "max_function_args": {
    "default": "100",
    "vartype": "integer",
    "context": "internal",
-   "short_desc": "Shows the maximum number of function arguments."
+   "short_desc": "Shows the maximum number of function arguments.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "100",
+   "max_val": "100"
   },
   "max_identifier_length": {
    "default": "63",
    "vartype": "integer",
    "context": "internal",
-   "short_desc": "Shows the maximum identifier length."
+   "short_desc": "Shows the maximum identifier length.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "63",
+   "max_val": "63"
   },
   "max_index_keys": {
    "default": "32",
    "vartype": "integer",
    "context": "internal",
-   "short_desc": "Shows the maximum number of index keys."
+   "short_desc": "Shows the maximum number of index keys.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "32",
+   "max_val": "32"
   },
   "max_locks_per_transaction": {
    "default": "64",
    "vartype": "integer",
    "context": "postmaster",
-   "short_desc": "Sets the maximum number of locks per transaction."
+   "short_desc": "Sets the maximum number of locks per transaction.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "10",
+   "max_val": "2147483647"
   },
   "max_logical_replication_workers": {
    "default": "4",
    "vartype": "integer",
    "context": "postmaster",
-   "short_desc": "Maximum number of logical replication worker processes."
+   "short_desc": "Maximum number of logical replication worker processes.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "262143"
   },
   "max_notify_queue_pages": {
    "default": "1048576",
    "vartype": "integer",
    "context": "postmaster",
-   "short_desc": "Sets the maximum number of allocated pages for NOTIFY / LISTEN queue."
+   "short_desc": "Sets the maximum number of allocated pages for NOTIFY / LISTEN queue.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "64",
+   "max_val": "2147483647"
   },
   "max_parallel_apply_workers_per_subscription": {
    "default": "2",
    "vartype": "integer",
    "context": "sighup",
-   "short_desc": "Maximum number of parallel apply workers per subscription."
+   "short_desc": "Maximum number of parallel apply workers per subscription.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "1024"
   },
   "max_parallel_maintenance_workers": {
    "default": "2",
    "vartype": "integer",
    "context": "user",
-   "short_desc": "Sets the maximum number of parallel processes per maintenance operation."
+   "short_desc": "Sets the maximum number of parallel processes per maintenance operation.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "1024"
   },
   "max_parallel_workers": {
    "default": "8",
    "vartype": "integer",
    "context": "user",
-   "short_desc": "Sets the maximum number of parallel workers that can be active at one time."
+   "short_desc": "Sets the maximum number of parallel workers that can be active at one time.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "1024"
   },
   "max_parallel_workers_per_gather": {
    "default": "2",
    "vartype": "integer",
    "context": "user",
-   "short_desc": "Sets the maximum number of parallel processes per executor node."
+   "short_desc": "Sets the maximum number of parallel processes per executor node.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "1024"
   },
   "max_pred_locks_per_page": {
    "default": "2",
    "vartype": "integer",
    "context": "sighup",
-   "short_desc": "Sets the maximum number of predicate-locked tuples per page."
+   "short_desc": "Sets the maximum number of predicate-locked tuples per page.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "2147483647"
   },
   "max_pred_locks_per_relation": {
    "default": "-2",
    "vartype": "integer",
    "context": "sighup",
-   "short_desc": "Sets the maximum number of predicate-locked pages and tuples per relation."
+   "short_desc": "Sets the maximum number of predicate-locked pages and tuples per relation.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "-2147483648",
+   "max_val": "2147483647"
   },
   "max_pred_locks_per_transaction": {
    "default": "64",
    "vartype": "integer",
    "context": "postmaster",
-   "short_desc": "Sets the maximum number of predicate locks per transaction."
+   "short_desc": "Sets the maximum number of predicate locks per transaction.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "10",
+   "max_val": "2147483647"
   },
   "max_prepared_transactions": {
    "default": "0",
    "vartype": "integer",
    "context": "postmaster",
-   "short_desc": "Sets the maximum number of simultaneously prepared transactions."
+   "short_desc": "Sets the maximum number of simultaneously prepared transactions.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "262143"
   },
   "max_replication_slots": {
    "default": "10",
    "vartype": "integer",
    "context": "postmaster",
-   "short_desc": "Sets the maximum number of simultaneously defined replication slots."
+   "short_desc": "Sets the maximum number of simultaneously defined replication slots.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "262143"
   },
   "max_slot_wal_keep_size": {
    "default": "-1",
    "vartype": "integer",
    "context": "sighup",
-   "short_desc": "Sets the maximum WAL size that can be reserved by replication slots."
+   "short_desc": "Sets the maximum WAL size that can be reserved by replication slots.",
+   "unit": "MB",
+   "enumvals": [],
+   "min_val": "-1",
+   "max_val": "2147483647"
   },
   "max_stack_depth": {
    "default": "100kB",
    "vartype": "integer",
    "context": "superuser",
-   "short_desc": "Sets the maximum stack depth, in kilobytes."
+   "short_desc": "Sets the maximum stack depth, in kilobytes.",
+   "unit": "kB",
+   "enumvals": [],
+   "min_val": "100",
+   "max_val": "2147483647"
   },
   "max_standby_archive_delay": {
    "default": "30s",
    "vartype": "integer",
    "context": "sighup",
-   "short_desc": "Sets the maximum delay before canceling queries when a hot standby server is processing archived WAL data."
+   "short_desc": "Sets the maximum delay before canceling queries when a hot standby server is processing archived WAL data.",
+   "unit": "ms",
+   "enumvals": [],
+   "min_val": "-1",
+   "max_val": "2147483647"
   },
   "max_standby_streaming_delay": {
    "default": "30s",
    "vartype": "integer",
    "context": "sighup",
-   "short_desc": "Sets the maximum delay before canceling queries when a hot standby server is processing streamed WAL data."
+   "short_desc": "Sets the maximum delay before canceling queries when a hot standby server is processing streamed WAL data.",
+   "unit": "ms",
+   "enumvals": [],
+   "min_val": "-1",
+   "max_val": "2147483647"
   },
   "max_sync_workers_per_subscription": {
    "default": "2",
    "vartype": "integer",
    "context": "sighup",
-   "short_desc": "Maximum number of table synchronization workers per subscription."
+   "short_desc": "Maximum number of table synchronization workers per subscription.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "262143"
   },
   "max_wal_senders": {
    "default": "10",
    "vartype": "integer",
    "context": "postmaster",
-   "short_desc": "Sets the maximum number of simultaneously running WAL sender processes."
+   "short_desc": "Sets the maximum number of simultaneously running WAL sender processes.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "262143"
   },
   "max_wal_size": {
    "default": "1GB",
    "vartype": "integer",
    "context": "sighup",
-   "short_desc": "Sets the WAL size that triggers a checkpoint."
+   "short_desc": "Sets the WAL size that triggers a checkpoint.",
+   "unit": "MB",
+   "enumvals": [],
+   "min_val": "2",
+   "max_val": "2147483647"
   },
   "max_worker_processes": {
    "default": "8",
    "vartype": "integer",
    "context": "postmaster",
-   "short_desc": "Maximum number of concurrent worker processes."
+   "short_desc": "Maximum number of concurrent worker processes.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "262143"
   },
   "md5_password_warnings": {
    "default": "on",
    "vartype": "bool",
    "context": "user",
-   "short_desc": "Enables deprecation warnings for MD5 passwords."
+   "short_desc": "Enables deprecation warnings for MD5 passwords.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "min_dynamic_shared_memory": {
    "default": "0",
    "vartype": "integer",
    "context": "postmaster",
-   "short_desc": "Amount of dynamic shared memory reserved at startup."
+   "short_desc": "Amount of dynamic shared memory reserved at startup.",
+   "unit": "MB",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "2147483647"
   },
   "min_parallel_index_scan_size": {
    "default": "512kB",
    "vartype": "integer",
    "context": "user",
-   "short_desc": "Sets the minimum amount of index data for a parallel scan."
+   "short_desc": "Sets the minimum amount of index data for a parallel scan.",
+   "unit": "8kB",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "715827882"
   },
   "min_parallel_table_scan_size": {
    "default": "8MB",
    "vartype": "integer",
    "context": "user",
-   "short_desc": "Sets the minimum amount of table data for a parallel scan."
+   "short_desc": "Sets the minimum amount of table data for a parallel scan.",
+   "unit": "8kB",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "715827882"
   },
   "min_wal_size": {
    "default": "80MB",
    "vartype": "integer",
    "context": "sighup",
-   "short_desc": "Sets the minimum size to shrink the WAL to."
+   "short_desc": "Sets the minimum size to shrink the WAL to.",
+   "unit": "MB",
+   "enumvals": [],
+   "min_val": "2",
+   "max_val": "2147483647"
   },
   "multixact_member_buffers": {
    "default": "256kB",
    "vartype": "integer",
    "context": "postmaster",
-   "short_desc": "Sets the size of the dedicated buffer pool used for the MultiXact member cache."
+   "short_desc": "Sets the size of the dedicated buffer pool used for the MultiXact member cache.",
+   "unit": "8kB",
+   "enumvals": [],
+   "min_val": "16",
+   "max_val": "131072"
   },
   "multixact_offset_buffers": {
    "default": "128kB",
    "vartype": "integer",
    "context": "postmaster",
-   "short_desc": "Sets the size of the dedicated buffer pool used for the MultiXact offset cache."
+   "short_desc": "Sets the size of the dedicated buffer pool used for the MultiXact offset cache.",
+   "unit": "8kB",
+   "enumvals": [],
+   "min_val": "16",
+   "max_val": "131072"
   },
   "notify_buffers": {
    "default": "128kB",
    "vartype": "integer",
    "context": "postmaster",
-   "short_desc": "Sets the size of the dedicated buffer pool used for the LISTEN/NOTIFY message cache."
+   "short_desc": "Sets the size of the dedicated buffer pool used for the LISTEN/NOTIFY message cache.",
+   "unit": "8kB",
+   "enumvals": [],
+   "min_val": "16",
+   "max_val": "131072"
   },
   "num_os_semaphores": {
    "default": "0",
    "vartype": "integer",
    "context": "internal",
-   "short_desc": "Shows the number of semaphores required for the server."
+   "short_desc": "Shows the number of semaphores required for the server.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "2147483647"
   },
   "oauth_validator_libraries": {
    "default": "",
    "vartype": "string",
    "context": "sighup",
-   "short_desc": "Lists libraries that may be called to validate OAuth v2 bearer tokens."
+   "short_desc": "Lists libraries that may be called to validate OAuth v2 bearer tokens.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "parallel_leader_participation": {
    "default": "on",
    "vartype": "bool",
    "context": "user",
-   "short_desc": "Controls whether Gather and Gather Merge also run subplans."
+   "short_desc": "Controls whether Gather and Gather Merge also run subplans.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "parallel_setup_cost": {
    "default": "1000",
    "vartype": "real",
    "context": "user",
-   "short_desc": "Sets the planner's estimate of the cost of starting up worker processes for parallel query."
+   "short_desc": "Sets the planner's estimate of the cost of starting up worker processes for parallel query.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "1.79769e+308"
   },
   "parallel_tuple_cost": {
    "default": "0.1",
    "vartype": "real",
    "context": "user",
-   "short_desc": "Sets the planner's estimate of the cost of passing each tuple (row) from worker to leader backend."
+   "short_desc": "Sets the planner's estimate of the cost of passing each tuple (row) from worker to leader backend.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "1.79769e+308"
   },
   "password_encryption": {
    "default": "scram-sha-256",
    "vartype": "enum",
    "context": "user",
-   "short_desc": "Chooses the algorithm for encrypting passwords."
+   "short_desc": "Chooses the algorithm for encrypting passwords.",
+   "unit": "",
+   "enumvals": [
+    "md5",
+    "scram-sha-256"
+   ],
+   "min_val": "",
+   "max_val": ""
   },
   "plan_cache_mode": {
    "default": "auto",
    "vartype": "enum",
    "context": "user",
-   "short_desc": "Controls the planner's selection of custom or generic plan."
+   "short_desc": "Controls the planner's selection of custom or generic plan.",
+   "unit": "",
+   "enumvals": [
+    "auto",
+    "force_generic_plan",
+    "force_custom_plan"
+   ],
+   "min_val": "",
+   "max_val": ""
   },
   "port": {
    "default": "5432",
    "vartype": "integer",
    "context": "postmaster",
-   "short_desc": "Sets the TCP port the server listens on."
+   "short_desc": "Sets the TCP port the server listens on.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "1",
+   "max_val": "65535"
   },
   "post_auth_delay": {
    "default": "0",
    "vartype": "integer",
    "context": "backend",
-   "short_desc": "Sets the amount of time to wait after authentication on connection startup."
+   "short_desc": "Sets the amount of time to wait after authentication on connection startup.",
+   "unit": "s",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "2147"
   },
   "pre_auth_delay": {
    "default": "0",
    "vartype": "integer",
    "context": "sighup",
-   "short_desc": "Sets the amount of time to wait before authentication on connection startup."
+   "short_desc": "Sets the amount of time to wait before authentication on connection startup.",
+   "unit": "s",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "60"
   },
   "primary_conninfo": {
    "default": "",
    "vartype": "string",
    "context": "sighup",
-   "short_desc": "Sets the connection string to be used to connect to the sending server."
+   "short_desc": "Sets the connection string to be used to connect to the sending server.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "primary_slot_name": {
    "default": "",
    "vartype": "string",
    "context": "sighup",
-   "short_desc": "Sets the name of the replication slot to use on the sending server."
+   "short_desc": "Sets the name of the replication slot to use on the sending server.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "quote_all_identifiers": {
    "default": "off",
    "vartype": "bool",
    "context": "user",
-   "short_desc": "When generating SQL fragments, quote all identifiers."
+   "short_desc": "When generating SQL fragments, quote all identifiers.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "random_page_cost": {
    "default": "4",
    "vartype": "real",
    "context": "user",
-   "short_desc": "Sets the planner's estimate of the cost of a nonsequentially fetched disk page."
+   "short_desc": "Sets the planner's estimate of the cost of a nonsequentially fetched disk page.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "1.79769e+308"
   },
   "recovery_end_command": {
    "default": "",
    "vartype": "string",
    "context": "sighup",
-   "short_desc": "Sets the shell command that will be executed once at the end of recovery."
+   "short_desc": "Sets the shell command that will be executed once at the end of recovery.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "recovery_init_sync_method": {
    "default": "fsync",
    "vartype": "enum",
    "context": "sighup",
-   "short_desc": "Sets the method for synchronizing the data directory before crash recovery."
+   "short_desc": "Sets the method for synchronizing the data directory before crash recovery.",
+   "unit": "",
+   "enumvals": [
+    "fsync"
+   ],
+   "min_val": "",
+   "max_val": ""
   },
   "recovery_min_apply_delay": {
    "default": "0",
    "vartype": "integer",
    "context": "sighup",
-   "short_desc": "Sets the minimum delay for applying changes during recovery."
+   "short_desc": "Sets the minimum delay for applying changes during recovery.",
+   "unit": "ms",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "2147483647"
   },
   "recovery_prefetch": {
    "default": "try",
    "vartype": "enum",
    "context": "sighup",
-   "short_desc": "Prefetch referenced blocks during recovery."
+   "short_desc": "Prefetch referenced blocks during recovery.",
+   "unit": "",
+   "enumvals": [
+    "off",
+    "on",
+    "try"
+   ],
+   "min_val": "",
+   "max_val": ""
   },
   "recovery_target": {
    "default": "",
    "vartype": "string",
    "context": "postmaster",
-   "short_desc": "Set to \"immediate\" to end recovery as soon as a consistent state is reached."
+   "short_desc": "Set to \"immediate\" to end recovery as soon as a consistent state is reached.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "recovery_target_action": {
    "default": "pause",
    "vartype": "enum",
    "context": "postmaster",
-   "short_desc": "Sets the action to perform upon reaching the recovery target."
+   "short_desc": "Sets the action to perform upon reaching the recovery target.",
+   "unit": "",
+   "enumvals": [
+    "pause",
+    "promote",
+    "shutdown"
+   ],
+   "min_val": "",
+   "max_val": ""
   },
   "recovery_target_inclusive": {
    "default": "on",
    "vartype": "bool",
    "context": "postmaster",
-   "short_desc": "Sets whether to include or exclude transaction with recovery target."
+   "short_desc": "Sets whether to include or exclude transaction with recovery target.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "recovery_target_lsn": {
    "default": "",
    "vartype": "string",
    "context": "postmaster",
-   "short_desc": "Sets the LSN of the write-ahead log location up to which recovery will proceed."
+   "short_desc": "Sets the LSN of the write-ahead log location up to which recovery will proceed.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "recovery_target_name": {
    "default": "",
    "vartype": "string",
    "context": "postmaster",
-   "short_desc": "Sets the named restore point up to which recovery will proceed."
+   "short_desc": "Sets the named restore point up to which recovery will proceed.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "recovery_target_time": {
    "default": "",
    "vartype": "string",
    "context": "postmaster",
-   "short_desc": "Sets the time stamp up to which recovery will proceed."
+   "short_desc": "Sets the time stamp up to which recovery will proceed.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "recovery_target_timeline": {
    "default": "latest",
    "vartype": "string",
    "context": "postmaster",
-   "short_desc": "Specifies the timeline to recover into."
+   "short_desc": "Specifies the timeline to recover into.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "recovery_target_xid": {
    "default": "",
    "vartype": "string",
    "context": "postmaster",
-   "short_desc": "Sets the transaction ID up to which recovery will proceed."
+   "short_desc": "Sets the transaction ID up to which recovery will proceed.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "recursive_worktable_factor": {
    "default": "10",
    "vartype": "real",
    "context": "user",
-   "short_desc": "Sets the planner's estimate of the average size of a recursive query's working table."
+   "short_desc": "Sets the planner's estimate of the average size of a recursive query's working table.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "0.001",
+   "max_val": "1e+06"
   },
   "remove_temp_files_after_crash": {
    "default": "on",
    "vartype": "bool",
    "context": "sighup",
-   "short_desc": "Remove temporary files after backend crash."
+   "short_desc": "Remove temporary files after backend crash.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "reserved_connections": {
    "default": "0",
    "vartype": "integer",
    "context": "postmaster",
-   "short_desc": "Sets the number of connection slots reserved for roles with privileges of pg_use_reserved_connections."
+   "short_desc": "Sets the number of connection slots reserved for roles with privileges of pg_use_reserved_connections.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "262143"
   },
   "restart_after_crash": {
    "default": "on",
    "vartype": "bool",
    "context": "sighup",
-   "short_desc": "Reinitialize server after backend crash."
+   "short_desc": "Reinitialize server after backend crash.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "restore_command": {
    "default": "",
    "vartype": "string",
    "context": "sighup",
-   "short_desc": "Sets the shell command that will be called to retrieve an archived WAL file."
+   "short_desc": "Sets the shell command that will be called to retrieve an archived WAL file.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "restrict_nonsystem_relation_kind": {
    "default": "",
    "vartype": "string",
    "context": "user",
-   "short_desc": "Prohibits access to non-system relations of specified kinds."
+   "short_desc": "Prohibits access to non-system relations of specified kinds.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "row_security": {
    "default": "on",
    "vartype": "bool",
    "context": "user",
-   "short_desc": "Enables row security."
+   "short_desc": "Enables row security.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "scram_iterations": {
    "default": "4096",
    "vartype": "integer",
    "context": "user",
-   "short_desc": "Sets the iteration count for SCRAM secret generation."
+   "short_desc": "Sets the iteration count for SCRAM secret generation.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "1",
+   "max_val": "2147483647"
   },
   "search_path": {
    "default": "\"$user\", public",
    "vartype": "string",
    "context": "user",
-   "short_desc": "Sets the schema search order for names that are not schema-qualified."
+   "short_desc": "Sets the schema search order for names that are not schema-qualified.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "segment_size": {
    "default": "1GB",
    "vartype": "integer",
    "context": "internal",
-   "short_desc": "Shows the number of pages per disk file."
+   "short_desc": "Shows the number of pages per disk file.",
+   "unit": "8kB",
+   "enumvals": [],
+   "min_val": "131072",
+   "max_val": "131072"
   },
   "send_abort_for_crash": {
    "default": "off",
    "vartype": "bool",
    "context": "sighup",
-   "short_desc": "Send SIGABRT not SIGQUIT to child processes after backend crash."
+   "short_desc": "Send SIGABRT not SIGQUIT to child processes after backend crash.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "send_abort_for_kill": {
    "default": "off",
    "vartype": "bool",
    "context": "sighup",
-   "short_desc": "Send SIGABRT not SIGKILL to stuck child processes."
+   "short_desc": "Send SIGABRT not SIGKILL to stuck child processes.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "seq_page_cost": {
    "default": "1",
    "vartype": "real",
    "context": "user",
-   "short_desc": "Sets the planner's estimate of the cost of a sequentially fetched disk page."
+   "short_desc": "Sets the planner's estimate of the cost of a sequentially fetched disk page.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "1.79769e+308"
   },
   "serializable_buffers": {
    "default": "256kB",
    "vartype": "integer",
    "context": "postmaster",
-   "short_desc": "Sets the size of the dedicated buffer pool used for the serializable transaction cache."
+   "short_desc": "Sets the size of the dedicated buffer pool used for the serializable transaction cache.",
+   "unit": "8kB",
+   "enumvals": [],
+   "min_val": "16",
+   "max_val": "131072"
   },
   "server_encoding": {
    "default": "SQL_ASCII",
    "vartype": "string",
    "context": "internal",
-   "short_desc": "Shows the server (database) character set encoding."
+   "short_desc": "Shows the server (database) character set encoding.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "server_version": {
    "default": "18.4 (Homebrew)",
    "vartype": "string",
    "context": "internal",
-   "short_desc": "Shows the server version."
+   "short_desc": "Shows the server version.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "server_version_num": {
    "default": "180004",
    "vartype": "integer",
    "context": "internal",
-   "short_desc": "Shows the server version as an integer."
+   "short_desc": "Shows the server version as an integer.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "180004",
+   "max_val": "180004"
   },
   "session_preload_libraries": {
    "default": "",
    "vartype": "string",
    "context": "superuser",
-   "short_desc": "Lists shared libraries to preload into each backend."
+   "short_desc": "Lists shared libraries to preload into each backend.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "session_replication_role": {
    "default": "origin",
    "vartype": "enum",
    "context": "superuser",
-   "short_desc": "Sets the session's behavior for triggers and rewrite rules."
+   "short_desc": "Sets the session's behavior for triggers and rewrite rules.",
+   "unit": "",
+   "enumvals": [
+    "origin",
+    "replica",
+    "local"
+   ],
+   "min_val": "",
+   "max_val": ""
   },
   "shared_buffers": {
    "default": "128MB",
    "vartype": "integer",
    "context": "postmaster",
-   "short_desc": "Sets the number of shared memory buffers used by the server."
+   "short_desc": "Sets the number of shared memory buffers used by the server.",
+   "unit": "8kB",
+   "enumvals": [],
+   "min_val": "16",
+   "max_val": "1073741823"
   },
   "shared_memory_size": {
    "default": "0",
    "vartype": "integer",
    "context": "internal",
-   "short_desc": "Shows the size of the server's main shared memory area (rounded up to the nearest MB)."
+   "short_desc": "Shows the size of the server's main shared memory area (rounded up to the nearest MB).",
+   "unit": "MB",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "2147483647"
   },
   "shared_memory_size_in_huge_pages": {
    "default": "-1",
    "vartype": "integer",
    "context": "internal",
-   "short_desc": "Shows the number of huge pages needed for the main shared memory area."
+   "short_desc": "Shows the number of huge pages needed for the main shared memory area.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "-1",
+   "max_val": "2147483647"
   },
   "shared_memory_type": {
    "default": "mmap",
    "vartype": "enum",
    "context": "postmaster",
-   "short_desc": "Selects the shared memory implementation used for the main shared memory region."
+   "short_desc": "Selects the shared memory implementation used for the main shared memory region.",
+   "unit": "",
+   "enumvals": [
+    "sysv",
+    "mmap"
+   ],
+   "min_val": "",
+   "max_val": ""
   },
   "shared_preload_libraries": {
    "default": "",
    "vartype": "string",
    "context": "postmaster",
-   "short_desc": "Lists shared libraries to preload into server."
+   "short_desc": "Lists shared libraries to preload into server.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "ssl": {
    "default": "off",
    "vartype": "bool",
    "context": "sighup",
-   "short_desc": "Enables SSL connections."
+   "short_desc": "Enables SSL connections.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "ssl_ca_file": {
    "default": "",
    "vartype": "string",
    "context": "sighup",
-   "short_desc": "Location of the SSL certificate authority file."
+   "short_desc": "Location of the SSL certificate authority file.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "ssl_cert_file": {
    "default": "server.crt",
    "vartype": "string",
    "context": "sighup",
-   "short_desc": "Location of the SSL server certificate file."
+   "short_desc": "Location of the SSL server certificate file.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "ssl_ciphers": {
    "default": "HIGH:MEDIUM:+3DES:!aNULL",
    "vartype": "string",
    "context": "sighup",
-   "short_desc": "Sets the list of allowed TLSv1.2 (and lower) ciphers."
+   "short_desc": "Sets the list of allowed TLSv1.2 (and lower) ciphers.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "ssl_crl_dir": {
    "default": "",
    "vartype": "string",
    "context": "sighup",
-   "short_desc": "Location of the SSL certificate revocation list directory."
+   "short_desc": "Location of the SSL certificate revocation list directory.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "ssl_crl_file": {
    "default": "",
    "vartype": "string",
    "context": "sighup",
-   "short_desc": "Location of the SSL certificate revocation list file."
+   "short_desc": "Location of the SSL certificate revocation list file.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "ssl_dh_params_file": {
    "default": "",
    "vartype": "string",
    "context": "sighup",
-   "short_desc": "Location of the SSL DH parameters file."
+   "short_desc": "Location of the SSL DH parameters file.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "ssl_groups": {
    "default": "X25519:prime256v1",
    "vartype": "string",
    "context": "sighup",
-   "short_desc": "Sets the group(s) to use for Diffie-Hellman key exchange."
+   "short_desc": "Sets the group(s) to use for Diffie-Hellman key exchange.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "ssl_key_file": {
    "default": "server.key",
    "vartype": "string",
    "context": "sighup",
-   "short_desc": "Location of the SSL server private key file."
+   "short_desc": "Location of the SSL server private key file.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "ssl_library": {
    "default": "OpenSSL",
    "vartype": "string",
    "context": "internal",
-   "short_desc": "Shows the name of the SSL library."
+   "short_desc": "Shows the name of the SSL library.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "ssl_max_protocol_version": {
    "default": "",
    "vartype": "enum",
    "context": "sighup",
-   "short_desc": "Sets the maximum SSL/TLS protocol version to use."
+   "short_desc": "Sets the maximum SSL/TLS protocol version to use.",
+   "unit": "",
+   "enumvals": [
+    "",
+    "TLSv1",
+    "TLSv1.1",
+    "TLSv1.2",
+    "TLSv1.3"
+   ],
+   "min_val": "",
+   "max_val": ""
   },
   "ssl_min_protocol_version": {
    "default": "TLSv1.2",
    "vartype": "enum",
    "context": "sighup",
-   "short_desc": "Sets the minimum SSL/TLS protocol version to use."
+   "short_desc": "Sets the minimum SSL/TLS protocol version to use.",
+   "unit": "",
+   "enumvals": [
+    "TLSv1",
+    "TLSv1.1",
+    "TLSv1.2",
+    "TLSv1.3"
+   ],
+   "min_val": "",
+   "max_val": ""
   },
   "ssl_passphrase_command": {
    "default": "",
    "vartype": "string",
    "context": "sighup",
-   "short_desc": "Command to obtain passphrases for SSL."
+   "short_desc": "Command to obtain passphrases for SSL.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "ssl_passphrase_command_supports_reload": {
    "default": "off",
    "vartype": "bool",
    "context": "sighup",
-   "short_desc": "Controls whether \"ssl_passphrase_command\" is called during server reload."
+   "short_desc": "Controls whether \"ssl_passphrase_command\" is called during server reload.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "ssl_prefer_server_ciphers": {
    "default": "on",
    "vartype": "bool",
    "context": "sighup",
-   "short_desc": "Give priority to server ciphersuite order."
+   "short_desc": "Give priority to server ciphersuite order.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "ssl_tls13_ciphers": {
    "default": "",
    "vartype": "string",
    "context": "sighup",
-   "short_desc": "Sets the list of allowed TLSv1.3 cipher suites."
+   "short_desc": "Sets the list of allowed TLSv1.3 cipher suites.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "standard_conforming_strings": {
    "default": "on",
    "vartype": "bool",
    "context": "user",
-   "short_desc": "Causes '...' strings to treat backslashes literally."
+   "short_desc": "Causes '...' strings to treat backslashes literally.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "statement_timeout": {
    "default": "0",
    "vartype": "integer",
    "context": "user",
-   "short_desc": "Sets the maximum allowed duration of any statement."
+   "short_desc": "Sets the maximum allowed duration of any statement.",
+   "unit": "ms",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "2147483647"
   },
   "stats_fetch_consistency": {
    "default": "cache",
    "vartype": "enum",
    "context": "user",
-   "short_desc": "Sets the consistency of accesses to statistics data."
+   "short_desc": "Sets the consistency of accesses to statistics data.",
+   "unit": "",
+   "enumvals": [
+    "none",
+    "cache",
+    "snapshot"
+   ],
+   "min_val": "",
+   "max_val": ""
   },
   "subtransaction_buffers": {
    "default": "0",
    "vartype": "integer",
    "context": "postmaster",
-   "short_desc": "Sets the size of the dedicated buffer pool used for the subtransaction cache."
+   "short_desc": "Sets the size of the dedicated buffer pool used for the subtransaction cache.",
+   "unit": "8kB",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "131072"
   },
   "summarize_wal": {
    "default": "off",
    "vartype": "bool",
    "context": "sighup",
-   "short_desc": "Starts the WAL summarizer process to enable incremental backup."
+   "short_desc": "Starts the WAL summarizer process to enable incremental backup.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "superuser_reserved_connections": {
    "default": "3",
    "vartype": "integer",
    "context": "postmaster",
-   "short_desc": "Sets the number of connection slots reserved for superusers."
+   "short_desc": "Sets the number of connection slots reserved for superusers.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "262143"
   },
   "sync_replication_slots": {
    "default": "off",
    "vartype": "bool",
    "context": "sighup",
-   "short_desc": "Enables a physical standby to synchronize logical failover replication slots from the primary server."
+   "short_desc": "Enables a physical standby to synchronize logical failover replication slots from the primary server.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "synchronize_seqscans": {
    "default": "on",
    "vartype": "bool",
    "context": "user",
-   "short_desc": "Enables synchronized sequential scans."
+   "short_desc": "Enables synchronized sequential scans.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "synchronized_standby_slots": {
    "default": "",
    "vartype": "string",
    "context": "sighup",
-   "short_desc": "Lists streaming replication standby server replication slot names that logical WAL sender processes will wait for."
+   "short_desc": "Lists streaming replication standby server replication slot names that logical WAL sender processes will wait for.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "synchronous_commit": {
    "default": "on",
    "vartype": "enum",
    "context": "user",
-   "short_desc": "Sets the current transaction's synchronization level."
+   "short_desc": "Sets the current transaction's synchronization level.",
+   "unit": "",
+   "enumvals": [
+    "local",
+    "remote_write",
+    "remote_apply",
+    "on",
+    "off"
+   ],
+   "min_val": "",
+   "max_val": ""
   },
   "synchronous_standby_names": {
    "default": "",
    "vartype": "string",
    "context": "sighup",
-   "short_desc": "Number of synchronous standbys and list of names of potential synchronous ones."
+   "short_desc": "Number of synchronous standbys and list of names of potential synchronous ones.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "syslog_facility": {
    "default": "local0",
    "vartype": "enum",
    "context": "sighup",
-   "short_desc": "Sets the syslog \"facility\" to be used when syslog enabled."
+   "short_desc": "Sets the syslog \"facility\" to be used when syslog enabled.",
+   "unit": "",
+   "enumvals": [
+    "local0",
+    "local1",
+    "local2",
+    "local3",
+    "local4",
+    "local5",
+    "local6",
+    "local7"
+   ],
+   "min_val": "",
+   "max_val": ""
   },
   "syslog_ident": {
    "default": "postgres",
    "vartype": "string",
    "context": "sighup",
-   "short_desc": "Sets the program name used to identify PostgreSQL messages in syslog."
+   "short_desc": "Sets the program name used to identify PostgreSQL messages in syslog.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "syslog_sequence_numbers": {
    "default": "on",
    "vartype": "bool",
    "context": "sighup",
-   "short_desc": "Add sequence number to syslog messages to avoid duplicate suppression."
+   "short_desc": "Add sequence number to syslog messages to avoid duplicate suppression.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "syslog_split_messages": {
    "default": "on",
    "vartype": "bool",
    "context": "sighup",
-   "short_desc": "Split messages sent to syslog by lines and to fit into 1024 bytes."
+   "short_desc": "Split messages sent to syslog by lines and to fit into 1024 bytes.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "tcp_keepalives_count": {
    "default": "0",
    "vartype": "integer",
    "context": "user",
-   "short_desc": "Maximum number of TCP keepalive retransmits."
+   "short_desc": "Maximum number of TCP keepalive retransmits.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "2147483647"
   },
   "tcp_keepalives_idle": {
    "default": "0",
    "vartype": "integer",
    "context": "user",
-   "short_desc": "Time between issuing TCP keepalives."
+   "short_desc": "Time between issuing TCP keepalives.",
+   "unit": "s",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "2147483647"
   },
   "tcp_keepalives_interval": {
    "default": "0",
    "vartype": "integer",
    "context": "user",
-   "short_desc": "Time between TCP keepalive retransmits."
+   "short_desc": "Time between TCP keepalive retransmits.",
+   "unit": "s",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "2147483647"
   },
   "tcp_user_timeout": {
    "default": "0",
    "vartype": "integer",
    "context": "user",
-   "short_desc": "TCP user timeout."
+   "short_desc": "TCP user timeout.",
+   "unit": "ms",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "2147483647"
   },
   "temp_buffers": {
    "default": "8MB",
    "vartype": "integer",
    "context": "user",
-   "short_desc": "Sets the maximum number of temporary buffers used by each session."
+   "short_desc": "Sets the maximum number of temporary buffers used by each session.",
+   "unit": "8kB",
+   "enumvals": [],
+   "min_val": "100",
+   "max_val": "1073741823"
   },
   "temp_file_limit": {
    "default": "-1",
    "vartype": "integer",
    "context": "superuser",
-   "short_desc": "Limits the total size of all temporary files used by each process."
+   "short_desc": "Limits the total size of all temporary files used by each process.",
+   "unit": "kB",
+   "enumvals": [],
+   "min_val": "-1",
+   "max_val": "2147483647"
   },
   "temp_tablespaces": {
    "default": "",
    "vartype": "string",
    "context": "user",
-   "short_desc": "Sets the tablespace(s) to use for temporary tables and sort files."
+   "short_desc": "Sets the tablespace(s) to use for temporary tables and sort files.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "timezone": {
    "default": "GMT",
    "vartype": "string",
    "context": "user",
-   "short_desc": "Sets the time zone for displaying and interpreting time stamps."
+   "short_desc": "Sets the time zone for displaying and interpreting time stamps.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "timezone_abbreviations": {
    "default": "",
    "vartype": "string",
    "context": "user",
-   "short_desc": "Selects a file of time zone abbreviations."
+   "short_desc": "Selects a file of time zone abbreviations.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "trace_connection_negotiation": {
    "default": "off",
    "vartype": "bool",
    "context": "postmaster",
-   "short_desc": "Logs details of pre-authentication connection handshake."
+   "short_desc": "Logs details of pre-authentication connection handshake.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "trace_notify": {
    "default": "off",
    "vartype": "bool",
    "context": "user",
-   "short_desc": "Generates debugging output for LISTEN and NOTIFY."
+   "short_desc": "Generates debugging output for LISTEN and NOTIFY.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "trace_sort": {
    "default": "off",
    "vartype": "bool",
    "context": "user",
-   "short_desc": "Emit information about resource usage in sorting."
+   "short_desc": "Emit information about resource usage in sorting.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "track_activities": {
    "default": "on",
    "vartype": "bool",
    "context": "superuser",
-   "short_desc": "Collects information about executing commands."
+   "short_desc": "Collects information about executing commands.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "track_activity_query_size": {
    "default": "1kB",
    "vartype": "integer",
    "context": "postmaster",
-   "short_desc": "Sets the size reserved for pg_stat_activity.query, in bytes."
+   "short_desc": "Sets the size reserved for pg_stat_activity.query, in bytes.",
+   "unit": "B",
+   "enumvals": [],
+   "min_val": "100",
+   "max_val": "1048576"
   },
   "track_commit_timestamp": {
    "default": "off",
    "vartype": "bool",
    "context": "postmaster",
-   "short_desc": "Collects transaction commit time."
+   "short_desc": "Collects transaction commit time.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "track_cost_delay_timing": {
    "default": "off",
    "vartype": "bool",
    "context": "superuser",
-   "short_desc": "Collects timing statistics for cost-based vacuum delay."
+   "short_desc": "Collects timing statistics for cost-based vacuum delay.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "track_counts": {
    "default": "on",
    "vartype": "bool",
    "context": "superuser",
-   "short_desc": "Collects statistics on database activity."
+   "short_desc": "Collects statistics on database activity.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "track_functions": {
    "default": "none",
    "vartype": "enum",
    "context": "superuser",
-   "short_desc": "Collects function-level statistics on database activity."
+   "short_desc": "Collects function-level statistics on database activity.",
+   "unit": "",
+   "enumvals": [
+    "none",
+    "pl",
+    "all"
+   ],
+   "min_val": "",
+   "max_val": ""
   },
   "track_io_timing": {
    "default": "off",
    "vartype": "bool",
    "context": "superuser",
-   "short_desc": "Collects timing statistics for database I/O activity."
+   "short_desc": "Collects timing statistics for database I/O activity.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "track_wal_io_timing": {
    "default": "off",
    "vartype": "bool",
    "context": "superuser",
-   "short_desc": "Collects timing statistics for WAL I/O activity."
+   "short_desc": "Collects timing statistics for WAL I/O activity.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "transaction_buffers": {
    "default": "0",
    "vartype": "integer",
    "context": "postmaster",
-   "short_desc": "Sets the size of the dedicated buffer pool used for the transaction status cache."
+   "short_desc": "Sets the size of the dedicated buffer pool used for the transaction status cache.",
+   "unit": "8kB",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "131072"
   },
   "transaction_deferrable": {
    "default": "off",
    "vartype": "bool",
    "context": "user",
-   "short_desc": "Whether to defer a read-only serializable transaction until it can be executed with no possible serialization failures."
+   "short_desc": "Whether to defer a read-only serializable transaction until it can be executed with no possible serialization failures.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "transaction_isolation": {
    "default": "read committed",
    "vartype": "enum",
    "context": "user",
-   "short_desc": "Sets the current transaction's isolation level."
+   "short_desc": "Sets the current transaction's isolation level.",
+   "unit": "",
+   "enumvals": [
+    "serializable",
+    "repeatable read",
+    "read committed",
+    "read uncommitted"
+   ],
+   "min_val": "",
+   "max_val": ""
   },
   "transaction_read_only": {
    "default": "off",
    "vartype": "bool",
    "context": "user",
-   "short_desc": "Sets the current transaction's read-only status."
+   "short_desc": "Sets the current transaction's read-only status.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "transaction_timeout": {
    "default": "0",
    "vartype": "integer",
    "context": "user",
-   "short_desc": "Sets the maximum allowed duration of any transaction within a session (not a prepared transaction)."
+   "short_desc": "Sets the maximum allowed duration of any transaction within a session (not a prepared transaction).",
+   "unit": "ms",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "2147483647"
   },
   "transform_null_equals": {
    "default": "off",
    "vartype": "bool",
    "context": "user",
-   "short_desc": "Treats \"expr=NULL\" as \"expr IS NULL\"."
+   "short_desc": "Treats \"expr=NULL\" as \"expr IS NULL\".",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "unix_socket_directories": {
    "default": "/tmp",
    "vartype": "string",
    "context": "postmaster",
-   "short_desc": "Sets the directories where Unix-domain sockets will be created."
+   "short_desc": "Sets the directories where Unix-domain sockets will be created.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "unix_socket_group": {
    "default": "",
    "vartype": "string",
    "context": "postmaster",
-   "short_desc": "Sets the owning group of the Unix-domain socket."
+   "short_desc": "Sets the owning group of the Unix-domain socket.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "unix_socket_permissions": {
    "default": "511",
    "vartype": "integer",
    "context": "postmaster",
-   "short_desc": "Sets the access permissions of the Unix-domain socket."
+   "short_desc": "Sets the access permissions of the Unix-domain socket.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "511"
   },
   "update_process_title": {
    "default": "on",
    "vartype": "bool",
    "context": "superuser",
-   "short_desc": "Updates the process title to show the active SQL command."
+   "short_desc": "Updates the process title to show the active SQL command.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "vacuum_buffer_usage_limit": {
    "default": "2MB",
    "vartype": "integer",
    "context": "user",
-   "short_desc": "Sets the buffer pool size for VACUUM, ANALYZE, and autovacuum."
+   "short_desc": "Sets the buffer pool size for VACUUM, ANALYZE, and autovacuum.",
+   "unit": "kB",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "16777216"
   },
   "vacuum_cost_delay": {
    "default": "0",
    "vartype": "real",
    "context": "user",
-   "short_desc": "Vacuum cost delay in milliseconds."
+   "short_desc": "Vacuum cost delay in milliseconds.",
+   "unit": "ms",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "100"
   },
   "vacuum_cost_limit": {
    "default": "200",
    "vartype": "integer",
    "context": "user",
-   "short_desc": "Vacuum cost amount available before napping."
+   "short_desc": "Vacuum cost amount available before napping.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "1",
+   "max_val": "10000"
   },
   "vacuum_cost_page_dirty": {
    "default": "20",
    "vartype": "integer",
    "context": "user",
-   "short_desc": "Vacuum cost for a page dirtied by vacuum."
+   "short_desc": "Vacuum cost for a page dirtied by vacuum.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "10000"
   },
   "vacuum_cost_page_hit": {
    "default": "1",
    "vartype": "integer",
    "context": "user",
-   "short_desc": "Vacuum cost for a page found in the buffer cache."
+   "short_desc": "Vacuum cost for a page found in the buffer cache.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "10000"
   },
   "vacuum_cost_page_miss": {
    "default": "2",
    "vartype": "integer",
    "context": "user",
-   "short_desc": "Vacuum cost for a page not found in the buffer cache."
+   "short_desc": "Vacuum cost for a page not found in the buffer cache.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "10000"
   },
   "vacuum_failsafe_age": {
    "default": "1600000000",
    "vartype": "integer",
    "context": "user",
-   "short_desc": "Age at which VACUUM should trigger failsafe to avoid a wraparound outage."
+   "short_desc": "Age at which VACUUM should trigger failsafe to avoid a wraparound outage.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "2100000000"
   },
   "vacuum_freeze_min_age": {
    "default": "50000000",
    "vartype": "integer",
    "context": "user",
-   "short_desc": "Minimum age at which VACUUM should freeze a table row."
+   "short_desc": "Minimum age at which VACUUM should freeze a table row.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "1000000000"
   },
   "vacuum_freeze_table_age": {
    "default": "150000000",
    "vartype": "integer",
    "context": "user",
-   "short_desc": "Age at which VACUUM should scan whole table to freeze tuples."
+   "short_desc": "Age at which VACUUM should scan whole table to freeze tuples.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "2000000000"
   },
   "vacuum_max_eager_freeze_failure_rate": {
    "default": "0.03",
    "vartype": "real",
    "context": "user",
-   "short_desc": "Fraction of pages in a relation vacuum can scan and fail to freeze before disabling eager scanning."
+   "short_desc": "Fraction of pages in a relation vacuum can scan and fail to freeze before disabling eager scanning.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "1"
   },
   "vacuum_multixact_failsafe_age": {
    "default": "1600000000",
    "vartype": "integer",
    "context": "user",
-   "short_desc": "Multixact age at which VACUUM should trigger failsafe to avoid a wraparound outage."
+   "short_desc": "Multixact age at which VACUUM should trigger failsafe to avoid a wraparound outage.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "2100000000"
   },
   "vacuum_multixact_freeze_min_age": {
    "default": "5000000",
    "vartype": "integer",
    "context": "user",
-   "short_desc": "Minimum age at which VACUUM should freeze a MultiXactId in a table row."
+   "short_desc": "Minimum age at which VACUUM should freeze a MultiXactId in a table row.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "1000000000"
   },
   "vacuum_multixact_freeze_table_age": {
    "default": "150000000",
    "vartype": "integer",
    "context": "user",
-   "short_desc": "Multixact age at which VACUUM should scan whole table to freeze tuples."
+   "short_desc": "Multixact age at which VACUUM should scan whole table to freeze tuples.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "2000000000"
   },
   "vacuum_truncate": {
    "default": "on",
    "vartype": "bool",
    "context": "user",
-   "short_desc": "Enables vacuum to truncate empty pages at the end of the table."
+   "short_desc": "Enables vacuum to truncate empty pages at the end of the table.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "wal_block_size": {
    "default": "8192",
    "vartype": "integer",
    "context": "internal",
-   "short_desc": "Shows the block size in the write ahead log."
+   "short_desc": "Shows the block size in the write ahead log.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "8192",
+   "max_val": "8192"
   },
   "wal_buffers": {
    "default": "-1",
    "vartype": "integer",
    "context": "postmaster",
-   "short_desc": "Sets the number of disk-page buffers in shared memory for WAL."
+   "short_desc": "Sets the number of disk-page buffers in shared memory for WAL.",
+   "unit": "8kB",
+   "enumvals": [],
+   "min_val": "-1",
+   "max_val": "262143"
   },
   "wal_compression": {
    "default": "off",
    "vartype": "enum",
    "context": "superuser",
-   "short_desc": "Compresses full-page writes written in WAL file with specified method."
+   "short_desc": "Compresses full-page writes written in WAL file with specified method.",
+   "unit": "",
+   "enumvals": [
+    "pglz",
+    "lz4",
+    "zstd",
+    "on",
+    "off"
+   ],
+   "min_val": "",
+   "max_val": ""
   },
   "wal_consistency_checking": {
    "default": "",
    "vartype": "string",
    "context": "superuser",
-   "short_desc": "Sets the WAL resource managers for which WAL consistency checks are done."
+   "short_desc": "Sets the WAL resource managers for which WAL consistency checks are done.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "wal_decode_buffer_size": {
    "default": "512kB",
    "vartype": "integer",
    "context": "postmaster",
-   "short_desc": "Buffer size for reading ahead in the WAL during recovery."
+   "short_desc": "Buffer size for reading ahead in the WAL during recovery.",
+   "unit": "B",
+   "enumvals": [],
+   "min_val": "65536",
+   "max_val": "1073741823"
   },
   "wal_init_zero": {
    "default": "on",
    "vartype": "bool",
    "context": "superuser",
-   "short_desc": "Writes zeroes to new WAL files before first use."
+   "short_desc": "Writes zeroes to new WAL files before first use.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "wal_keep_size": {
    "default": "0",
    "vartype": "integer",
    "context": "sighup",
-   "short_desc": "Sets the size of WAL files held for standby servers."
+   "short_desc": "Sets the size of WAL files held for standby servers.",
+   "unit": "MB",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "2147483647"
   },
   "wal_level": {
    "default": "replica",
    "vartype": "enum",
    "context": "postmaster",
-   "short_desc": "Sets the level of information written to the WAL."
+   "short_desc": "Sets the level of information written to the WAL.",
+   "unit": "",
+   "enumvals": [
+    "minimal",
+    "replica",
+    "logical"
+   ],
+   "min_val": "",
+   "max_val": ""
   },
   "wal_log_hints": {
    "default": "off",
    "vartype": "bool",
    "context": "postmaster",
-   "short_desc": "Writes full pages to WAL when first modified after a checkpoint, even for a non-critical modification."
+   "short_desc": "Writes full pages to WAL when first modified after a checkpoint, even for a non-critical modification.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "wal_receiver_create_temp_slot": {
    "default": "off",
    "vartype": "bool",
    "context": "sighup",
-   "short_desc": "Sets whether a WAL receiver should create a temporary replication slot if no permanent slot is configured."
+   "short_desc": "Sets whether a WAL receiver should create a temporary replication slot if no permanent slot is configured.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "wal_receiver_status_interval": {
    "default": "10s",
    "vartype": "integer",
    "context": "sighup",
-   "short_desc": "Sets the maximum interval between WAL receiver status reports to the sending server."
+   "short_desc": "Sets the maximum interval between WAL receiver status reports to the sending server.",
+   "unit": "s",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "2147483"
   },
   "wal_receiver_timeout": {
    "default": "1min",
    "vartype": "integer",
    "context": "sighup",
-   "short_desc": "Sets the maximum wait time to receive data from the sending server."
+   "short_desc": "Sets the maximum wait time to receive data from the sending server.",
+   "unit": "ms",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "2147483647"
   },
   "wal_recycle": {
    "default": "on",
    "vartype": "bool",
    "context": "superuser",
-   "short_desc": "Recycles WAL files by renaming them."
+   "short_desc": "Recycles WAL files by renaming them.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   },
   "wal_retrieve_retry_interval": {
    "default": "5s",
    "vartype": "integer",
    "context": "sighup",
-   "short_desc": "Sets the time to wait before retrying to retrieve WAL after a failed attempt."
+   "short_desc": "Sets the time to wait before retrying to retrieve WAL after a failed attempt.",
+   "unit": "ms",
+   "enumvals": [],
+   "min_val": "1",
+   "max_val": "2147483647"
   },
   "wal_segment_size": {
    "default": "16MB",
    "vartype": "integer",
    "context": "internal",
-   "short_desc": "Shows the size of write ahead log segments."
+   "short_desc": "Shows the size of write ahead log segments.",
+   "unit": "B",
+   "enumvals": [],
+   "min_val": "1048576",
+   "max_val": "1073741824"
   },
   "wal_sender_timeout": {
    "default": "1min",
    "vartype": "integer",
    "context": "user",
-   "short_desc": "Sets the maximum time to wait for WAL replication."
+   "short_desc": "Sets the maximum time to wait for WAL replication.",
+   "unit": "ms",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "2147483647"
   },
   "wal_skip_threshold": {
    "default": "2MB",
    "vartype": "integer",
    "context": "user",
-   "short_desc": "Minimum size of new file to fsync instead of writing WAL."
+   "short_desc": "Minimum size of new file to fsync instead of writing WAL.",
+   "unit": "kB",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "2147483647"
   },
   "wal_summary_keep_time": {
    "default": "10d",
    "vartype": "integer",
    "context": "sighup",
-   "short_desc": "Time for which WAL summary files should be kept."
+   "short_desc": "Time for which WAL summary files should be kept.",
+   "unit": "min",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "35791394"
   },
   "wal_sync_method": {
    "default": "open_datasync",
    "vartype": "enum",
    "context": "sighup",
-   "short_desc": "Selects the method used for forcing WAL updates to disk."
+   "short_desc": "Selects the method used for forcing WAL updates to disk.",
+   "unit": "",
+   "enumvals": [
+    "fsync",
+    "fsync_writethrough",
+    "fdatasync",
+    "open_sync",
+    "open_datasync"
+   ],
+   "min_val": "",
+   "max_val": ""
   },
   "wal_writer_delay": {
    "default": "200ms",
    "vartype": "integer",
    "context": "sighup",
-   "short_desc": "Time between WAL flushes performed in the WAL writer."
+   "short_desc": "Time between WAL flushes performed in the WAL writer.",
+   "unit": "ms",
+   "enumvals": [],
+   "min_val": "1",
+   "max_val": "10000"
   },
   "wal_writer_flush_after": {
    "default": "1MB",
    "vartype": "integer",
    "context": "sighup",
-   "short_desc": "Amount of WAL written out by WAL writer that triggers a flush."
+   "short_desc": "Amount of WAL written out by WAL writer that triggers a flush.",
+   "unit": "8kB",
+   "enumvals": [],
+   "min_val": "0",
+   "max_val": "2147483647"
   },
   "work_mem": {
    "default": "4MB",
    "vartype": "integer",
    "context": "user",
-   "short_desc": "Sets the maximum memory to be used for query workspaces."
+   "short_desc": "Sets the maximum memory to be used for query workspaces.",
+   "unit": "kB",
+   "enumvals": [],
+   "min_val": "64",
+   "max_val": "2147483647"
   },
   "xmlbinary": {
    "default": "base64",
    "vartype": "enum",
    "context": "user",
-   "short_desc": "Sets how binary values are to be encoded in XML."
+   "short_desc": "Sets how binary values are to be encoded in XML.",
+   "unit": "",
+   "enumvals": [
+    "base64",
+    "hex"
+   ],
+   "min_val": "",
+   "max_val": ""
   },
   "xmloption": {
    "default": "content",
    "vartype": "enum",
    "context": "user",
-   "short_desc": "Sets whether XML data in implicit parsing and serialization operations is to be considered as documents or content fragments."
+   "short_desc": "Sets whether XML data in implicit parsing and serialization operations is to be considered as documents or content fragments.",
+   "unit": "",
+   "enumvals": [
+    "content",
+    "document"
+   ],
+   "min_val": "",
+   "max_val": ""
   },
   "zero_damaged_pages": {
    "default": "off",
    "vartype": "bool",
    "context": "superuser",
-   "short_desc": "Continues processing past damaged page headers."
+   "short_desc": "Continues processing past damaged page headers.",
+   "unit": "",
+   "enumvals": [],
+   "min_val": "",
+   "max_val": ""
   }
  }
 }

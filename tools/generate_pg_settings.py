@@ -121,7 +121,8 @@ def main(dsn: str) -> None:
         # "18.4 (Homebrew)" -- the build tag is the packager's, not PostgreSQL's.
         server_version = cursor.fetchone()[0].split()[0]
         cursor.execute("""
-            SELECT name, setting, boot_val, unit, vartype, context, short_desc, current_setting(name) AS shown
+            SELECT name, setting, boot_val, unit, vartype, context, short_desc,
+                   enumvals, min_val, max_val, current_setting(name) AS shown
             FROM pg_settings ORDER BY name
         """)
         columns = [description.name for description in cursor.description]
@@ -135,6 +136,14 @@ def main(dsn: str) -> None:
             "vartype": row["vartype"],
             "context": row["context"],
             "short_desc": row["short_desc"] or "",
+            # What a value has to satisfy to be one. `unit` is the bucket -- a
+            # parameter carrying one takes `8MB` or a bare number in that unit, and
+            # reads back in whichever unit divides evenly. enumvals/min_val/max_val
+            # are the rest of the constraint, for the same reason.
+            "unit": row["unit"] or "",
+            "enumvals": list(row["enumvals"] or ()),
+            "min_val": row["min_val"] or "",
+            "max_val": row["max_val"] or "",
         }
         for row in rows
     }
