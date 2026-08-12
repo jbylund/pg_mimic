@@ -20,13 +20,16 @@ executing it, and is a separate problem.
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 from sqlglot import exp
+from sqlglot.errors import OptimizeError
 from sqlglot.executor import execute as sqlglot_execute
 
 from .catalog_data import DECLARED_TYPE_OIDS, PG_CATALOG_SCHEMA
 from .catalog_rewrite import rewrite_for_executor
+from .errors import FEATURE_NOT_SUPPORTED, PgError
 from .results import ResultColumn
 from .session import Statement, StaticStatement, statement_from_rows
 from .types import TEXT, oid_for_type
@@ -34,6 +37,8 @@ from .types import TEXT, oid_for_type
 if TYPE_CHECKING:
     from .connection import Connection
 
+
+logger = logging.getLogger(__name__)
 
 # --- synthesised tables --------------------------------------------------------------
 
@@ -269,10 +274,44 @@ def _empty_result(expr: exp.Expression) -> Statement | None:
     return StaticStatement(expr.sql(dialect="postgres"), columns, [])
 
 
-def _as_statement(expr: exp.Expression, schema: dict, tables: dict) -> Statement | None:
+def _as_statement(expr: exp.Expression, schema: dict, tables: dict, *, strict: bool) -> Statement | None:
+    """Run a catalog query, or decide what its failure means. See #39.
+
+    `strict` says whether an executor failure is this connection's problem or the
+    client's answer. It is True for information_schema, which users query
+    themselves, and False for pg_catalog, which is overwhelmingly psql's own SQL.
+    """
     try:
         result = sqlglot_execute(expr, schema=schema, tables=tables, dialect="postgres")
-    except Exception:
+    except OptimizeError as error:
+        # A catalog column pg_mimic doesn't model. Empty is *not* the right answer
+        # here -- Postgres says 42703, and no rows is the same kind of lie the
+        # executor branch below refuses to tell. It stays lenient only because the
+        # model is too thin to be strict against: information_schema.columns
+        # carries 7 of Postgres's ~44, so raising would turn ordinary ORM
+        # introspection into errors overnight. Model the columns first, then make
+        # this 42703 -- see #66.
+        logger.debug("catalog query answered empty, nothing models it: %s -- %s", error, expr.sql(dialect="postgres"))
+        return _empty_result(expr)
+    except Exception as error:
+        # The executor broke rather than ran out of catalog: a missing entry in its
+        # function table reads as `name 'DPIPE' is not defined`. On an
+        # information_schema query that is a pg_mimic gap and empty is a lie -- it
+        # is how #38 stayed hidden, since `SELECT a || b FROM
+        # information_schema.tables` came back as no rows and a clean exit.
+        if strict:
+            raise PgError(
+                FEATURE_NOT_SUPPORTED,
+                f"pg_mimic could not run this information_schema query: {error}",
+            ) from None
+        # pg_catalog, where the same failure is psql asking after partitions,
+        # collations and statistics that a mimic has none of. Raising would break
+        # \d, \d+ and \l outright, and empty is what makes them work.
+        logger.debug(
+            "catalog query answered empty after an executor failure: %s -- %s",
+            error,
+            expr.sql(dialect="postgres"),
+        )
         return _empty_result(expr)
 
     return statement_from_rows(expr.sql(dialect="postgres"), result.columns, [tuple(row) for row in result.rows])
@@ -285,9 +324,9 @@ async def _user_schema(connection: Connection) -> dict:
 
 async def information_schema_statement(connection: Connection, expr: exp.Select) -> Statement | None:
     schema, tables = _build_information_schema(await _user_schema(connection))
-    return _as_statement(expr, schema, tables)
+    return _as_statement(expr, schema, tables, strict=True)
 
 
 async def pg_catalog_statement(connection: Connection, expr: exp.Select) -> Statement | None:
     schema, tables = _build_pg_catalog(await _user_schema(connection))
-    return _as_statement(rewrite_for_executor(connection, expr), schema, tables)
+    return _as_statement(rewrite_for_executor(connection, expr), schema, tables, strict=False)
