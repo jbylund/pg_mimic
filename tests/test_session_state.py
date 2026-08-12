@@ -511,3 +511,50 @@ def test_current_setting_missing_ok_is_still_null_for_a_non_parameter(conn, mock
     with conn.cursor() as cur:
         cur.execute("SELECT current_setting('app.tenant', true)")
         assert cur.fetchone() == (None,)
+
+
+def test_version_and_port_describe_pg_mimic_not_the_generating_server(conn, mock_session):
+    """The catalogue is generated from whichever server it was pointed at, so left to
+    it `server_version_num` would report that server's release while `server_version`
+    and the startup ParameterStatus report pg_mimic's -- and a client gating a feature
+    on the number acts on a version it is not talking to. Same for `port`, where the
+    catalogued 5432 is a fact about PostgreSQL's default rather than this listener."""
+    with conn.cursor() as cur:
+        cur.execute("SHOW server_version")
+        version = cur.fetchone()[0]
+        cur.execute("SHOW server_version_num")
+        assert cur.fetchone() == ("160000",), f"disagrees with server_version {version!r}"
+        assert version.startswith("16.0")
+
+        cur.execute("SHOW port")
+        assert cur.fetchone() == (str(conn.info.port),)
+
+
+def test_show_all_lists_the_settings_with_descriptions(conn, mock_session):
+    """`SHOW ALL` is the whole table, not a parameter named "all". It read as the
+    latter before the catalogue existed -- one bogus empty row -- and became a 42704
+    once unknown names started erroring, which is worse for the tools that run it on
+    connect."""
+    with conn.cursor() as cur:
+        cur.execute("SHOW ALL")
+        rows = cur.fetchall()
+        assert [description.name for description in cur.description] == ["name", "setting", "description"]
+        assert len(rows) > 300
+
+        settings = {name: (value, description) for name, value, description in rows}
+        assert settings["work_mem"] == ("4MB", "Sets the maximum memory to be used for query workspaces.")
+
+        # what the connection has set shows through, not the default underneath it
+        cur.execute("SET search_path TO myschema")
+        cur.execute("SHOW ALL")
+        assert dict((name, value) for name, value, _ in cur.fetchall())["search_path"] == "myschema"
+
+
+def test_a_dotted_guc_does_not_become_known_by_setting_it(conn, mock_session):
+    """Pins what the README now says rather than what it used to. A dotted name goes
+    to the session (#35), so pg_mimic never sees the write -- and the row-level-security
+    probe stays NULL afterwards. The docs claimed the opposite."""
+    with conn.cursor() as cur:
+        cur.execute("SET app.tenant = 'acme'")
+        cur.execute("SELECT current_setting('app.tenant', true)")
+        assert cur.fetchone() == (None,)

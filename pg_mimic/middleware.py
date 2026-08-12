@@ -97,6 +97,9 @@ _SHOW_RE = re.compile(r"^\s*SHOW\s+(\S+?)\s*;?\s*$", re.IGNORECASE)
 # The read counterpart of SET TIME ZONE, and the one multi-word SHOW worth
 # special-casing -- _SHOW_RE only matches a single token.
 _SHOW_TIME_ZONE_RE = re.compile(r"^\s*SHOW\s+TIME\s+ZONE\s*;?\s*$", re.IGNORECASE)
+# `SHOW ALL` is the whole table, not a parameter named "all" -- unquoted only, since
+# `SHOW "all"` asks for a parameter of that name and there isn't one.
+_SHOW_ALL_RE = re.compile(r"^\s*SHOW\s+ALL\s*;?\s*$", re.IGNORECASE)
 
 # Connection-state resets. DISCARD ALL is what pgbouncer sends between pooled
 # clients, so anything behind a pooler hits it on every checkout.
@@ -258,6 +261,8 @@ async def set_show(ctx: MiddlewareContext) -> Statement | None:
         return statement
     if _SHOW_TIME_ZONE_RE.match(ctx.sql):
         return _show_statement(ctx.connection, "timezone")
+    if _SHOW_ALL_RE.match(ctx.sql):
+        return _show_all_statement(ctx.connection)
     show_match = _SHOW_RE.match(ctx.sql)
     if show_match:
         return _show_statement(ctx.connection, show_match.group(1))
@@ -814,11 +819,33 @@ _DEFAULT_SETTINGS = {
     "jit": lambda c: "off",
     "search_path": lambda c: '"$user", public',
     "server_encoding": lambda c: c.server.parameter_status.get("server_encoding", "UTF8"),
+    "port": lambda c: str(c.server.port),
     "server_version": lambda c: c.server.parameter_status.get("server_version", ""),
+    "server_version_num": lambda c: _version_num(c.server.parameter_status.get("server_version", "")),
     "session_authorization": lambda c: c.username,
     "standard_conforming_strings": lambda c: "on",
     "timezone": lambda c: c.server.parameter_status.get("TimeZone", "UTC"),
 }
+
+
+def _version_num(version: str) -> str:
+    """PostgreSQL's numeric spelling of a version string: 16.0 is 160000, 18.4 is 180004.
+
+    Derived rather than catalogued because the two have to agree. The catalogue is
+    generated from whichever server it was pointed at, so leaving this to it tells a
+    client the release of *that* server while `SHOW server_version` and the startup
+    ParameterStatus report pg_mimic's own -- and a client that gates a feature on the
+    number then acts on a version it is not talking to. `port` is the same story: the
+    catalogued 5432 is a fact about PostgreSQL's default, not about this listener.
+    """
+    head = version.split()[0] if version.split() else ""
+    parts = head.split(".")
+    try:
+        major = int(parts[0])
+        minor = int(parts[1]) if len(parts) > 1 else 0
+    except (IndexError, ValueError):
+        return ""
+    return str(major * 10000 + minor)
 
 
 def _show_statement(connection: Connection, name: str) -> Statement:
@@ -835,6 +862,31 @@ def _show_statement(connection: Connection, name: str) -> Statement:
         return [(value,)]
 
     return StaticStatement(f"SHOW {name}", [ResultColumn(key, TEXT)], rows)
+
+
+def _show_all_statement(connection: Connection) -> Statement:
+    """Every parameter this connection can see, in Postgres's three columns.
+
+    Answered from the catalogue plus whatever the connection has set. Before there
+    was a catalogue this read as a parameter named "all" and returned one bogus
+    empty row; once unknown names started erroring it became a 42704, which is worse
+    for the tools that run it on connect.
+    """
+    columns = [ResultColumn("name", TEXT), ResultColumn("setting", TEXT), ResultColumn("description", TEXT)]
+
+    def rows() -> list[tuple]:
+        names = set(settings_catalog.SETTINGS) | set(_DEFAULT_SETTINGS)
+        names |= set(connection.state.session_vars) | set(connection.state.known_settings)
+        found = []
+        for name in sorted(names):
+            value = _setting_value(connection, name)
+            if value is None:
+                continue
+            entry = settings_catalog.SETTINGS.get(name)
+            found.append((name, value, entry["short_desc"] if entry else ""))
+        return found
+
+    return StaticStatement("SHOW ALL", columns, rows)
 
 
 _SESSION_NULLARY_FUNCS = {
@@ -1005,8 +1057,13 @@ def _apply_set_config(connection: Connection, key: str, value: str | None, local
     not `SET LOCAL` also lands in `committed_vars`, which is what survives COMMIT.
     Naming a setting is also what makes it exist: `known_settings` records the name
     for good, so a RESET leaves it readable-but-blank rather than unrecognised --
-    even a `RESET app.never_set` on its own, which real Postgres also accepts and
-    which leaves the name known afterwards.
+    unless it has a built-in default, which outranks the blank (see `_setting_value`).
+
+    That reaches only the names this module handles. A dotted custom GUC never
+    arrives here at all -- `_SETTING_NAME` excludes the dot on purpose, so
+    `SET app.tenant = 'acme'` falls through to the session -- and so does not become
+    known. `current_setting('app.tenant', true)` is therefore still NULL after one,
+    which is the gap `Session.set_parameter()` closes (#35).
     """
     connection.state.known_settings.add(key)
     for target in (connection.state.session_vars, connection.state.committed_vars):

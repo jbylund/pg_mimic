@@ -31,9 +31,11 @@ import sys
 
 # Ordered largest first, as PostgreSQL's own conversion is: the rendered unit is
 # the largest one the value divides by evenly. Multipliers are relative to the
-# base of each family -- bytes for memory, milliseconds for time.
+# base of each family -- bytes for memory, *microseconds* for time. Microseconds
+# rather than milliseconds because `us` is a unit a GUC may declare, and on a
+# millisecond base it is the one value that is not a whole multiple.
 _MEMORY_UNITS = (("TB", 1024**4), ("GB", 1024**3), ("MB", 1024**2), ("kB", 1024), ("B", 1))
-_TIME_UNITS = (("d", 86_400_000), ("h", 3_600_000), ("min", 60_000), ("s", 1_000), ("ms", 1), ("us", 0))
+_TIME_UNITS = (("d", 86_400_000_000), ("h", 3_600_000_000), ("min", 60_000_000), ("s", 1_000_000), ("ms", 1_000), ("us", 1))
 
 # What one of pg_settings.unit is worth in its family's base.
 _BASE = {
@@ -42,10 +44,10 @@ _BASE = {
     "MB": (_MEMORY_UNITS, 1024**2),
     "GB": (_MEMORY_UNITS, 1024**3),
     "8kB": (_MEMORY_UNITS, 8 * 1024),
-    "us": (_TIME_UNITS, 0),
-    "ms": (_TIME_UNITS, 1),
-    "s": (_TIME_UNITS, 1_000),
-    "min": (_TIME_UNITS, 60_000),
+    "us": (_TIME_UNITS, 1),
+    "ms": (_TIME_UNITS, 1_000),
+    "s": (_TIME_UNITS, 1_000_000),
+    "min": (_TIME_UNITS, 60_000_000),
 }
 
 
@@ -119,7 +121,7 @@ def main(dsn: str) -> None:
         # "18.4 (Homebrew)" -- the build tag is the packager's, not PostgreSQL's.
         server_version = cursor.fetchone()[0].split()[0]
         cursor.execute("""
-            SELECT name, setting, boot_val, unit, vartype, context, current_setting(name) AS shown
+            SELECT name, setting, boot_val, unit, vartype, context, short_desc, current_setting(name) AS shown
             FROM pg_settings ORDER BY name
         """)
         columns = [description.name for description in cursor.description]
@@ -132,6 +134,7 @@ def main(dsn: str) -> None:
             "default": _default_for(row),
             "vartype": row["vartype"],
             "context": row["context"],
+            "short_desc": row["short_desc"] or "",
         }
         for row in rows
     }
