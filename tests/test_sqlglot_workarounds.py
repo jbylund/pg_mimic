@@ -7,13 +7,14 @@ bug the test XPASSes, and strict turns that into a build failure telling you a
 workaround is now deletable.
 
 The point is that a workaround has no natural expiry. Two of them silently
-outlived their cause and were only noticed by reading the comments (#50): a
+outlived their cause and were noticed only by re-reading the comments: a
 `FULL OUTER JOIN` refused for a bug fixed in sqlglot v30.15.0, and an INTERVAL
-patch whose stated justification had gone stale. These tests are how the next one
-announces itself instead.
+patch whose stated justification had gone stale. These tests are how the next
+one announces itself instead. See
+https://github.com/jbylund/pg_mimic/issues/50
 
 Each test names the workaround it justifies, so a failure points straight at the
-code to delete. See #49 for the inventory.
+code to delete. The inventory is https://github.com/jbylund/pg_mimic/issues/49
 
 A failure here is never a pg_mimic regression: it means good news upstream.
 """
@@ -38,14 +39,19 @@ _TEXT = ({"q": [{"s": "Bump version"}, {"s": "Add feature"}]}, {"q": {"s": "TEXT
 
 @pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
 def test_offset_is_applied():
-    """Workaround: `_take_row_window` / `rows_sliced_here` in tables.py."""
+    """https://github.com/jbylund/pg_mimic/issues/49
+
+    Workaround: `_take_row_window` / `rows_sliced_here` in tables.py.
+    """
     assert _rows("SELECT a FROM t ORDER BY a OFFSET 1", *_NUMBERS) == [(2,), (3,)]
     assert _rows("SELECT a FROM t ORDER BY a LIMIT 1 OFFSET 1", *_NUMBERS) == [(2,)]
 
 
 @pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
 def test_order_by_on_a_set_operation_keeps_the_columns():
-    """Workaround: `_take_result_order` / `_sorted_rows` in tables.py.
+    """https://github.com/jbylund/pg_mimic/issues/49
+
+    Workaround: `_take_result_order` / `_sorted_rows` in tables.py.
 
     The rows come back column-less -- `[(), (), ()]` -- not merely unsorted.
     """
@@ -54,7 +60,10 @@ def test_order_by_on_a_set_operation_keeps_the_columns():
 
 @pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
 def test_not_in_a_subquery_filters():
-    """Workaround: `_rewrite_not_in` in tables.py. `NOT IN (literals)` is fine."""
+    """https://github.com/jbylund/pg_mimic/issues/49
+
+    Workaround: `_rewrite_not_in` in tables.py. `NOT IN (literals)` is fine.
+    """
     tables = {"t": [{"a": 1}, {"a": 2}], "u": [{"b": 1}]}
     schema = {"t": {"a": "INT"}, "u": {"b": "INT"}}
     assert _rows("SELECT a FROM t WHERE a NOT IN (SELECT b FROM u)", tables, schema) == [(2,)]
@@ -62,7 +71,9 @@ def test_not_in_a_subquery_filters():
 
 @pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
 def test_descending_order_places_nulls_instead_of_raising():
-    """Workaround: `_rewrite_null_ordering` in tables.py.
+    """https://github.com/jbylund/pg_mimic/issues/49
+
+    Workaround: `_rewrite_null_ordering` in tables.py.
 
     Ascending coincidentally matches Postgres; descending raises TypeError.
     """
@@ -72,7 +83,9 @@ def test_descending_order_places_nulls_instead_of_raising():
 
 @pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
 def test_a_set_operation_may_read_one_table_twice():
-    """Workaround: `canonicalize_table_aliases=True` in `TableSession._plan`.
+    """https://github.com/jbylund/pg_mimic/issues/49
+
+    Workaround: `canonicalize_table_aliases=True` in `TableSession._plan`.
 
     The planner keys steps by table name, so the second branch reruns the first's.
     """
@@ -81,19 +94,27 @@ def test_a_set_operation_may_read_one_table_twice():
 
 @pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
 def test_limit_on_a_parenthesized_query_is_applied():
-    """Workaround: `_flatten_parenthesized` in tables.py."""
+    """https://github.com/jbylund/pg_mimic/issues/49
+
+    Workaround: `_flatten_parenthesized` in tables.py.
+    """
     assert _rows("(SELECT a FROM t) LIMIT 1", *_NUMBERS) == [(1,)]
 
 
 @pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
 def test_tablesample_is_applied():
-    """Workaround: refused by `_reject_silently_ignored` in tables.py."""
+    """https://github.com/jbylund/pg_mimic/issues/49
+
+    Workaround: refused by `_reject_silently_ignored` in tables.py.
+    """
     assert _rows("SELECT a FROM t TABLESAMPLE BERNOULLI (0)", *_NUMBERS) == []
 
 
 @pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
 def test_like_is_anchored_and_takes_metacharacters_literally():
-    """Workaround: `catalog_rewrite`'s ENV patching, and see #38.
+    """https://github.com/jbylund/pg_mimic/issues/38
+
+    Workaround: `catalog_rewrite`'s ENV patching.
 
     Postgres' LIKE is fully anchored, and only % and _ are wildcards.
     """
@@ -103,26 +124,37 @@ def test_like_is_anchored_and_takes_metacharacters_literally():
 
 @pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
 def test_not_like_excludes_what_like_matches():
-    """Workaround: see #44. Fix in flight: tobymao/sqlglot#8139."""
+    """https://github.com/jbylund/pg_mimic/issues/44
+
+    Fix in flight: https://redirect.github.com/tobymao/sqlglot/pull/8139
+    """
     assert _rows("SELECT s FROM q WHERE s NOT LIKE 'Bump%'", *_TEXT) == [("Add feature",)]
 
 
 @pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
 def test_ilike_exists():
-    """Workaround: none -- it raises. See #38."""
+    """https://github.com/jbylund/pg_mimic/issues/38
+
+    No workaround -- it raises.
+    """
     assert _rows("SELECT s FROM q WHERE s ILIKE 'bump%'", *_TEXT) == [("Bump version",)]
 
 
 @pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
 def test_length_and_concatenation_exist():
-    """Workaround: none -- both raise. See #38, and examples/git_sql.py's ENV patch."""
+    """https://github.com/jbylund/pg_mimic/issues/38
+
+    No workaround here -- both raise. examples/git_sql.py patches its own ENV.
+    """
     assert _rows("SELECT length(s) FROM q", *_TEXT) == [(12,), (11,)]
     assert _rows("SELECT s || '!' FROM q", *_TEXT) == [("Bump version!",), ("Add feature!",)]
 
 
 @pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
 def test_interval_handles_years_and_months():
-    """Workaround: `_interval_delta` in examples/git_sql.py.
+    """https://github.com/jbylund/pg_mimic/issues/55
+
+    Workaround: `_interval_delta` in examples/git_sql.py.
 
     A literal operand is constant-folded before the executor runs, so this needs a
     column to reach ENV["INTERVAL"], which is `timedelta(**{unit: n})` -- and
@@ -135,13 +167,17 @@ def test_interval_handles_years_and_months():
 
 @pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
 def test_typed_division_keeps_a_real_operands_fraction():
-    """Workaround: none -- see #48. Fix in flight: tobymao/sqlglot#8138."""
+    """https://github.com/jbylund/pg_mimic/issues/48
+
+    No workaround -- the answer is simply wrong. Fix in flight: https://redirect.github.com/tobymao/sqlglot/pull/8138
+    """
     assert _rows("SELECT a / 2.0 FROM t", *_NUMBERS)[0] == (0.5,)
 
 
 def test_full_outer_join_preserves_unmatched_rows():
     """Not xfail: fixed upstream in v30.15.0 (commit f85ea4c2), which is why
-    `sqlglot>=30.16.0` is pinned and TableSession no longer refuses it (#50).
+    `sqlglot>=30.16.0` is pinned and TableSession no longer refuses it:
+    https://github.com/jbylund/pg_mimic/issues/50
 
     Kept as a plain assertion so that a *regression* upstream is caught too.
     """
