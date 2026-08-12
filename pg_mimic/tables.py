@@ -33,13 +33,19 @@ refusal. INSERT/UPDATE/DELETE get read_only_sql_transaction.
 Everything sqlglot's executor cannot do -- recursive CTEs, most of Postgres's
 function library -- is reported as an error rather than answered approximately,
 because a mimic that returns plausible wrong rows is worse than one that says no.
-The clauses it parses and then quietly ignores (OFFSET, TABLESAMPLE) are refused
-for that same reason: they don't fail, they answer the wrong question.
+
+The same rule governs what it parses and then answers wrongly, which is the more
+dangerous half: those don't fail, they answer the wrong question. Where the right
+answer is reachable -- by rewriting the query into a shape the executor does get
+right (NOT IN, NULL ordering), or by finishing the job on the rows it returns
+(OFFSET, DISTINCT ON) -- this session does that. Where it isn't (TABLESAMPLE, FULL
+OUTER JOIN), the query is refused.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import cmp_to_key
 from typing import Any, Mapping, Sequence
 
 import sqlglot
@@ -159,6 +165,35 @@ class _Table:
     rows: list[dict[str, Any]]
 
 
+@dataclass(frozen=True)
+class _Plan:
+    """A query rewritten into what sqlglot's executor answers correctly, plus the
+    work left over for Python.
+
+    Several of the executor's gaps are shapes rather than missing features: a
+    predicate whose NULL rule it gets wrong, an ordering whose comparison it
+    cannot make. Those become a rewrite of the tree it is handed. The rest --
+    taking rows off the front, keeping the first row per key, sorting a result it
+    would hand back with its columns missing -- cannot be said to it at all, and
+    are done to its output instead. Everything else is still refused rather than
+    approximated.
+    """
+
+    expression: exp.Query
+    # Select positions to keep the first row of, for DISTINCT ON; empty otherwise.
+    distinct_on: tuple[int, ...] = ()
+    # (output position, descending, nulls first) per ORDER BY term of a set
+    # operation or SELECT DISTINCT, which are sorted here rather than by the
+    # executor; empty otherwise.
+    sort_keys: tuple[tuple[int, bool, bool], ...] = ()
+    # How many leading columns the client asked for. Fewer than the query selects
+    # when a DISTINCT ON key had to be added to the select list to be deduplicated
+    # on; those trailing columns are the executor's business, not the client's.
+    visible_columns: int = 0
+    # Whether LIMIT/OFFSET are applied to the executor's rows rather than by it.
+    rows_sliced_here: bool = False
+
+
 class TableSession(Session):
     """Serve in-memory tables over the Postgres wire, read-only::
 
@@ -170,8 +205,10 @@ class TableSession(Session):
 
     Rows are dicts (sqlglot's executor's own shape) or plain tuples, in which case
     their column names have to be declared. SELECT, WHERE, JOIN, GROUP BY, ORDER
-    BY, LIMIT and bind parameters are executed by sqlglot's executor -- but not
-    OFFSET, which it ignores rather than failing on, so this session refuses it.
+    BY, LIMIT, OFFSET, DISTINCT ON and bind parameters are all answered, some of
+    them by rewriting the query or finishing it in Python where sqlglot's executor
+    would get it wrong. FULL OUTER JOIN and TABLESAMPLE are refused, because it
+    gets those wrong in ways nothing here can repair.
     `\\dt`, `\\d users` and `information_schema` come from the derived `schema()`.
 
     Column types are inferred from the values in the rows, once, at construction.
@@ -217,10 +254,15 @@ class TableSession(Session):
         self._sqlglot_schema = {name: table.sqlglot_types for name, table in declared.items()}
 
     async def describe(self, sql: str, param_oids: list[int | None]) -> list[ResultColumn] | None:
-        return _result_columns(self._plan(sql), param_oids)
+        plan = self._plan(sql)
+        return _result_columns(plan.expression, param_oids)[: plan.visible_columns]
 
     async def query(self, sql: str, params: list[Any]) -> list[Row]:
-        expression = _bind_parameters(self._plan(sql), params)
+        plan = self._plan(sql)
+        expression = _bind_parameters(plan.expression, params)
+        # After binding, because `LIMIT $1 OFFSET $2` is only a row count once its
+        # parameters are literals.
+        limit, offset = _take_row_window(expression) if plan.rows_sliced_here else (None, 0)
         try:
             result = sqlglot_execute(expression, schema=self._sqlglot_schema, tables=self._rows, dialect="postgres")
         except Exception as exc:
@@ -234,7 +276,17 @@ class TableSession(Session):
                 f"TableSession could not run this query: {exc}. sqlglot's executor is not a complete SQL engine -- "
                 f"it has no recursive CTEs and implements only part of Postgres's function library.",
             ) from None
-        return [tuple(row) for row in result.rows]
+        rows = [tuple(row) for row in result.rows]
+        # In Postgres's order: DISTINCT ON reduces the sorted rows, and only what
+        # survives that is what LIMIT counts.
+        if plan.distinct_on:
+            rows = _first_row_per_key(rows, plan.distinct_on)
+        if plan.sort_keys:
+            rows = _sorted_rows(rows, plan.sort_keys)
+        rows = rows[offset : None if limit is None else offset + limit]
+        if plan.visible_columns < len(plan.expression.selects):
+            rows = [row[: plan.visible_columns] for row in rows]  # drop the added DISTINCT ON keys
+        return rows
 
     async def schema(self) -> dict:
         return self._schema
@@ -261,7 +313,7 @@ class TableSession(Session):
     def _parameter_oids(self, sql: str, declared: list[int | None]) -> list[int | None]:
         """Parameter types, taking the client's declaration where it made one and
         filling the rest in from what each parameter is compared against."""
-        plan = self._plan(sql)
+        plan = self._plan(sql).expression
         inferred = {}
         for parameter in plan.find_all(exp.Parameter):
             index = _param_index(parameter) - 1
@@ -269,8 +321,9 @@ class TableSession(Session):
         count = max([len(declared), *(index + 1 for index in inferred)], default=0)
         return [declared[i] if i < len(declared) and declared[i] is not None else inferred.get(i) for i in range(count)]
 
-    def _plan(self, sql: str) -> exp.Query:
-        """The query, qualified and type-annotated against the declared schema.
+    def _plan(self, sql: str) -> _Plan:
+        """The query, qualified and type-annotated against the declared schema, and
+        rewritten into what sqlglot's executor answers correctly.
 
         Everything both describe() and query() need, and nothing either of them
         does alone: names resolved, `*` expanded, a type on every node. Cheap
@@ -286,11 +339,36 @@ class TableSession(Session):
         _reject_silently_ignored(expression)
         self._reject_unknown_tables(expression)
         try:
-            qualified = qualify(expression, schema=self._sqlglot_schema, dialect="postgres")
-            return annotate_types(qualified, schema=self._sqlglot_schema, dialect="postgres")
+            # canonicalize_table_aliases, because the executor keys its plan steps
+            # by table name: two branches of a set operation reading the same table
+            # collide, and the second silently runs the first one's plan --
+            # `SELECT .. FROM t WHERE a UNION ALL SELECT .. FROM t WHERE b` answers
+            # `a` twice. Distinct aliases per reference are what keep them apart.
+            qualified = qualify(expression, schema=self._sqlglot_schema, dialect="postgres", canonicalize_table_aliases=True)
+            # Before annotate_types, so a DISTINCT ON key this adds to the select
+            # list is typed like any other column rather than left bare.
+            distinct_on, visible_columns = _distinct_on_keys(qualified)
+            annotated = annotate_types(qualified, schema=self._sqlglot_schema, dialect="postgres")
+        except PgError:
+            raise
         except Exception as exc:
             sqlstate = UNDEFINED_COLUMN if _UNRESOLVED in str(exc) else FEATURE_NOT_SUPPORTED
             raise PgError(sqlstate, str(exc)) from None
+
+        _rewrite_not_in(annotated)
+        sort_keys = _take_result_order(annotated)
+        # Last: it puts a key in front of every ORDER BY term, which the two passes
+        # above had to read as the query wrote them.
+        _rewrite_null_ordering(annotated)
+        return _Plan(
+            expression=annotated,
+            distinct_on=distinct_on,
+            sort_keys=sort_keys,
+            visible_columns=visible_columns,
+            # An OFFSET the executor would drop, or a DISTINCT ON or ORDER BY whose
+            # rows have to be settled here before a LIMIT can count them.
+            rows_sliced_here=bool(distinct_on or sort_keys) or annotated.args.get("offset") is not None,
+        )
 
     def _reject_unknown_tables(self, expression: exp.Expression) -> None:
         """Report a table we don't have as Postgres does, before sqlglot can.
@@ -471,19 +549,288 @@ def _reject_non_select(sql: str, expression: exp.Expression) -> None:
 
 
 def _reject_silently_ignored(expression: exp.Expression) -> None:
-    """Refuse the clauses sqlglot's executor parses and then does not apply.
+    """Refuse what sqlglot's executor parses and then answers wrongly.
 
     These are the dangerous ones: unlike an unimplemented function, they don't
-    fail, they return a full result that is quietly the wrong one -- `LIMIT 2
-    OFFSET 1` hands back the first two rows. Better to say no.
+    fail, they return a full result that is quietly the wrong one. What this
+    session can rewrite (NOT IN, NULL ordering) or finish by hand (OFFSET,
+    DISTINCT ON) is handled in _plan; what is left has no such repair, so the
+    answer is no.
     """
-    for node_type, clause in ((exp.Offset, "OFFSET"), (exp.TableSample, "TABLESAMPLE")):
-        if expression.find(node_type) is not None:
+    if expression.find(exp.TableSample) is not None:
+        raise PgError(
+            FEATURE_NOT_SUPPORTED,
+            "sqlglot's executor ignores TABLESAMPLE, so TableSession refuses the query rather than answering it "
+            "with the wrong rows",
+        )
+    for join in expression.find_all(exp.Join):
+        if (join.side or "").upper() == "FULL":
             raise PgError(
                 FEATURE_NOT_SUPPORTED,
-                f"sqlglot's executor ignores {clause}, so TableSession refuses the query rather than answering it "
-                f"with the wrong rows",
+                "sqlglot's executor runs a FULL OUTER JOIN as an inner join, dropping the unmatched rows from both "
+                "sides, so TableSession refuses the query rather than answering it with the wrong rows. Write it as "
+                "a LEFT JOIN and a RIGHT JOIN combined with UNION ALL, giving each side its own table alias.",
             )
+
+    # OFFSET and DISTINCT ON are finished in Python, which can only reach the rows
+    # the executor hands back -- the whole query's. One nested inside a subquery or
+    # a set operation's branch would have to be applied to rows this session never
+    # sees, so it stays a refusal.
+    top_level = (expression.args.get("offset"), expression.args.get("distinct"))
+    for node_type, clause in ((exp.Offset, "OFFSET"), (exp.Distinct, "DISTINCT ON")):
+        for node in expression.find_all(node_type):
+            # Identity, not ==: sqlglot compares expressions structurally, and the
+            # nested one is often an exact copy of the outer.
+            if any(node is outer for outer in top_level):
+                continue
+            if node_type is exp.Distinct and not node.args.get("on"):
+                continue  # plain SELECT DISTINCT, which the executor does apply
+            raise PgError(
+                FEATURE_NOT_SUPPORTED,
+                f"TableSession applies {clause} to the rows sqlglot's executor returns, which it can only do for the "
+                f"whole query -- one inside a subquery or a UNION branch would be ignored, and answering with the "
+                f"wrong rows is worse than refusing. Lift it to the outermost SELECT.",
+            )
+
+
+# --- rewriting what the executor gets wrong -------------------------------------------
+
+
+def _rewrite_null_ordering(expression: exp.Expression) -> None:
+    """Sort NULLs where Postgres sorts them.
+
+    The executor orders rows with Python's own comparisons, which have no NULL
+    rule: ascending coincidentally matches Postgres (None sorts last) and
+    descending raises `'<' not supported between 'int' and 'NoneType'`. Ordering
+    on `key IS NULL` first settles the NULLs before any value comparison happens,
+    which both places them as Postgres does and keeps the comparison that raises
+    from being reached.
+
+    qualify() has already resolved every key's placement to Postgres's own default
+    -- NULLS LAST for ASC, NULLS FIRST for DESC -- so `nulls_first` here is what
+    the answer has to look like, not just what the query happened to spell out.
+    """
+    for order in expression.find_all(exp.Order):
+        keys: list[exp.Expression] = []
+        for ordered in order.expressions:
+            nulls_first = bool(ordered.args.get("nulls_first"))
+            if nulls_first or ordered.args.get("desc"):
+                # Ascending on `IS NULL` puts false (a value) first, so descending
+                # is what puts the NULLs first.
+                keys.append(exp.Ordered(this=exp.Is(this=ordered.this.copy(), expression=exp.Null()), desc=nulls_first))
+            keys.append(ordered)
+        order.set("expressions", keys)
+
+
+def _rewrite_not_in(expression: exp.Expression) -> None:
+    """Give `x NOT IN (subquery)` Postgres's answer.
+
+    The executor returns every row for it, filtering nothing -- the one shape here
+    where a WHERE clause is not merely approximate but inert. `NOT EXISTS` it does
+    run correctly, including correlated, so the filter becomes an anti-join.
+
+    The second half is SQL's NULL rule, which no anti-join carries: if the
+    subquery yields a single NULL then `x NOT IN` is unknown for every x and the
+    result is empty. That has to be spelled as a COUNT rather than the obvious
+    `NOT EXISTS (... IS NULL)`, which is Python the executor cannot compile.
+
+    `IN (subquery)` is left alone -- the executor already answers it correctly,
+    NULLs and all.
+    """
+    negations = [node for node in expression.find_all(exp.Not) if isinstance(node.this, exp.In) and "query" in node.this.args]
+    # Innermost first: the rewrite copies the subquery, so a nested NOT IN rewritten
+    # after its parent would be a node no longer attached to the tree. Replacing a
+    # descendant leaves the ancestors this list holds intact, so this order works
+    # and the other does not.
+    for index, negation in enumerate(sorted(negations, key=lambda node: node.depth, reverse=True)):
+        candidate = negation.this
+        subquery = candidate.args["query"]
+        inner = subquery.this if isinstance(subquery, exp.Subquery) else subquery
+        if len(inner.selects) != 1:
+            raise PgError(
+                FEATURE_NOT_SUPPORTED,
+                "TableSession rewrites NOT IN (subquery) into a NOT EXISTS that sqlglot's executor runs correctly, "
+                "which it can only do for a subquery selecting one column.",
+            )
+        column = inner.selects[0].alias_or_name
+        value = candidate.this
+        # Distinct aliases per rewrite, for the reason qualify() is asked to
+        # canonicalize them: the executor keys its plan steps by name, and two of
+        # these sharing one would answer as a single query.
+        negation.replace(
+            exp.and_(
+                exp.Not(this=exp.Exists(this=_anti_join(inner, column, value, f"_not_in_{index}_a"))),
+                exp.EQ(this=_null_count(inner, column, f"_not_in_{index}_b"), expression=exp.Literal.number(0)),
+            )
+        )
+
+
+def _anti_join(inner: exp.Query, column: str, value: exp.Expression, alias: str) -> exp.Select:
+    """`SELECT 1 FROM (subquery) alias WHERE alias.column = value`."""
+    return (
+        exp.select(exp.Literal.number(1))
+        .from_(exp.Subquery(this=inner.copy(), alias=exp.TableAlias(this=exp.to_identifier(alias))))
+        .where(exp.EQ(this=exp.column(column, alias), expression=value.copy()))
+    )
+
+
+def _null_count(inner: exp.Query, column: str, alias: str) -> exp.Subquery:
+    """`(SELECT COUNT(*) FROM (subquery) alias WHERE alias.column IS NULL)`."""
+    counted = (
+        exp.select(exp.Count(this=exp.Star()))
+        .from_(exp.Subquery(this=inner.copy(), alias=exp.TableAlias(this=exp.to_identifier(alias))))
+        .where(exp.Is(this=exp.column(column, alias), expression=exp.Null()))
+    )
+    return exp.Subquery(this=counted)
+
+
+def _distinct_on_keys(expression: exp.Query) -> tuple[tuple[int, ...], int]:
+    """The output columns `DISTINCT ON` keeps the first row of, and how many columns
+    the client asked for -- taking the clause off the query on the way.
+
+    The executor parses DISTINCT ON and then returns the duplicate rows anyway, and
+    it has no window functions to rewrite it into, so this is finished in Python
+    instead: keep the first row of each key, which after the executor's own ORDER
+    BY is the row Postgres would have kept. Postgres already requires the ORDER BY
+    to begin with these expressions, so they are the leading sort keys in any query
+    it would accept -- and that requirement is checked here too, so a query it
+    rejects is not quietly answered.
+
+    A key the query does not select -- `DISTINCT ON (user_id) page`, which Postgres
+    allows -- is appended to the select list so the rows carry something to
+    deduplicate on, and dropped again from every row afterwards.
+    """
+    visible_columns = len(expression.selects)
+    distinct = expression.args.get("distinct")
+    # A set operation's `distinct` arg is the bool in `UNION [ALL]`, not a clause.
+    if not isinstance(distinct, exp.Distinct) or not distinct.args.get("on"):
+        return (), visible_columns
+
+    on = distinct.args["on"].expressions
+    order = expression.args.get("order")
+    if order is not None:
+        leading = [ordered.this.sql(dialect="postgres") for ordered in order.expressions[: len(on)]]
+        if leading != [key.sql(dialect="postgres") for key in on]:
+            raise PgError(SYNTAX_ERROR, "SELECT DISTINCT ON expressions must match initial ORDER BY expressions")
+
+    keys = []
+    for key in on:
+        position = _output_position(expression, key)
+        if position is None:
+            position = len(expression.selects)
+            expression.select(exp.alias_(key.copy(), f"_distinct_on_{position}"), copy=False)
+        keys.append(position)
+    expression.set("distinct", None)
+    return tuple(keys), visible_columns
+
+
+def _output_position(expression: exp.Query, key: exp.Expression) -> int | None:
+    """Where a DISTINCT ON expression already sits in the select list, or None.
+
+    qualify() writes the key as the output column's name when it resolves to one
+    and as the fully qualified expression when it does not, so matching both forms
+    is also what tells those two cases apart.
+    """
+    wanted = key.sql(dialect="postgres")
+    for position, select in enumerate(expression.selects):
+        named = exp.to_identifier(select.alias_or_name, quoted=True).sql(dialect="postgres")
+        if wanted in (select.unalias().sql(dialect="postgres"), named):
+            return position
+    return None
+
+
+def _take_result_order(expression: exp.Query) -> tuple[tuple[int, bool, bool], ...]:
+    """Strip the ORDER BY off a set operation or a SELECT DISTINCT and return its
+    keys, to sort the rows by here instead.
+
+    Asked to sort a UNION the executor returns one empty tuple per row -- the rows
+    are there, every column has gone. A SELECT DISTINCT it sorts by the select list
+    alone, which the `IS NULL` key _rewrite_null_ordering adds is deliberately not
+    part of.
+
+    Both are sortable here for the same reason: Postgres only lets either kind of
+    ORDER BY name the output columns, so every key is a position in the result
+    rather than an expression that would have to be evaluated to find it.
+    """
+    order = expression.args.get("order")
+    distinct = expression.args.get("distinct")
+    sortable_here = isinstance(expression, exp.SetOperation) or isinstance(distinct, exp.Distinct)
+    if order is None or not sortable_here:
+        return ()
+
+    keys = []
+    for ordered in order.expressions:
+        position = _output_position(expression, ordered.this)
+        if position is None:
+            raise PgError(
+                UNDEFINED_COLUMN,
+                f"for SELECT DISTINCT and for a UNION, EXCEPT or INTERSECT, ORDER BY expressions must appear in "
+                f"the select list, and {ordered.this.sql(dialect='postgres')} does not",
+            )
+        keys.append((position, bool(ordered.args.get("desc")), bool(ordered.args.get("nulls_first"))))
+    expression.set("order", None)
+    return tuple(keys)
+
+
+def _sorted_rows(rows: list[Row], keys: tuple[tuple[int, bool, bool], ...]) -> list[Row]:
+    """Sort by SQL's rules rather than Python's, which have no answer for NULL."""
+
+    def compare(left: Row, right: Row) -> int:
+        for position, descending, nulls_first in keys:
+            a, b = left[position], right[position]
+            if a is None and b is None:
+                continue
+            if a is None or b is None:
+                first_is_null = a is None
+                return -1 if first_is_null == nulls_first else 1
+            if a == b:
+                continue
+            return (-1 if a < b else 1) * (-1 if descending else 1)
+        return 0
+
+    return sorted(rows, key=cmp_to_key(compare))
+
+
+def _take_row_window(expression: exp.Query) -> tuple[int | None, int]:
+    """Strip LIMIT/OFFSET off the query and return them, to be applied to the rows.
+
+    Both, not just the OFFSET the executor drops: a LIMIT left in place would be
+    counted against the rows before the OFFSET skipped any of them, or before
+    DISTINCT ON removed any, and Postgres counts it after both.
+    """
+    limit = _row_count(expression.args.get("limit"), "LIMIT")
+    offset = _row_count(expression.args.get("offset"), "OFFSET")
+    expression.set("limit", None)
+    expression.set("offset", None)
+    return limit, offset or 0
+
+
+def _row_count(node: exp.Expression | None, clause: str) -> int | None:
+    if node is None:
+        return None
+    value = node.expression
+    if isinstance(value, exp.Literal) and value.is_int:
+        return int(value.name)
+    if isinstance(value, exp.Null) or value is None:
+        return None  # LIMIT ALL, which is no limit at all
+    raise PgError(
+        FEATURE_NOT_SUPPORTED,
+        f"TableSession applies {clause} to the rows sqlglot's executor returns and needs a row count to do it, "
+        f"but this one is {value.sql(dialect='postgres')!r}.",
+    )
+
+
+def _first_row_per_key(rows: list[Row], keys: tuple[int, ...]) -> list[Row]:
+    seen = set()
+    kept = []
+    for row in rows:
+        # Lists (an array column) are not hashable; nothing here needs the key to
+        # be anything but comparable for equality, so tuples do.
+        key = tuple(tuple(row[k]) if isinstance(row[k], list) else row[k] for k in keys)
+        if key not in seen:
+            seen.add(key)
+            kept.append(row)
+    return kept
 
 
 def _result_columns(expression: exp.Query, param_oids: list[int | None]) -> list[ResultColumn]:
@@ -596,6 +943,10 @@ def _comparison_type(parameter: exp.Parameter) -> exp.DataType | None:
     parent = parameter.parent
     if parent is None:
         return None
+    if isinstance(parent, (exp.Limit, exp.Offset)):
+        # A row count has no neighbour to be typed from, and left as text it would
+        # not be a count at all. Postgres calls it bigint.
+        return exp.DataType.build("BIGINT")
     for sibling in _child_expressions(parent):
         if sibling is parameter:
             continue

@@ -412,9 +412,18 @@ emulation it delegates to is in [`pg_mimic/catalog.py`](pg_mimic/catalog.py).
   row). That is the executor's arithmetic, not pg_mimic's parameter handling: a literal in the SQL and a
   bind parameter behave identically, and neither is exact.
 
-  `OFFSET` and `TABLESAMPLE` are refused outright, because the executor parses them and then ignores them
-  — `limit 2 offset 1` would hand back the *first* two rows, which is a wrong answer wearing a right
-  answer's clothes.
+  The executor's more dangerous gaps are the clauses it parses and then answers *wrongly* — a wrong answer
+  wearing a right answer's clothes. `TableSession` repairs the ones it can, verified against a real
+  PostgreSQL: `OFFSET` and `DISTINCT ON` are applied to the rows the executor returns (with `LIMIT`
+  counting what survives, as Postgres does); `NOT IN (subquery)`, which the executor never filters on,
+  becomes a `NOT EXISTS` carrying SQL's NULL rule; `ORDER BY` places NULLs where Postgres places them
+  instead of raising on the comparison; and a `UNION`, `EXCEPT` or `INTERSECT` over the same table runs
+  both of its branches rather than the first one twice.
+
+  `FULL OUTER JOIN` and `TABLESAMPLE` are refused outright, because the executor gets those wrong in ways
+  nothing here can repair — a `FULL OUTER JOIN` runs as an inner join, dropping the unmatched rows from
+  both sides. An `OFFSET` or `DISTINCT ON` nested inside a subquery is refused for the same reason: the
+  repair reaches the query's own rows, and one buried in a subquery would be silently ignored as before.
 
   Everything it can't run is an error, not an approximate answer, and a column type it can't derive is an
   error too rather than a `text` guess — including a bind parameter nothing in the query types, which is
