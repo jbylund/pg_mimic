@@ -7,4 +7,5 @@ build/
 dist/
 .claude/settings.local.json
 .claude/scripts/
+.claude/worktrees/
 .coverage
