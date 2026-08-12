@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 
 def test_information_schema_tables(conn, mock_session):
     async def schema():
@@ -91,3 +93,92 @@ def test_pg_catalog_stays_lenient_so_psql_keeps_working(conn, mock_session):
             "WHERE confrelid IN (SELECT pg_catalog.pg_partition_ancestors('16384')) AND contype = 'f'"
         )
         assert cur.fetchall() == []
+
+
+# --- catalog columns psql asks for ----------------------------------------------------
+#
+# Each of these used to fail inside the executor and be caught by _empty_result, so
+# a whole psql footer section came back blank. Added only where the answer is
+# honest: a column on a table pg_mimic keeps empty costs nothing to declare, and
+# the three on populated tables are either derived exactly (typarray, from
+# arrays.ARRAY_OID) or a constant that is true of a mimic. See #66.
+
+
+_CATALOG_COLUMNS = {
+    "attstorage": "SELECT attstorage FROM pg_catalog.pg_attribute WHERE attname = 'id'",
+    "typarray": "SELECT typarray FROM pg_catalog.pg_type WHERE typname = 'text'",
+    "stxkind": "SELECT stxkind FROM pg_catalog.pg_statistic_ext",
+    "connoinherit": "SELECT connoinherit FROM pg_catalog.pg_constraint",
+    "inhdetachpending": "SELECT inhdetachpending FROM pg_catalog.pg_inherits",
+    "rolsuper": "SELECT rolsuper FROM pg_catalog.pg_roles",
+    "pubname": "SELECT pubname FROM pg_catalog.pg_publication",
+    "prattrs": "SELECT prattrs FROM pg_catalog.pg_publication_rel",
+}
+
+
+@pytest.mark.parametrize(
+    argnames=["column", "sql"],
+    argvalues=sorted(_CATALOG_COLUMNS.items()),
+    ids=sorted(_CATALOG_COLUMNS),
+)
+def test_a_catalog_column_psql_asks_for_can_be_queried(conn, mock_session, column, sql):
+    async def schema():
+        return {"users": {"id": "integer"}}
+
+    mock_session.schema = schema
+
+    with conn.cursor() as cur:
+        cur.execute(sql)
+        cur.fetchall()  # runs rather than failing into an empty result
+
+
+def test_typarray_points_at_the_real_array_type(conn, mock_session):
+    """Derived from arrays.ARRAY_OID rather than invented, so it agrees with the
+    OID the wire codecs would actually use for text[]."""
+    from pg_mimic import TEXT
+    from pg_mimic.arrays import ARRAY_OID
+
+    async def schema():
+        return {"users": {"id": "integer"}}
+
+    mock_session.schema = schema
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT typarray FROM pg_catalog.pg_type WHERE typname = 'text'")
+        assert cur.fetchone() == (ARRAY_OID[TEXT],)
+
+
+def test_backslash_l_lists_the_connected_database(conn, mock_session):
+    """pg_database exists with one row -- the database from the startup packet --
+    rather than being absent, which the executor reports as an unhelpful
+    'NoneType' object has no attribute 'range_reader'."""
+
+    async def schema():
+        return {"users": {"id": "integer"}}
+
+    mock_session.schema = schema
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT datname FROM pg_catalog.pg_database")
+        assert cur.fetchall() == [("test",)]
+
+
+def test_every_declared_catalog_column_has_a_value_in_every_row():
+    """A column in the schema but absent from a row does not read as NULL -- the
+    executor raises `KeyError` on the missing key, which surfaces as an
+    ExecuteError. That is strictly worse than not declaring the column: on
+    information_schema it is a 0A000 to the client rather than an empty result.
+
+    So declaring a column and populating it are one step, and this is the guard.
+    """
+    from pg_mimic.catalog import _build_information_schema, _build_pg_catalog
+
+    for schema, tables in (
+        _build_pg_catalog({"t": {"id": "integer", "name": "text"}}, "testdb"),
+        _build_information_schema({"t": {"id": "integer"}}),
+    ):
+        namespace = next(iter(schema))
+        for table, columns in schema[namespace].items():
+            for position, row in enumerate(tables[namespace].get(table, [])):
+                missing = sorted(set(columns) - set(row))
+                assert not missing, f"{table} row {position} declares but does not carry {missing}"

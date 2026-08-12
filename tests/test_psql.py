@@ -96,3 +96,50 @@ def test_no_section_leaks_a_session_row():
     result = _psql("\\d users")
     assert "row" not in result.stdout.split("Column")[0]
     assert "Publications:" not in result.stdout
+
+
+# Each of these listed nothing at all, while the catalog held the rows to answer
+# with: pg_database has the connected database, pg_roles the connected user, and
+# pg_type 57 types. Empty is the truthful answer for a footer section a mimic has
+# none of -- it is not the truthful answer for data we hold. See #66.
+
+
+@psql_required
+def test_list_databases_shows_the_connected_database():
+    """\\l needs array_length, which psql spells pg_catalog.array_length -- and a
+    schema-qualified call stays an Anonymous node the executor has no name for,
+    where the plain spelling would have parsed to ArraySize."""
+    result = _psql("\\l")
+    assert result.stderr.strip() == "", result.stderr
+    assert "test" in result.stdout, result.stdout
+
+
+@psql_required
+def test_list_roles_shows_the_connected_user():
+    """\\du selects rolcanlogin and four siblings; one missing column emptied the
+    whole listing."""
+    result = _psql("\\du")
+    assert result.stderr.strip() == "", result.stderr
+    assert "postgres" in result.stdout, result.stdout
+
+
+def test_format_type_reads_the_right_column_for_its_argument(conn, mock_session):
+    """psql calls format_type() on pg_attribute for \\d and on pg_type for \\dT, and
+    the rendered name lives somewhere different each time. Rewriting both to
+    attformattype left \\dT selecting a pg_attribute column from pg_type."""
+
+    async def schema():
+        return {"users": {"id": "integer"}}
+
+    mock_session.schema = schema
+
+    with conn.cursor() as cur:
+        # the \dT shape: format_type over pg_type
+        cur.execute("SELECT pg_catalog.format_type(t.oid, NULL) FROM pg_catalog.pg_type AS t WHERE t.typname = 'text'")
+        assert cur.fetchall() == [("text",)]
+
+        # the \d shape: format_type over pg_attribute, still the column's declared type
+        cur.execute(
+            "SELECT pg_catalog.format_type(a.atttypid, a.atttypmod) FROM pg_catalog.pg_attribute AS a WHERE a.attname = 'id'"
+        )
+        assert cur.fetchall() == [("integer",)]

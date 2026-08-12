@@ -52,6 +52,11 @@ PG_CATALOG_SCHEMA = {
             "atttypmod": "INT",
             "attstattarget": "INT",
             "attformattype": "TEXT",
+            # How Postgres would store a column of this type. pg_mimic stores
+            # nothing, so this is derived from the type rather than observed --
+            # which is what psql's \\d+ "Storage" column is reporting anyway.
+            "attstorage": "TEXT",
+            "attcompression": "TEXT",
         },
         # Declared but always empty: pg_mimic models no defaults, collations,
         # indexes, constraints, triggers or inheritance. They still need their
@@ -69,6 +74,10 @@ PG_CATALOG_SCHEMA = {
             "condeferrable": "BOOLEAN",
             "condeferred": "BOOLEAN",
             "convalidated": "BOOLEAN",
+            "connoinherit": "BOOLEAN",
+            "conislocal": "BOOLEAN",
+            "coninhcount": "INT",
+            "conkey": "TEXT",
         },
         "pg_index": {
             "indexrelid": "INT",
@@ -80,7 +89,7 @@ PG_CATALOG_SCHEMA = {
             "indisreplident": "BOOLEAN",
             "indkey": "TEXT",
         },
-        "pg_inherits": {"inhrelid": "INT", "inhparent": "INT", "inhseqno": "INT"},
+        "pg_inherits": {"inhrelid": "INT", "inhparent": "INT", "inhseqno": "INT", "inhdetachpending": "BOOLEAN"},
         "pg_rewrite": {"oid": "INT", "rulename": "TEXT", "ev_class": "INT", "ev_type": "TEXT", "is_instead": "BOOLEAN"},
         "pg_trigger": {
             "oid": "INT",
@@ -100,8 +109,46 @@ PG_CATALOG_SCHEMA = {
             "polwithcheck": "TEXT",
             "polroles": "TEXT",
         },
-        "pg_roles": {"oid": "INT", "rolname": "TEXT"},
-        "pg_statistic_ext": {"oid": "INT", "stxname": "TEXT", "stxrelid": "INT", "stxnamespace": "INT"},
+        "pg_roles": {
+            "oid": "INT",
+            "rolname": "TEXT",
+            "rolsuper": "BOOLEAN",
+            "rolinherit": "BOOLEAN",
+            "rolcreaterole": "BOOLEAN",
+            "rolcreatedb": "BOOLEAN",
+            "rolcanlogin": "BOOLEAN",
+            "rolconnlimit": "INT",
+            "rolvaliduntil": "TEXT",
+            "rolreplication": "BOOLEAN",
+            "rolbypassrls": "BOOLEAN",
+        },
+        "pg_publication": {"oid": "INT", "pubname": "TEXT", "pubowner": "INT", "puballtables": "BOOLEAN"},
+        "pg_publication_rel": {"oid": "INT", "prpubid": "INT", "prrelid": "INT", "prqual": "TEXT", "prattrs": "TEXT"},
+        "pg_publication_namespace": {"oid": "INT", "pnpubid": "INT", "pnnspid": "INT"},
+        # One row, for the database this connection is on -- filled in from the
+        # startup packet rather than left empty, because \\l should list it.
+        "pg_database": {
+            "oid": "INT",
+            "datname": "TEXT",
+            "datdba": "INT",
+            "datcollate": "TEXT",
+            "datctype": "TEXT",
+            "datlocprovider": "TEXT",
+            "daticulocale": "TEXT",
+            "daticurules": "TEXT",
+            "datacl": "TEXT",
+            "datallowconn": "BOOLEAN",
+            "datconnlimit": "INT",
+            "dattablespace": "INT",
+        },
+        "pg_statistic_ext": {
+            "oid": "INT",
+            "stxname": "TEXT",
+            "stxrelid": "INT",
+            "stxnamespace": "INT",
+            "stxkind": "TEXT",
+            "stxstattarget": "INT",
+        },
         "pg_collation": {"oid": "INT", "collname": "TEXT"},
         "pg_type": {
             "oid": "INT",
@@ -114,6 +161,9 @@ PG_CATALOG_SCHEMA = {
             "typrelid": "INT",
             "typcategory": "TEXT",
             "typdelim": "TEXT",
+            # The array type over this one, which pg_mimic knows exactly: see
+            # arrays.ARRAY_OID. 0 where there is none, as in Postgres.
+            "typarray": "INT",
         },
     }
 }
