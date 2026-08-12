@@ -82,7 +82,38 @@ _COPY_STDIO_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
-_TARGET_RE = re.compile(r"^(?P<name>[^\s(]+)\s*(?:\(\s*(?P<columns>.*?)\s*\))?$", re.DOTALL)
+
+def _split_outside_quotes(text: str, separator: str) -> list[str]:
+    """Split on `separator`, ignoring any that falls inside a quoted identifier."""
+    parts = [""]
+    quoted = False
+    for char in text:
+        if char == '"':
+            quoted = not quoted
+        if char == separator and not quoted:
+            parts.append("")
+        else:
+            parts[-1] += char
+    return parts
+
+
+def _split_target(target: str) -> tuple[str | None, str | None]:
+    """`t (a, b)` as ("t", "a, b"), and a bare `t` as ("t", None).
+
+    Scanned rather than matched with a regex: a quoted identifier may contain a
+    space or a parenthesis, which is where a `[^\\s(]+` name pattern gave up -- and
+    it gave up on the whole target, throwing away an explicit column list that was
+    right there in the statement.
+    """
+    quoted = False
+    for position, char in enumerate(target):
+        if char == '"':
+            quoted = not quoted
+        elif char == "(" and not quoted:
+            if not target.endswith(")"):
+                return None, None
+            return target[:position].strip(), target[position + 1 : -1]
+    return (None, None) if quoted else (target, None)
 
 
 def parse_copy(sql: str) -> ParsedCopy | None:
@@ -109,15 +140,16 @@ def _parse_target(target: str) -> tuple[str | None, list[str] | None]:
     target = target.strip()
     if target.startswith("("):
         return None, None  # a query: it has no table name and no column list of its own
-    match = _TARGET_RE.match(target)
-    if match is None:
+    name, raw_columns = _split_target(target)
+    if name is None:
         return None, None
-    raw_columns = match.group("columns")
-    columns = [_unquote_identifier(c) for c in raw_columns.split(",")] if raw_columns else None
+    # Split outside quotes, so `("a,b", c)` is the two columns it names rather than
+    # three -- a miscount that goes on to declare the wrong arity in
+    # CopyInResponse/CopyOutResponse.
+    columns = [_unquote_identifier(c) for c in _split_outside_quotes(raw_columns, ",")] if raw_columns else None
     # Only the last dotted part is kept -- Session.schema() names tables without a
-    # schema qualifier. A quoted name containing a dot would be mis-split, which is
-    # why this feeds a header lookup and nothing load-bearing.
-    return _unquote_identifier(match.group("name").rsplit(".", 1)[-1]), columns
+    # schema qualifier -- and a dot inside a quoted name is not a separator.
+    return _unquote_identifier(_split_outside_quotes(name, ".")[-1]), columns
 
 
 def _unquote_identifier(name: str) -> str:
@@ -199,12 +231,18 @@ def _option_items(text: str) -> list[tuple[str, Any]]:
         if name in _VALUE_OPTIONS:
             if index >= len(tokens):
                 raise PgError(SYNTAX_ERROR, f"COPY option {name.lower()} requires a value")
-            value, index = _read_option_value(tokens, index)
+            value, index = _read_option_value(tokens, index, name)
         elif name in _FLAG_OPTIONS:
             value, index = _read_flag_value(tokens, index)
         else:
             raise PgError(SYNTAX_ERROR, f'unrecognized COPY option "{name.lower()}"')
         items.append((name, value))
+    # Anything left is past the closing ')' of the option list. Ignoring it would
+    # drop a clause that changes the answer -- `WITH (FORMAT csv) WHERE id > 100`
+    # is a PG12+ row filter, and silently copying every row instead is exactly the
+    # kind of quiet wrong answer the options are refused by name to avoid.
+    if index < len(tokens):
+        raise PgError(SYNTAX_ERROR, f"unexpected {tokens[index][1]!r} after the COPY option list")
     return items
 
 
@@ -223,8 +261,19 @@ def _read_option_name(tokens: list[tuple[str, str]], index: int) -> tuple[str, i
     return name, index
 
 
-def _read_option_value(tokens: list[tuple[str, str]], index: int) -> tuple[Any, int]:
+# The legacy spellings that take an optional `AS` noise word between the option and
+# its value -- `DELIMITER AS '|'`, `NULL AS ''`. psql's `\copy ... with delimiter as
+# '|'` forwards it verbatim, so refusing it refuses the legacy form outright.
+_AS_NOISE_OPTIONS = {"DELIMITER", "NULL", "QUOTE", "ESCAPE"}
+
+
+def _read_option_value(tokens: list[tuple[str, str]], index: int, name: str) -> tuple[Any, int]:
     kind, token = tokens[index]
+    if kind == "word" and token.upper() == "AS" and name in _AS_NOISE_OPTIONS:
+        index += 1
+        if index >= len(tokens):
+            raise PgError(SYNTAX_ERROR, f"COPY option {name.lower()} requires a value")
+        kind, token = tokens[index]
     if kind != "punct":
         return token, index + 1
     if token == "*":
@@ -669,8 +718,15 @@ class CopyStatement(Statement):
             return list(self.parsed.columns)
         schema_fn = getattr(self._session, "schema", None)
         schema = (await schema_fn()) if schema_fn is not None and self.parsed.table is not None else None
-        tables = {str(name).lower(): columns for name, columns in (schema or {}).items()}
-        columns = tables.get(self.parsed.table or "")
+        schema = schema or {}
+        # Exact first: a quoted `COPY "People"` names the schema() key as spelled.
+        # Only an unquoted name -- already folded to lower case by
+        # _unquote_identifier -- falls back to matching a key case-insensitively,
+        # which is the direction Postgres folds in.
+        columns = schema.get(self.parsed.table)
+        if not columns:
+            folded = {str(name).lower(): value for name, value in schema.items()}
+            columns = folded.get(self.parsed.table or "")
         if columns:
             return [str(name) for name in columns]
         raise PgError(

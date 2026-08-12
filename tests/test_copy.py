@@ -149,6 +149,10 @@ _option_testcases = {
     "explicit_null": {"sql": "COPY t FROM STDIN WITH (NULL 'nil')", "expected": ("text", "\t", "nil", False)},
     "header_false": {"sql": "COPY t TO STDOUT WITH (FORMAT csv, HEADER false)", "expected": ("csv", ",", "", False)},
     "trailing_semicolon": {"sql": "COPY t TO STDOUT WITH (FORMAT csv);", "expected": ("csv", ",", "", False)},
+    # The legacy AS noise word, which psql's `\copy ... with delimiter as '|'`
+    # forwards verbatim -- refusing it refuses the legacy form outright.
+    "legacy_delimiter_as": {"sql": "COPY t FROM STDIN WITH DELIMITER AS '|'", "expected": ("text", "|", "\\N", False)},
+    "legacy_null_as": {"sql": "COPY t FROM STDIN WITH NULL AS 'nil'", "expected": ("text", "\t", "nil", False)},
 }
 
 
@@ -174,6 +178,12 @@ _refusal_testcases = {
     "unknown_format": {"sql": "COPY t FROM STDIN WITH (FORMAT jsonl)", "sqlstate": "42601"},
     "unknown_option": {"sql": "COPY t FROM STDIN WITH (BOGUS 1)", "sqlstate": "42601"},
     "multi_char_delimiter": {"sql": "COPY t FROM STDIN WITH (DELIMITER 'ab')", "sqlstate": "22023"},
+    # Everything past the closing ')' used to be dropped on the floor. A PG12+ row
+    # filter silently ignored copies every row instead of the ones asked for, and
+    # an option in the tail escapes being refused by name.
+    "where_clause_after_options": {"sql": "COPY t FROM STDIN WITH (FORMAT csv) WHERE id > 100", "sqlstate": "42601"},
+    "option_after_options": {"sql": "COPY t FROM STDIN WITH (FORMAT csv) FORCE_NOT_NULL (a)", "sqlstate": "42601"},
+    "delimiter_as_without_a_value": {"sql": "COPY t FROM STDIN WITH DELIMITER AS", "sqlstate": "42601"},
 }
 
 
@@ -211,6 +221,51 @@ def test_not_a_protocol_copy(sql):
 def test_copy_from_a_query_has_no_table_or_columns():
     parsed = parse_copy("COPY (SELECT a FROM t WHERE b = 1) TO STDOUT")
     assert (parsed.direction, parsed.table, parsed.columns) == ("out", None, None)
+
+
+_target_testcases = {
+    "bare": {"sql": "COPY t (a, b) FROM STDIN", "expected": ("t", ["a", "b"])},
+    "no_columns": {"sql": "COPY t FROM STDIN", "expected": ("t", None)},
+    "unquoted_folds_to_lower": {"sql": "COPY People (Id) FROM STDIN", "expected": ("people", ["id"])},
+    "quoted_keeps_its_case": {"sql": 'COPY "People" ("Id") FROM STDIN', "expected": ("People", ["Id"])},
+    # A quoted identifier may hold a space, which is where a `[^\s(]+` name pattern
+    # gave up -- taking the column list, spelled out right there, down with it.
+    "quoted_with_a_space": {"sql": 'COPY "my table" (id, name) FROM STDIN', "expected": ("my table", ["id", "name"])},
+    # Split outside the quotes, or this declares three columns for the two it names
+    # and the CopyInResponse arity is wrong.
+    "comma_inside_a_column_name": {"sql": 'COPY t ("a,b", c) FROM STDIN', "expected": ("t", ["a,b", "c"])},
+    "schema_qualified": {"sql": "COPY myschema.t (a) FROM STDIN", "expected": ("t", ["a"])},
+    "dot_inside_a_quoted_name": {"sql": 'COPY "we.ird" (a) FROM STDIN', "expected": ("we.ird", ["a"])},
+}
+
+
+@pytest.mark.parametrize(
+    argnames=sorted(next(iter(_target_testcases.values()))),
+    argvalues=[[v for k, v in sorted(_target_testcases[name].items())] for name in sorted(_target_testcases)],
+    ids=sorted(_target_testcases),
+)
+def test_target_parsing(sql, expected):
+    parsed = parse_copy(sql)
+    assert (parsed.table, parsed.columns) == expected
+
+
+def test_a_header_names_the_schema_table_however_it_was_spelled():
+    """schema() keys are the session author's own spelling and pg_mimic has no
+    catalog to fold them against, so a quoted name matches one exactly and an
+    unquoted one -- already folded to lower case -- matches case-insensitively."""
+
+    class Schema(Session):
+        async def schema(self):
+            return {"People": {"id": "bigint", "name": "text"}}
+
+        async def copy_out(self, parsed):
+            yield (1, "alice")
+
+    with serve_in_thread(Schema) as server:
+        with psycopg.Connection.connect(server.dsn(), autocommit=True) as conn:
+            for sql in ('COPY "People" TO STDOUT WITH (FORMAT csv, HEADER)', "COPY People TO STDOUT WITH (FORMAT csv, HEADER)"):
+                with conn.cursor().copy(sql) as copy:
+                    assert b"".join(copy).decode() == "id,name\n1,alice\n", sql
 
 
 # --- codecs -------------------------------------------------------------------------
