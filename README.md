@@ -64,7 +64,10 @@ More examples: [`examples/simple.py`](examples/simple.py), [`examples/echo.py`](
 statement it receives -- good for poking at the server interactively with `psql` and watching what comes
 through), [`examples/parameterized.py`](examples/parameterized.py) (real bind parameters),
 [`examples/tables.py`](examples/tables.py) (in-memory tables, no session code),
-[`examples/dbapi_proxy.py`](examples/dbapi_proxy.py) (fronting a real sqlite3 database).
+[`examples/dbapi_proxy.py`](examples/dbapi_proxy.py) (fronting a real sqlite3 database),
+[`examples/git_sql.py`](examples/git_sql.py) (a git repository as four queryable tables -- the longest
+example, and the one that shows a declared `schema()` paying for itself: `\d` and `information_schema`
+for free, exact `describe()` without executing, and inferred parameter types).
 
 ## Serving in-memory tables
 
