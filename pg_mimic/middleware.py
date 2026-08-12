@@ -35,8 +35,9 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Sequence
 import sqlglot
 from sqlglot import exp
 from sqlglot.executor import execute as sqlglot_execute
+from sqlglot.tokens import TokenType
 
-from .catalog import information_schema_statement, pg_catalog_statement
+from .catalog import _oid_for_declared_type, information_schema_statement, pg_catalog_statement
 from .copy import copy_statement
 from .errors import (
     ACTIVE_SQL_TRANSACTION,
@@ -99,6 +100,16 @@ _SHOW_TIME_ZONE_RE = re.compile(r"^\s*SHOW\s+TIME\s+ZONE\s*;?\s*$", re.IGNORECAS
 # clients, so anything behind a pooler hits it on every checkout.
 _DISCARD_RE = re.compile(r"^\s*DISCARD\s+(ALL|PLANS|SEQUENCES|TEMPORARY|TEMP)\s*;?\s*$", re.IGNORECASE)
 _DEALLOCATE_RE = re.compile(rf"^\s*DEALLOCATE\s+(?:PREPARE\s+)?(ALL|{_IDENT})\s*;?\s*$", re.IGNORECASE)
+
+# SQL-level prepared statements. The parenthesised list on PREPARE declares
+# parameter types; on EXECUTE it supplies values. Both are optional, and both are
+# read from the raw text for the reason the rest of this module is: sqlglot parses
+# either into a bare Command whose whole tail is one string literal.
+_PREPARE_RE = re.compile(
+    rf"^\s*PREPARE\s+({_IDENT})\s*(?:\(([^)]*)\))?\s+AS\s+(.+?)\s*;?\s*$",
+    re.IGNORECASE | re.DOTALL,
+)
+_EXECUTE_RE = re.compile(rf"^\s*EXECUTE\s+({_IDENT})\s*(?:\((.*)\))?\s*;?\s*$", re.IGNORECASE | re.DOTALL)
 
 # SET ROLE / SET SESSION AUTHORIZATION (and their RESETs) change *authorization*,
 # not display state, and pg_mimic has no roles to change to: no role catalog to
@@ -274,6 +285,107 @@ async def session_reset(ctx: MiddlewareContext) -> Statement | None:
     return None
 
 
+async def prepared_statements(ctx: MiddlewareContext) -> Statement | None:
+    """SQL-level `PREPARE` and `EXECUTE`, against the same registry the protocol's
+    Parse writes to.
+
+    Postgres has one prepared-statement namespace with two entrances, and they
+    genuinely share: SQL can `DEALLOCATE` a statement that Parse created, and
+    `pg_prepared_statements` lists both with a `from_sql` flag to tell them apart.
+    So PREPARE resolves its inner query exactly as Parse would and stores the
+    Statement under the given name, and EXECUTE binds that same Statement to the
+    arguments the SQL supplies.
+
+    Doing it here rather than leaving it to the session is what makes DEALLOCATE
+    coherent: one registry, so a name is either in it or is 26000.
+    """
+    match = _PREPARE_RE.match(ctx.sql)
+    if match:
+        return await _prepare_statement(ctx, match)
+    match = _EXECUTE_RE.match(ctx.sql)
+    if match:
+        return _execute_statement(ctx, match)
+    return None
+
+
+async def _prepare_statement(ctx: MiddlewareContext, match: re.Match) -> Statement:
+    name = _identifier(match.group(1))
+    declared = [_oid_for_declared_type(part) for part in _split_arguments(match.group(2) or "")]
+    inner = match.group(3)
+
+    # Resolved now rather than in on_execute, which is synchronous -- and resolved
+    # through the session, so the prepared query goes down exactly the path it
+    # would have taken had the client sent it directly.
+    prepared = await ctx.connection.session.prepare(inner, declared)
+
+    def on_execute() -> None:
+        ctx.connection.state.statements[name] = prepared
+
+    return StaticStatement(ctx.sql, None, [], on_execute)
+
+
+def _execute_statement(ctx: MiddlewareContext, match: re.Match) -> Statement:
+    name = _identifier(match.group(1))
+    prepared = ctx.connection.state.statements.get(name)
+    if prepared is None:
+        raise PgError(INVALID_SQL_STATEMENT_NAME, f'prepared statement "{name}" does not exist')
+    return _PreparedExecution(prepared, _split_arguments(match.group(2) or ""))
+
+
+class _PreparedExecution(Statement):
+    """`EXECUTE p (...)` as the prepared statement it names.
+
+    A thin wrapper rather than the Statement itself, because the arguments come
+    from the SQL text here instead of from Bind -- so bind() ignores what the
+    protocol passes and uses them. `sql` is the *prepared* query's text, which is
+    what makes the command tag right: Postgres answers `EXECUTE p` of a SELECT
+    with `SELECT n`, not `EXECUTE`.
+    """
+
+    def __init__(self, prepared: Statement, arguments: list[str | None]):
+        self.sql = prepared.sql
+        self.param_oids: list[int | None] = []
+        self._prepared = prepared
+        self._arguments = arguments
+
+    async def describe(self) -> list[ResultColumn] | None:
+        return await self._prepared.describe()
+
+    def bind(self, params: list[str | None]) -> Any:
+        return self._prepared.bind(self._arguments)
+
+
+def _split_arguments(text: str) -> list[str | None]:
+    """The parenthesised list on PREPARE or EXECUTE, split on its top-level commas.
+
+    Tokenized rather than split on ",", so a comma inside a string literal is a
+    character rather than a separator. Values come back as the decoded text a
+    bound parameter would have been, and a bare NULL as None.
+    """
+    if not text.strip():
+        return []
+    try:
+        tokens = sqlglot.Dialect.get_or_raise("postgres").tokenize(text)
+    except Exception:
+        raise PgError(SYNTAX_ERROR, f"could not read the argument list {text!r}") from None
+
+    arguments: list[str | None] = []
+    current: list[str] = []
+    for token in tokens:
+        if token.token_type is TokenType.COMMA:
+            arguments.append(_argument_value(current))
+            current = []
+        else:
+            current.append(token.text)
+    arguments.append(_argument_value(current))
+    return arguments
+
+
+def _argument_value(tokens: list[str]) -> str | None:
+    text = " ".join(tokens).strip()
+    return None if text.upper() == "NULL" else text
+
+
 async def session_functions(ctx: MiddlewareContext) -> Statement | None:
     """Table-less SELECTs over session state: version(), current_user,
     current_setting('x'), pg_backend_pid(), and friends.
@@ -363,6 +475,7 @@ DEFAULT_MIDDLEWARE = (
     transaction_control,
     set_show,
     session_reset,
+    prepared_statements,
     session_functions,
     information_schema,
     # Ahead of pg_catalog: this query names pg_catalog tables, but has to be
