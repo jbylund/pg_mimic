@@ -12,6 +12,7 @@ a Postgres-speaking API.
 
 - [Install](#install)
 - [Quick start](#quick-start)
+- [Serving in-memory tables](#serving-in-memory-tables)
 - [The Session API](#the-session-api)
 - [Using it in tests](#using-it-in-tests)
 - [Authentication](#authentication)
@@ -62,7 +63,80 @@ $ psql "host=127.0.0.1 port=5432 user=test dbname=test" -c "select * from anythi
 More examples: [`examples/simple.py`](examples/simple.py), [`examples/echo.py`](examples/echo.py) (logs every
 statement it receives -- good for poking at the server interactively with `psql` and watching what comes
 through), [`examples/parameterized.py`](examples/parameterized.py) (real bind parameters),
+[`examples/tables.py`](examples/tables.py) (in-memory tables, no session code),
 [`examples/dbapi_proxy.py`](examples/dbapi_proxy.py) (fronting a real sqlite3 database).
+
+## Serving in-memory tables
+
+If all you want is "serve these tables", you don't need a `Session` at all. `TableSession` takes Python
+rows and answers real SQL over them:
+
+```python
+from decimal import Decimal
+from pg_mimic import PgServer, TableSession
+
+tables = {
+    "users": [{"id": 1, "name": "alice"}, {"id": 2, "name": "bob"}],
+    "orders": [{"id": 10, "user_id": 1, "total": Decimal("9.99")}],
+}
+server = PgServer(session_factory=lambda: TableSession(tables))
+```
+
+```bash
+$ psql "host=127.0.0.1 port=5432 user=test dbname=test" \
+    -c "select u.name, sum(o.total) as spent from users u
+          join orders o on o.user_id = u.id group by u.name"
+ name  | spent
+-------+-------
+ alice |  9.99
+(1 row)
+```
+
+`SELECT`, `WHERE`, `JOIN`, `GROUP BY`, `ORDER BY`, `LIMIT`, subqueries and bind parameters are executed by
+[sqlglot](https://github.com/tobymao/sqlglot)'s executor — already a hard dependency, and already what
+answers table-less `SELECT`s elsewhere in pg_mimic. `schema()` is derived from the tables, so `\dt`,
+`\d users` and `information_schema` work with no extra code, and a client's `SELECT 1` ping is answered
+too. Rows may be dicts (the executor's native shape) or tuples, in which case declare their names:
+`TableSession({"users": [(1, "alice")]}, columns={"users": ["id", "name"]})`.
+
+### Where the column types come from
+
+pg_mimic treats column shape as a **declared fact**, not something read off result rows (see
+[The Session API](#the-session-api)). `TableSession` keeps that: it inspects the tables' Python values
+**once, at construction**, to declare a schema, and every query's output columns are then derived from
+*that* schema, by annotating the query's parse tree with sqlglot's type annotator. Nothing peeks at the
+rows a query returns. So a query matching nothing describes exactly like one matching everything, an
+empty table is not silently `text`, and `count(*)` is `bigint` because sqlglot types it that way.
+
+Where inference genuinely can't settle a type it asks rather than guesses — the same line
+`ResultColumn.for_type` draws, except that it draws it at construction time, so you find out when you build
+the session and not on some later query:
+
+```python
+from datetime import datetime
+from pg_mimic import JSONB, TableSession
+
+TableSession(
+    {"events": [], "notes": [{"body": None}], "docs": [{"body": {"a": 1}}], "users": [{"tags": ["staff"]}]},
+    columns={
+        "events": {"id": int, "at": datetime},  # empty table: nothing to infer from
+        "notes": {"body": str},  # every value is NULL
+        "docs": {"body": JSONB},  # a dict is a json document...
+        "users": {"tags": list[str]},  # ...and a list is equally an array or json
+    },
+)
+```
+
+A `columns` entry may name just the columns you need to pin down; the rest are still inferred. Values are
+either a Python type (resolved exactly as `ResultColumn.for_type` resolves it) or an OID.
+
+### Read-only, on purpose
+
+`INSERT`/`UPDATE`/`DELETE` are refused with `read_only_sql_transaction` (25006) rather than applied. The
+tables are your own objects, and mutating them per connection — with no isolation between clients and no
+way to roll back — would be a worse lie than a clear error. And anything sqlglot's executor can't run
+(recursive CTEs, most of Postgres's function library) is an error too, never an approximate answer: see
+[Known limitations](#known-limitations).
 
 ## The Session API
 
@@ -226,8 +300,10 @@ What this is and isn't: the server answers exactly what your `Session` answers, 
 code's* SQL, drivers, connection handling and error paths — not Postgres's semantics. pg_mimic has no
 planner and no storage, so `SELECT` won't filter, join or aggregate anything your session didn't
 already compute (`Session.middleware` can be extended with `static_select` to evaluate table-less
-expressions; see [What's handled automatically](#whats-handled-automatically)). If a test's
-correctness depends on Postgres actually executing the query, that test wants a real Postgres.
+expressions; see [What's handled automatically](#whats-handled-automatically)). The exception is
+[`TableSession`](#serving-in-memory-tables), which does execute the query — against your rows, with
+sqlglot's executor, as far as that executor goes. If a test's correctness depends on Postgres actually
+executing the query, that test wants a real Postgres.
 
 `pg_mimic.testing` imports without pytest installed — the fixtures live in a separate module that
 pytest loads itself — and it is not re-exported from the `pg_mimic` namespace, so nothing that merely
@@ -329,6 +405,30 @@ emulation it delegates to is in [`pg_mimic/catalog.py`](pg_mimic/catalog.py).
   a valid one, so a client that sends an array and reads it back gets exactly what it sent either way.
   Binary parameters are unaffected — those already require a known OID. A session that knows its own
   SQL can close the gap by setting `param_oids` on the `Statement` it returns from `prepare()`.
+- **`TableSession` executes as much SQL as sqlglot's executor does, which is not all of Postgres.**
+  Joins, grouping, ordering, subqueries and the common functions work; recursive CTEs and window functions
+  don't, function coverage is partial, and numeric comparisons go through Python floats — so a value no
+  float represents exactly compares wrong at the boundary (`where total = 9.99` misses a `Decimal("9.99")`
+  row). That is the executor's arithmetic, not pg_mimic's parameter handling: a literal in the SQL and a
+  bind parameter behave identically, and neither is exact.
+
+  The executor's more dangerous gaps are the clauses it parses and then answers *wrongly* — a wrong answer
+  wearing a right answer's clothes. `TableSession` repairs the ones it can, verified against a real
+  PostgreSQL: `OFFSET` and `DISTINCT ON` are applied to the rows the executor returns (with `LIMIT`
+  counting what survives, as Postgres does); `NOT IN (subquery)`, which the executor never filters on,
+  becomes a `NOT EXISTS` carrying SQL's NULL rule; `ORDER BY` places NULLs where Postgres places them
+  instead of raising on the comparison; and a `UNION`, `EXCEPT` or `INTERSECT` over the same table runs
+  both of its branches rather than the first one twice.
+
+  `FULL OUTER JOIN` and `TABLESAMPLE` are refused outright, because the executor gets those wrong in ways
+  nothing here can repair — a `FULL OUTER JOIN` runs as an inner join, dropping the unmatched rows from
+  both sides. An `OFFSET` or `DISTINCT ON` nested inside a subquery is refused for the same reason: the
+  repair reaches the query's own rows, and one buried in a subquery would be silently ignored as before.
+
+  Everything it can't run is an error, not an approximate answer, and a column type it can't derive is an
+  error too rather than a `text` guess — including a bind parameter nothing in the query types, which is
+  Postgres's own `42P18`. If a test needs Postgres's exact evaluation semantics, it wants a real Postgres;
+  `TableSession` is for "my code should see these rows over a real wire".
 - **No TLS.** `SSLRequest` is answered correctly (`'N'`, continue in plaintext) so opportunistic clients
   still connect, but there's no `ssl.SSLContext` upgrade path yet.
 - **`pg_catalog` is emulated only as far as psql's `\d` family needs.** `pg_class`, `pg_namespace`,

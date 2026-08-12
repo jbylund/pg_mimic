@@ -25,6 +25,10 @@ from .results import ResultColumn
 from .server import PgServer
 from .session import BaseSession, Portal, Session, Statement, StaticStatement
 
+# TableSession is headline public API, not a niche extension point: "serve these
+# tables" is the entry point most users want before they ever write a Session.
+from .tables import TableSession
+
 # OID constants: explicit column declarations need them -- ResultColumn("j", JSONB),
 # ResultColumn("tags", ARRAY_OID[TEXT]) -- so they are part of the public surface.
 from .types import (
@@ -63,6 +67,7 @@ __all__ = [
     "middleware",
     "BaseSession",
     "Session",
+    "TableSession",
     "Statement",
     "StaticStatement",
     "Portal",
