@@ -10,6 +10,7 @@ import re
 from typing import TYPE_CHECKING, Any
 
 import sqlglot
+from sqlglot.tokens import TokenType
 
 from . import messages
 from .auth import AuthPlugin
@@ -21,7 +22,7 @@ from .errors import (
     PgError,
 )
 from .messages import TARGET_STATEMENT, FieldSpec, ParsedBind, ParsedParse
-from .middleware import is_transaction_end
+from .middleware import allowed_in_failed_transaction
 from .results import ResultColumn, encode_row, format_code_for
 from .session import BaseSession, Session, Statement
 from .stream import ConnectionClosed, PgStream
@@ -34,8 +35,21 @@ if TYPE_CHECKING:
 _ROW_COUNT_COMMANDS = {"SELECT", "DELETE", "UPDATE", "MOVE", "FETCH", "COPY"}
 _KEYWORD_RE = re.compile(r"[A-Za-z]+")
 
+# The handful of command tags real Postgres spells with two words -- see
+# src/include/tcop/cmdtaglist.h. Everything else is just the leading keyword.
+_TWO_WORD_TAG_RE = re.compile(
+    r"^(DISCARD\s+(?:ALL|PLANS|SEQUENCES|TEMP|TEMPORARY)|DEALLOCATE\s+(?:PREPARE\s+)?ALL)\s*;?\s*$",
+    re.IGNORECASE,
+)
+
 
 def command_tag(sql: str, row_count: int) -> str:
+    two_word = _TWO_WORD_TAG_RE.match(sql.strip())
+    if two_word:
+        # As Postgres reports them: DISCARD TEMPORARY completes as "DISCARD TEMP",
+        # and the optional PREPARE noise word is not part of DEALLOCATE's tag.
+        tag = " ".join(two_word.group(1).upper().split())
+        return tag.replace("TEMPORARY", "TEMP").replace("DEALLOCATE PREPARE", "DEALLOCATE")
     match = _KEYWORD_RE.match(sql.strip())
     keyword = match.group(0).upper() if match else ""
     if keyword == "INSERT":
@@ -47,22 +61,36 @@ def command_tag(sql: str, row_count: int) -> str:
 
 def split_statements(sql: str) -> list[str]:
     """Split a simple-query string into individual statement texts on ';'
-    boundaries, using sqlglot rather than a naive string split so semicolons
-    inside string literals etc. don't misfire. The single-statement case
-    (by far the common one) always returns the original text unchanged --
-    only genuine multi-statement batches get sqlglot's re-rendered SQL,
-    since there's no reliable way to recover the original substrings once
-    parsed. Falls back to treating the whole input as one statement if
-    sqlglot can't parse it at all (best-effort -- pg_mimic isn't a full SQL
-    parser, and a client sending syntax sqlglot doesn't support should still
-    reach the session, not get a hard failure here)."""
+    boundaries, using sqlglot's tokenizer rather than a naive string split so
+    semicolons inside string literals, comments and dollar-quoted bodies don't
+    misfire.
+
+    The tokenizer rather than the parser, because each statement is handed on as
+    the client wrote it. Parsing and re-rendering does not round-trip: sqlglot
+    writes `SAVEPOINT a` back as `SAVEPOINT AS a`, `DISCARD ALL` as `DISCARD AS
+    ALL` and `RELEASE a` as `RELEASE AS a`, so every statement the middleware
+    classifies from its raw text stopped being recognised the moment it arrived in
+    a batch rather than on its own. Slicing the original string has no such gap.
+
+    Falls back to treating the whole input as one statement if sqlglot can't
+    tokenize it -- pg_mimic isn't a full SQL parser, and a client sending syntax
+    sqlglot doesn't support should still reach the session, not get a hard failure
+    here."""
     try:
-        expressions = [e for e in sqlglot.parse(sql, dialect="postgres") if e is not None]
+        tokens = sqlglot.Dialect.get_or_raise("postgres").tokenize(sql)
     except Exception:
         return [sql]
-    if len(expressions) <= 1:
-        return [sql]
-    return [expr.sql(dialect="postgres") for expr in expressions]
+    statements = []
+    start = 0
+    for token in tokens:
+        if token.token_type is TokenType.SEMICOLON:
+            statements.append(sql[start : token.start])
+            start = token.end + 1
+    statements.append(sql[start:])
+    statements = [statement for statement in statements if statement.strip()]
+    # One statement (with or without a trailing semicolon) is by far the common
+    # case, and is returned as the untouched original.
+    return statements if len(statements) > 1 else [sql]
 
 
 class Connection:
@@ -91,9 +119,32 @@ class Connection:
         self._ignore_until_sync = False
         self._current_task: asyncio.Task | None = None
 
+        # Session state the middleware owns but only the connection can carry:
+        # the open savepoint names (innermost last) and the ParameterStatus
+        # reports a GUC_REPORT change owes the client. See report_parameter().
+        self.savepoints: list[str] = []
+        self._pending_parameter_status: dict[str, str] = {}
+
     def request_cancel(self) -> None:
         if self._current_task is not None:
             self._current_task.cancel()
+
+    def report_parameter(self, name: str, value: str) -> None:
+        """Queue a ParameterStatus for a reported setting that just changed.
+
+        Queued rather than written straight out because real Postgres reports
+        changed GUCs immediately before ReadyForQuery, not in the middle of a
+        command's own messages -- so a `SELECT set_config(...)` reports after its
+        DataRow, and an extended-protocol SET reports at Sync. Last write wins:
+        two SETs of the same parameter in one batch owe the client one report of
+        the value it ended up with.
+        """
+        self._pending_parameter_status[name] = value
+
+    def _flush_parameter_status(self) -> None:
+        for name, value in self._pending_parameter_status.items():
+            self.stream.write(messages.make_parameter_status(name, value))
+        self._pending_parameter_status.clear()
 
     async def run(self) -> None:
         try:
@@ -142,6 +193,13 @@ class Connection:
     async def _send_startup_completion(self) -> None:
         for name, value in self.server.parameter_status.items():
             self.stream.write(messages.make_parameter_status(name, value))
+        if "application_name" not in self.server.parameter_status:
+            # Reported per-connection rather than from the server-wide defaults,
+            # because it comes from this client's own startup packet. Real
+            # Postgres always sends it, empty string included, and a client that
+            # set it expects to read it back (psycopg's
+            # `conn.info.parameter_status("application_name")`).
+            self.stream.write(messages.make_parameter_status("application_name", self.startup_params.get("application_name", "")))
         self.stream.write(messages.make_backend_key_data(self.pid, self.secret))
         self.stream.write(messages.make_ready_for_query(self.tx_status))
         await self.stream.drain()
@@ -169,6 +227,7 @@ class Connection:
                 self._current_task = None
 
             if tag == messages.QUERY or tag == messages.SYNC:
+                self._flush_parameter_status()
                 self.stream.write(messages.make_ready_for_query(self.tx_status))
                 self._ignore_until_sync = False
             await self.stream.drain()
@@ -232,7 +291,7 @@ class Connection:
             await self._execute_one_simple_statement(stmt_sql)
 
     async def _execute_one_simple_statement(self, sql: str) -> None:
-        if self.tx_status == b"E" and not is_transaction_end(sql):
+        if self.tx_status == b"E" and not allowed_in_failed_transaction(sql):
             raise PgError(IN_FAILED_SQL_TRANSACTION, "current transaction is aborted, commands ignored")
         if not sql.strip():
             self.stream.write(messages.make_empty_query_response())
@@ -320,7 +379,7 @@ class Connection:
 
     async def _handle_execute(self, parsed) -> None:
         entry = self._get_portal(parsed.portal_name)
-        if self.tx_status == b"E" and not is_transaction_end(entry.sql):
+        if self.tx_status == b"E" and not allowed_in_failed_transaction(entry.sql):
             raise PgError(IN_FAILED_SQL_TRANSACTION, "current transaction is aborted, commands ignored")
         rows, suspended = await entry.portal.execute(parsed.max_rows)
         entry.rows_returned += len(rows)

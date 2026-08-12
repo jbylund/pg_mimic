@@ -337,7 +337,21 @@ before it ever reaches your `Session`, so real clients/ORMs/`psql` work without 
 
 - Transaction control: `BEGIN`/`START TRANSACTION`, `COMMIT`/`END`, `ROLLBACK` — including the
   failed-transaction state (`25P02`) real Postgres enters after an error until `ROLLBACK`.
-- `SET`/`SHOW` (session variables).
+- Savepoints: `SAVEPOINT`, `RELEASE [SAVEPOINT]`, `ROLLBACK TO [SAVEPOINT]`, tracked as a real stack
+  (an unknown name is `3B001`). `ROLLBACK TO` clears the failed-transaction state *without* ending
+  the transaction, which is what psycopg's nested `transaction()` and SQLAlchemy's `begin_nested()`
+  are built on.
+- `SET`/`RESET`/`SHOW` (session variables), in the spellings clients actually send: `SET TIME ZONE`,
+  `SET SCHEMA`, `SET SESSION CHARACTERISTICS AS TRANSACTION`, `RESET ALL`, and the
+  `DISCARD`/`DEALLOCATE` resets a pooler like pgbouncer sends between clients. Changing one of the
+  `GUC_REPORT` settings sends the `ParameterStatus` real Postgres would, so a client's cached
+  `client_encoding` (psycopg's `conn.info.encoding`), `application_name` and friends stay current —
+  and `application_name` from your startup packet is echoed back in the initial burst.
+
+  `SET ROLE` and `SET SESSION AUTHORIZATION` are the deliberate exceptions: they change
+  *authorization*, and pg_mimic has no role catalog to validate against and no privilege model to
+  apply, so they fall through to your session rather than being accepted on a promise nothing here
+  can keep.
 - Session functions: `SELECT version()`, `current_user`, `current_database()`, `current_setting('x')`,
   `set_config()`, `pg_backend_pid()` — things only the connection can answer.
 - asyncpg's type introspection, so it can build codecs for array and other non-builtin types.
