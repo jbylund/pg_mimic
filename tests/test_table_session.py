@@ -629,15 +629,20 @@ def test_an_ordered_set_operation_places_nulls_and_pages(semantics):
 # --- what cannot be repaired, refused loudly ------------------------------------------
 
 
-def test_a_full_outer_join_is_refused(semantics):
-    """The executor runs it as an inner join, dropping the unmatched rows from both
-    sides. There is no rewrite of it here, so it is a refusal -- and the LEFT and
-    RIGHT joins it does run correctly are not touched."""
-    with pytest.raises(psycopg.errors.FeatureNotSupported, match="FULL OUTER JOIN"):
-        semantics.execute("SELECT i.id, b.user_id FROM items i FULL OUTER JOIN blocked b ON i.id = b.user_id")
-    assert semantics.execute(
-        "SELECT i.id, b.user_id FROM items i LEFT JOIN blocked b ON i.id = b.user_id ORDER BY i.id LIMIT 2"
-    ).fetchall() == [(1, None), (2, 2)]
+def test_a_full_outer_join_keeps_the_unmatched_rows():
+    """Refused until sqlglot 30.15.0, which stopped running it as an inner join --
+    the reason pyproject pins that floor.
+
+    Its own tables, so that each side has a row the other cannot match: an inner
+    join would answer with only `(2, 2)`, and a left join would miss `(None, 9)`.
+    """
+    tables = {"lhs": [{"a": 1}, {"a": 2}], "rhs": [{"b": 2}, {"b": 9}]}
+    with serve_in_thread(lambda: TableSession(tables)) as server:
+        with psycopg.Connection.connect(server.dsn(), autocommit=True) as conn:
+            rows = conn.execute(
+                "SELECT l.a, r.b FROM lhs l FULL OUTER JOIN rhs r ON l.a = r.b ORDER BY l.a NULLS LAST, r.b"
+            ).fetchall()
+    assert rows == [(1, None), (2, 2), (None, 9)]
 
 
 def test_tablesample_is_refused(semantics):
