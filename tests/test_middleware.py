@@ -203,6 +203,10 @@ async def test_set_config_applies_at_execute_not_parse():
             self.database = "d"
             self.username = "u"
             self.pid = 1
+            self.reported = {}
+
+        def report_parameter(self, name, value):
+            self.reported[name] = value
 
     connection = FakeConnection()
     ctx = middleware.MiddlewareContext(connection, "SELECT set_config('a', 'b', false)", [])

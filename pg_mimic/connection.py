@@ -21,7 +21,7 @@ from .errors import (
     PgError,
 )
 from .messages import TARGET_STATEMENT, FieldSpec, ParsedBind, ParsedParse
-from .middleware import is_transaction_end
+from .middleware import allowed_in_failed_transaction
 from .results import ResultColumn, encode_row, format_code_for
 from .session import BaseSession, Session, Statement
 from .stream import ConnectionClosed, PgStream
@@ -34,8 +34,19 @@ if TYPE_CHECKING:
 _ROW_COUNT_COMMANDS = {"SELECT", "DELETE", "UPDATE", "MOVE", "FETCH", "COPY"}
 _KEYWORD_RE = re.compile(r"[A-Za-z]+")
 
+# The handful of command tags real Postgres spells with two words -- see
+# src/include/tcop/cmdtaglist.h. Everything else is just the leading keyword.
+_TWO_WORD_TAG_RE = re.compile(
+    r"^(DISCARD\s+(?:ALL|PLANS|SEQUENCES|TEMP|TEMPORARY)|DEALLOCATE\s+ALL)\s*;?\s*$",
+    re.IGNORECASE,
+)
+
 
 def command_tag(sql: str, row_count: int) -> str:
+    two_word = _TWO_WORD_TAG_RE.match(sql.strip())
+    if two_word:
+        # DISCARD TEMPORARY completes as "DISCARD TEMP", the way Postgres reports it.
+        return " ".join(two_word.group(1).upper().split()).replace("TEMPORARY", "TEMP")
     match = _KEYWORD_RE.match(sql.strip())
     keyword = match.group(0).upper() if match else ""
     if keyword == "INSERT":
@@ -91,9 +102,32 @@ class Connection:
         self._ignore_until_sync = False
         self._current_task: asyncio.Task | None = None
 
+        # Session state the middleware owns but only the connection can carry:
+        # the open savepoint names (innermost last) and the ParameterStatus
+        # reports a GUC_REPORT change owes the client. See report_parameter().
+        self.savepoints: list[str] = []
+        self._pending_parameter_status: dict[str, str] = {}
+
     def request_cancel(self) -> None:
         if self._current_task is not None:
             self._current_task.cancel()
+
+    def report_parameter(self, name: str, value: str) -> None:
+        """Queue a ParameterStatus for a reported setting that just changed.
+
+        Queued rather than written straight out because real Postgres reports
+        changed GUCs immediately before ReadyForQuery, not in the middle of a
+        command's own messages -- so a `SELECT set_config(...)` reports after its
+        DataRow, and an extended-protocol SET reports at Sync. Last write wins:
+        two SETs of the same parameter in one batch owe the client one report of
+        the value it ended up with.
+        """
+        self._pending_parameter_status[name] = value
+
+    def _flush_parameter_status(self) -> None:
+        for name, value in self._pending_parameter_status.items():
+            self.stream.write(messages.make_parameter_status(name, value))
+        self._pending_parameter_status.clear()
 
     async def run(self) -> None:
         try:
@@ -142,6 +176,13 @@ class Connection:
     async def _send_startup_completion(self) -> None:
         for name, value in self.server.parameter_status.items():
             self.stream.write(messages.make_parameter_status(name, value))
+        if "application_name" not in self.server.parameter_status:
+            # Reported per-connection rather than from the server-wide defaults,
+            # because it comes from this client's own startup packet. Real
+            # Postgres always sends it, empty string included, and a client that
+            # set it expects to read it back (psycopg's
+            # `conn.info.parameter_status("application_name")`).
+            self.stream.write(messages.make_parameter_status("application_name", self.startup_params.get("application_name", "")))
         self.stream.write(messages.make_backend_key_data(self.pid, self.secret))
         self.stream.write(messages.make_ready_for_query(self.tx_status))
         await self.stream.drain()
@@ -169,6 +210,7 @@ class Connection:
                 self._current_task = None
 
             if tag == messages.QUERY or tag == messages.SYNC:
+                self._flush_parameter_status()
                 self.stream.write(messages.make_ready_for_query(self.tx_status))
                 self._ignore_until_sync = False
             await self.stream.drain()
@@ -232,7 +274,7 @@ class Connection:
             await self._execute_one_simple_statement(stmt_sql)
 
     async def _execute_one_simple_statement(self, sql: str) -> None:
-        if self.tx_status == b"E" and not is_transaction_end(sql):
+        if self.tx_status == b"E" and not allowed_in_failed_transaction(sql):
             raise PgError(IN_FAILED_SQL_TRANSACTION, "current transaction is aborted, commands ignored")
         if not sql.strip():
             self.stream.write(messages.make_empty_query_response())
@@ -320,7 +362,7 @@ class Connection:
 
     async def _handle_execute(self, parsed) -> None:
         entry = self._get_portal(parsed.portal_name)
-        if self.tx_status == b"E" and not is_transaction_end(entry.sql):
+        if self.tx_status == b"E" and not allowed_in_failed_transaction(entry.sql):
             raise PgError(IN_FAILED_SQL_TRANSACTION, "current transaction is aborted, commands ignored")
         rows, suspended = await entry.portal.execute(parsed.max_rows)
         entry.rows_returned += len(rows)
