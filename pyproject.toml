@@ -8,7 +8,7 @@ license = { text = "MIT" }
 dependencies = [
     # 30.15.0 is where the executor stopped running a FULL OUTER JOIN as an inner
     # join; below it, TableSession would answer one with the wrong rows.
-    "sqlglot>=30.16.0",
+    "sqlglot>=30.17.0",
     "scramp>=1.4.5",
 ]
 

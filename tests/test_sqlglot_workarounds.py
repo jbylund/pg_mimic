@@ -1,10 +1,14 @@
 """Strict-xfail tripwires for the sqlglot executor bugs pg_mimic works around.
 
-Every test here asserts what *Postgres* answers, runs against sqlglot directly
-rather than through pg_mimic, and is marked `xfail(strict=True)`. So each one
-fails today -- which is the expected outcome -- and the moment sqlglot fixes the
-bug the test XPASSes, and strict turns that into a build failure telling you a
-workaround is now deletable.
+Every test here asserts what *Postgres* answers and runs against sqlglot directly
+rather than through pg_mimic. A bug still outstanding is marked
+`xfail(strict=True)`, so it fails today -- the expected outcome -- and the moment
+sqlglot fixes it the test XPASSes, which strict turns into a build failure telling
+you a workaround is now deletable.
+
+Once that happens the mark comes off and the test stays, as a plain assertion: it
+then documents why the sqlglot floor in pyproject.toml is what it is, and fails if
+a regression or a careless downgrade takes the fix away.
 
 The point is that a workaround has no natural expiry. Two of them silently
 outlived their cause and were noticed only by re-reading the comments: a
@@ -114,13 +118,12 @@ def test_tablesample_is_applied():
     assert _rows("SELECT a FROM t TABLESAMPLE BERNOULLI (0)", *_NUMBERS) == []
 
 
-@pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
 def test_like_is_anchored_and_takes_metacharacters_literally():
     """https://github.com/jbylund/pg_mimic/issues/38
 
-    No workaround in the library -- catalog_rewrite patches REGEXPLIKE only, so
-    catalog introspection answers with the wrong rows. examples/git_sql.py
-    replaces ENV["LIKE"] for itself.
+    Fixed in sqlglot v30.17.0 by
+    https://redirect.github.com/tobymao/sqlglot/commit/44b73a00, one of the reasons
+    the floor is 30.17.0. examples/git_sql.py no longer replaces ENV["LIKE"].
 
     Postgres' LIKE is fully anchored, and only % and _ are wildcards.
     """
@@ -128,20 +131,21 @@ def test_like_is_anchored_and_takes_metacharacters_literally():
     assert _rows("SELECT s FROM q WHERE s LIKE 'Bump vers.on'", *_TEXT) == []
 
 
-@pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
 def test_not_like_excludes_what_like_matches():
     """https://github.com/jbylund/pg_mimic/issues/44
 
-    Fix in flight: https://redirect.github.com/tobymao/sqlglot/pull/8139
+    Fixed in sqlglot v30.17.0 by
+    https://redirect.github.com/tobymao/sqlglot/pull/8139. examples/git_sql.py no
+    longer needs _unfold_negations; pushdown() keeps its own negate guard.
     """
     assert _rows("SELECT s FROM q WHERE s NOT LIKE 'Bump%'", *_TEXT) == [("Add feature",)]
 
 
-@pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
 def test_ilike_exists():
     """https://github.com/jbylund/pg_mimic/issues/38
 
-    No workaround -- it raises.
+    Fixed in sqlglot v30.17.0 by
+    https://redirect.github.com/tobymao/sqlglot/pull/8144.
     """
     assert _rows("SELECT s FROM q WHERE s ILIKE 'bump%'", *_TEXT) == [("Bump version",)]
 
@@ -171,11 +175,11 @@ def test_interval_handles_years_and_months():
     assert _rows("SELECT ts - INTERVAL '1 month' FROM d", tables, schema) == [(datetime.datetime(2024, 2, 15),)]
 
 
-@pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
 def test_typed_division_keeps_a_real_operands_fraction():
     """https://github.com/jbylund/pg_mimic/issues/48
 
-    No workaround -- the answer is simply wrong. Fix in flight: https://redirect.github.com/tobymao/sqlglot/pull/8138
+    Fixed in sqlglot v30.17.0 by
+    https://redirect.github.com/tobymao/sqlglot/pull/8138.
     """
     assert _rows("SELECT a / 2.0 FROM t", *_NUMBERS)[0] == (0.5,)
 
@@ -288,8 +292,8 @@ def test_in_takes_a_from_less_subquery():
 
 
 def test_full_outer_join_preserves_unmatched_rows():
-    """Not xfail: fixed upstream in v30.15.0 (commit f85ea4c2), which is why
-    `sqlglot>=30.16.0` is pinned and TableSession no longer refuses it:
+    """Not xfail: fixed upstream in v30.15.0 (commit f85ea4c2), which is why the floor
+    first moved to 30.16.0 and TableSession no longer refuses it:
     https://github.com/jbylund/pg_mimic/issues/50
 
     Kept as a plain assertion so that a *regression* upstream is caught too.

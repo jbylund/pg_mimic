@@ -39,8 +39,12 @@ def test_information_schema_columns(conn, mock_session):
 
 
 def test_an_unrunnable_information_schema_query_is_an_error_not_no_rows(conn, mock_session):
-    """`||` and `length()` are missing from sqlglot's executor (#38). Before this,
-    both came back as zero rows and a clean exit status."""
+    """`||` is missing from sqlglot's executor (#38). Before this it came back as
+    zero rows and a clean exit status.
+
+    `length()` was missing too until sqlglot v30.17.0, which is part of why the floor
+    is 30.17.0. It is asserted here rather than dropped, so a downgrade shows up as
+    this test failing rather than as introspection quietly going empty again."""
     import psycopg
     import pytest
 
@@ -50,12 +54,12 @@ def test_an_unrunnable_information_schema_query_is_an_error_not_no_rows(conn, mo
     mock_session.schema = schema
 
     with conn.cursor() as cur:
-        for sql in (
-            "SELECT table_name || '!' FROM information_schema.tables",
-            "SELECT length(table_name) FROM information_schema.tables",
-        ):
-            with pytest.raises(psycopg.errors.FeatureNotSupported):
-                cur.execute(sql)
+        with pytest.raises(psycopg.errors.FeatureNotSupported):
+            cur.execute("SELECT table_name || '!' FROM information_schema.tables")
+
+        cur.execute("SELECT table_name, length(table_name) FROM information_schema.tables")
+        rows = cur.fetchall()
+        assert rows and all(length == len(name) for name, length in rows)
 
 
 def test_an_unmodelled_information_schema_column_is_still_empty(conn, mock_session):
