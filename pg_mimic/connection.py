@@ -7,24 +7,27 @@ from __future__ import annotations
 
 import asyncio
 import re
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, AsyncIterator
 
 import sqlglot
 from sqlglot.tokens import TokenType
 
 from . import messages
 from .auth import AuthPlugin
+from .copy import DIRECTION_IN, CopyEncoder, CopyInDecoder, CopyOptions, CopyPortal, CopyStatement
 from .errors import (
     FEATURE_NOT_SUPPORTED,
     IN_FAILED_SQL_TRANSACTION,
     INTERNAL_ERROR,
     INVALID_SQL_STATEMENT_NAME,
+    PROTOCOL_VIOLATION,
+    QUERY_CANCELED,
     PgError,
 )
 from .messages import TARGET_STATEMENT, FieldSpec, ParsedBind, ParsedParse
 from .middleware import allowed_in_failed_transaction
 from .results import ResultColumn, encode_row, format_code_for
-from .session import BaseSession, Session, Statement
+from .session import BaseSession, Row, Session, Statement
 from .stream import ConnectionClosed, PgStream
 from .types import decode_binary_param, decode_text_param
 
@@ -34,6 +37,10 @@ if TYPE_CHECKING:
 
 _ROW_COUNT_COMMANDS = {"SELECT", "DELETE", "UPDATE", "MOVE", "FETCH", "COPY"}
 _KEYWORD_RE = re.compile(r"[A-Za-z]+")
+# How often a COPY TO STDOUT hands its output to the socket. COPY exists for bulk
+# data, so the rows are flushed as they're produced rather than piling up whole in
+# the writer's queue.
+_COPY_OUT_DRAIN_INTERVAL = 100
 
 # The handful of command tags real Postgres spells with two words -- see
 # src/include/tcop/cmdtaglist.h. Everything else is just the leading keyword.
@@ -217,7 +224,7 @@ class Connection:
             except asyncio.CancelledError:
                 self.stream.write(
                     messages.make_error_response(
-                        {"S": "ERROR", "V": "ERROR", "C": "57014", "M": "canceling statement due to user request"}
+                        {"S": "ERROR", "V": "ERROR", "C": QUERY_CANCELED, "M": "canceling statement due to user request"}
                     )
                 )
                 if self.tx_status != b"I":
@@ -234,6 +241,13 @@ class Connection:
 
     async def _dispatch(self, tag: bytes, payload: bytes) -> None:
         if self._ignore_until_sync and tag not in (messages.SYNC, messages.TERMINATE):
+            return
+        if tag in (messages.COPY_DATA, messages.COPY_DONE, messages.COPY_FAIL):
+            # Copy messages only mean something inside copy mode, which _run_copy
+            # drives by reading the stream itself. Reaching the normal dispatch loop
+            # means a COPY already ended -- failed, or was cancelled -- and the
+            # client hasn't noticed yet. Real Postgres accepts and drops these rather
+            # than answering with an error for each one.
             return
         try:
             if tag == messages.QUERY:
@@ -298,6 +312,12 @@ class Connection:
             return
 
         statement = await self.session.prepare(sql, [])
+        if isinstance(statement, CopyStatement):
+            # The copy sub-protocol stands in for Bind/Execute entirely: there's no
+            # portal to drain and no RowDescription, just the data stream and the
+            # CommandComplete that ends it.
+            await self._run_copy(statement)
+            return
         columns = await statement.describe()
         portal = statement.bind([])
         rows, _suspended = await portal.execute(0)
@@ -381,6 +401,11 @@ class Connection:
         entry = self._get_portal(parsed.portal_name)
         if self.tx_status == b"E" and not allowed_in_failed_transaction(entry.sql):
             raise PgError(IN_FAILED_SQL_TRANSACTION, "current transaction is aborted, commands ignored")
+        if isinstance(entry.portal, CopyPortal):
+            # See _execute_one_simple_statement: a COPY is driven by the copy
+            # sub-protocol, and maxRows/PortalSuspended have no meaning for it.
+            await self._run_copy(entry.portal.statement)
+            return
         rows, suspended = await entry.portal.execute(parsed.max_rows)
         entry.rows_returned += len(rows)
 
@@ -403,6 +428,126 @@ class Connection:
         else:
             self.portals.pop(parsed.name, None)
         self.stream.write(messages.make_close_complete())
+
+    # --- COPY sub-protocol -----------------------------------------------------------
+
+    async def _run_copy(self, statement: CopyStatement) -> None:
+        """Drive a COPY to completion in place of the Bind/Execute an ordinary
+        statement goes through.
+
+        Either direction ends with the CommandComplete the client expects on the
+        normal path -- `COPY <n>`, from the same command_tag() every other
+        statement uses. Anything raised on the way out is an ordinary error
+        response: _dispatch's handler covers this exactly as it covers a query,
+        and a client that has been left mid-copy by it stops mattering because
+        _dispatch drops stray copy messages.
+        """
+        if statement.direction == DIRECTION_IN:
+            row_count = await self._copy_in(statement)
+        else:
+            row_count = await self._copy_out(statement)
+        self.stream.write(messages.make_command_complete(command_tag(statement.sql, row_count)))
+
+    async def _copy_in(self, statement: CopyStatement) -> int:
+        self.stream.write(messages.make_copy_in_response(statement.column_count))
+        # Drained here rather than at the end of dispatch: the client won't send a
+        # byte until it has seen this.
+        await self.stream.drain()
+
+        reader = _CopyInReader(self.stream, statement.options)
+        row_count = await statement.copy_in(reader.rows())
+        # A session that stopped reading early still leaves the client mid-copy, so
+        # the rest of its messages have to be consumed before this connection can go
+        # back to normal command processing.
+        await reader.finish()
+        return reader.row_count if row_count is None else row_count
+
+    async def _copy_out(self, statement: CopyStatement) -> int:
+        # The header names and the row source are resolved before CopyOutResponse
+        # goes out, because failing here is a plain ErrorResponse where failing after
+        # it aborts a copy already in flight.
+        header = await statement.header_names() if statement.options.header else None
+        rows = await statement.copy_out()
+
+        # The first row is pulled early for the same reason. CopyOutResponse's column
+        # count is not decoration -- psycopg truncates every row it parses to it --
+        # and the copy sub-protocol has no describe() to ask, so the first row is the
+        # one place the arity is certainly right. It costs one buffered row. With no
+        # rows at all nothing reads the count, and the statement says what it can.
+        try:
+            first_row: Row | None = await rows.__anext__()
+        except StopAsyncIteration:
+            first_row = None
+        column_count = len(first_row) if first_row is not None else len(header or ()) or statement.column_count
+
+        encoder = CopyEncoder(statement.options)
+        self.stream.write(messages.make_copy_out_response(column_count))
+        if header is not None:
+            self.stream.write(messages.make_copy_data(encoder.header(header)))
+
+        row_count = 0
+        if first_row is not None:
+            self.stream.write(messages.make_copy_data(encoder.row(first_row)))
+            row_count = 1
+        async for row in rows:
+            self.stream.write(messages.make_copy_data(encoder.row(row)))
+            row_count += 1
+            if row_count % _COPY_OUT_DRAIN_INTERVAL == 0:
+                await self.stream.drain()
+        self.stream.write(messages.make_copy_done())
+        return row_count
+
+
+class _CopyInReader:
+    """The frontend side of copy-in mode: CopyData/CopyDone/CopyFail off the
+    stream, decoded rows out.
+
+    One object rather than a bare generator because the row iterator the session
+    gets and the "make sure the client's CopyDone was consumed" cleanup are two
+    views of the same in-progress read -- a session that stops iterating early
+    must not leave the connection parked mid-copy.
+    """
+
+    def __init__(self, stream: PgStream, options: CopyOptions):
+        self._stream = stream
+        self._decoder = CopyInDecoder(options)
+        self._rows: AsyncIterator[Row] | None = None
+        self._done = False
+        self.row_count = 0
+
+    def rows(self) -> AsyncIterator[Row]:
+        self._rows = self._iterate()
+        return self._rows
+
+    async def _iterate(self) -> AsyncIterator[Row]:
+        while not self._done:
+            for row in await self._read_batch():
+                self.row_count += 1
+                yield row
+
+    async def finish(self) -> None:
+        if self._rows is not None:
+            await self._rows.aclose()  # type: ignore[attr-defined]
+        while not self._done:
+            await self._read_batch()
+
+    async def _read_batch(self) -> list[Row]:
+        tag, payload = await self._stream.read_message()
+        if tag == messages.COPY_DATA:
+            return self._decoder.feed(payload)
+        if tag == messages.COPY_DONE:
+            self._done = True
+            return self._decoder.finish()
+        if tag == messages.COPY_FAIL:
+            self._done = True
+            raise PgError(QUERY_CANCELED, f"COPY from stdin failed: {messages.parse_copy_fail(payload)}")
+        if tag in (messages.FLUSH, messages.SYNC):
+            # Real Postgres ignores these during copy-in rather than treating them as
+            # the protocol violation every other message type is. Ignoring Sync
+            # specifically matters: answering it with a ReadyForQuery would put the
+            # connection a message ahead of the CommandComplete still to come.
+            return []
+        raise PgError(PROTOCOL_VIOLATION, f"unexpected message type 0x{tag[0]:02X} during COPY from stdin")
 
 
 class PortalEntry:

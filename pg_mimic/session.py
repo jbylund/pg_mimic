@@ -249,6 +249,33 @@ class Session(BaseSession):
         emulation. See pg_mimic.catalog."""
         return None
 
+    async def copy_in(self, sql: str, rows: AsyncIterator[Row]) -> int | None:
+        """Optional: handle `COPY ... FROM STDIN`.
+
+        `rows` is an async iterator of tuples of `str | None` -- one per line the
+        client sent, already split on the delimiter, un-escaped, and with the null
+        string turned into None. Framing, the text/CSV format and the CopyData
+        message stream are all handled before this is called. Iterate it lazily
+        (that is the point of COPY) and return how many rows you stored, or None to
+        let pg_mimic report the number it decoded.
+
+        Not implemented by default, and the absence is detected before the server
+        invites the client to start sending: a session that silently accepted and
+        dropped bulk data would look exactly like a successful load.
+        """
+        raise NotImplementedError
+
+    async def copy_out(self, sql: str) -> RowSource:
+        """Optional: handle `COPY ... TO STDOUT`.
+
+        Yield rows the same way query() does; pg_mimic formats them. There are no
+        declared column types here -- the copy sub-protocol has no RowDescription --
+        so each value is rendered from its own Python type, and a `list`/`dict`,
+        which could equally be an array or a json document, is refused rather than
+        guessed at. Yield those already formatted.
+        """
+        raise NotImplementedError
+
     async def prepare(self, sql: str, param_oids: list[int | None]) -> Statement:
         if self._connection is not None:
             from .middleware import DEFAULT_MIDDLEWARE, resolve

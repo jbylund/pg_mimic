@@ -60,7 +60,17 @@ def make_close(kind: bytes, name: str = "") -> bytes:
     return _frontend_message(b"C", kind + _cstring(name))
 
 
+def make_copy_data(data: bytes) -> bytes:
+    return _frontend_message(b"d", data)
+
+
+def make_copy_fail(reason: str) -> bytes:
+    return _frontend_message(b"f", _cstring(reason))
+
+
 SYNC = _frontend_message(b"S")
+FLUSH = _frontend_message(b"H")
+COPY_DONE = _frontend_message(b"c")
 
 
 async def read_message(reader: asyncio.StreamReader) -> tuple[bytes, bytes]:
