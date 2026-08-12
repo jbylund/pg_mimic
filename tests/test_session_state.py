@@ -93,7 +93,12 @@ def test_reset_restores_the_default(conn, mock_session):
         assert cur.fetchone() == ('"$user", public',)
 
 
-def test_reset_all_clears_every_setting(conn, mock_session):
+def test_reset_all_restores_every_default(conn, mock_session):
+    """RESET ALL restores defaults; it does not blank the settings.
+
+    `extra_float_digits` asserted "" here until pg_mimic knew what its default was,
+    which was only ever a description of the gap -- real Postgres answers 1. See #32.
+    """
     with conn.cursor() as cur:
         cur.execute("SET search_path TO myschema")
         cur.execute("SET extra_float_digits = 3")
@@ -101,7 +106,7 @@ def test_reset_all_clears_every_setting(conn, mock_session):
         cur.execute("SHOW search_path")
         assert cur.fetchone() == ('"$user", public',)
         cur.execute("SHOW extra_float_digits")
-        assert cur.fetchone() == ("",)
+        assert cur.fetchone() == ("1",)
 
 
 def test_set_session_characteristics_sets_the_default_transaction_gucs(conn, mock_session):
@@ -172,6 +177,30 @@ def test_custom_gucs_reach_the_session(conn, mock_session):
         "RESET app.tenant_id",
         'SET "app.tenant_id" = 5',
     ]
+
+
+def test_show_of_a_setting_nothing_has_ever_set_raises(conn, mock_session):
+    """42704, the same as real Postgres, rather than the empty string that made an
+    unknown setting indistinguishable from a blank one (#32). Answered here, not
+    forwarded: a SHOW is connection boilerplate however it ends."""
+    with conn.cursor() as cur:
+        with pytest.raises(psycopg.errors.UndefinedObject) as excinfo:
+            cur.execute("SHOW no_such_setting")
+        assert excinfo.value.sqlstate == "42704"
+        assert 'unrecognized configuration parameter "no_such_setting"' in str(excinfo.value)
+    assert mock_session.queries == []
+
+
+def test_a_setting_stays_known_once_set(conn, mock_session):
+    """Setting a name is what makes it exist, and nothing that drops the *value*
+    unmakes it -- checked against PostgreSQL 18 for RESET, RESET ALL and DISCARD
+    ALL, all of which leave a custom GUC reading as the empty string."""
+    with conn.cursor() as cur:
+        cur.execute("SET mytenant TO 'acme'")
+        for forget in ("RESET mytenant", "RESET ALL", "DISCARD ALL"):
+            cur.execute(forget)
+            cur.execute("SHOW mytenant")
+            assert cur.fetchone() == ("",), f"unknown again after {forget}"
 
 
 def test_a_quoted_setting_name_is_the_same_setting(conn, mock_session):
@@ -436,3 +465,96 @@ def test_a_session_can_take_prepare_back(mock_session):
     finally:
         thread.stop()
     assert [sql for sql, _params in mock_session.queries] == ["PREPARE p AS SELECT 1", "EXECUTE p"]
+
+
+# --- the parameters a real server is born knowing (#32) -------------------------------
+
+
+def test_an_unmodelled_but_real_guc_reads_its_postgres_default(conn, mock_session):
+    """`SHOW work_mem` answered "" before pg_mimic carried the parameter list, then
+    42704 once unknown names started erroring. Neither is what a server says: the
+    value is a property of PostgreSQL, and pg_settings.json now supplies it."""
+    with conn.cursor() as cur:
+        for setting, expected in (("work_mem", "4MB"), ("shared_buffers", "128MB"), ("max_connections", "100")):
+            cur.execute(f"SHOW {setting}")
+            assert cur.fetchone() == (expected,), setting
+
+
+def test_a_name_that_is_not_a_parameter_still_raises(conn, mock_session):
+    """The catalog is what keeps the previous test from swallowing this one: a
+    parameter pg_mimic does not model and a parameter that does not exist are only
+    different questions if something knows the difference."""
+    import psycopg
+    import pytest
+
+    with conn.cursor() as cur:
+        with pytest.raises(psycopg.errors.UndefinedObject):
+            cur.execute("SHOW never.set_at_all")
+
+
+def test_setting_a_real_guc_then_resetting_returns_the_default_not_a_blank(conn, mock_session):
+    """The ordering rule in _setting_value: a catalogued default outranks the
+    known-but-blank state, because RESET means different things to the two kinds of
+    name. Measured against PostgreSQL 18 -- work_mem reads 4MB, app.x reads ""."""
+    with conn.cursor() as cur:
+        cur.execute("SET work_mem = '8MB'")
+        cur.execute("SHOW work_mem")
+        assert cur.fetchone() == ("8MB",)
+        cur.execute("RESET work_mem")
+        cur.execute("SHOW work_mem")
+        assert cur.fetchone() == ("4MB",)
+
+
+def test_current_setting_missing_ok_is_still_null_for_a_non_parameter(conn, mock_session):
+    """The row-level-security probe #32 exists for, still answered NULL -- the
+    catalog must not turn every unknown name into a value."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT current_setting('app.tenant', true)")
+        assert cur.fetchone() == (None,)
+
+
+def test_version_and_port_describe_pg_mimic_not_the_generating_server(conn, mock_session):
+    """The catalogue is generated from whichever server it was pointed at, so left to
+    it `server_version_num` would report that server's release while `server_version`
+    and the startup ParameterStatus report pg_mimic's -- and a client gating a feature
+    on the number acts on a version it is not talking to. Same for `port`, where the
+    catalogued 5432 is a fact about PostgreSQL's default rather than this listener."""
+    with conn.cursor() as cur:
+        cur.execute("SHOW server_version")
+        version = cur.fetchone()[0]
+        cur.execute("SHOW server_version_num")
+        assert cur.fetchone() == ("160000",), f"disagrees with server_version {version!r}"
+        assert version.startswith("16.0")
+
+        cur.execute("SHOW port")
+        assert cur.fetchone() == (str(conn.info.port),)
+
+
+def test_show_all_lists_the_settings_with_descriptions(conn, mock_session):
+    """`SHOW ALL` is the whole table, not a parameter named "all". It read as the
+    latter before the catalogue existed -- one bogus empty row -- and became a 42704
+    once unknown names started erroring, which is worse for the tools that run it on
+    connect."""
+    with conn.cursor() as cur:
+        cur.execute("SHOW ALL")
+        rows = cur.fetchall()
+        assert [description.name for description in cur.description] == ["name", "setting", "description"]
+        assert len(rows) > 300
+
+        settings = {name: (value, description) for name, value, description in rows}
+        assert settings["work_mem"] == ("4MB", "Sets the maximum memory to be used for query workspaces.")
+
+        # what the connection has set shows through, not the default underneath it
+        cur.execute("SET search_path TO myschema")
+        cur.execute("SHOW ALL")
+        assert dict((name, value) for name, value, _ in cur.fetchall())["search_path"] == "myschema"
+
+
+def test_a_dotted_guc_does_not_become_known_by_setting_it(conn, mock_session):
+    """Pins what the README now says rather than what it used to. A dotted name goes
+    to the session (#35), so pg_mimic never sees the write -- and the row-level-security
+    probe stays NULL afterwards. The docs claimed the opposite."""
+    with conn.cursor() as cur:
+        cur.execute("SET app.tenant = 'acme'")
+        cur.execute("SELECT current_setting('app.tenant', true)")
+        assert cur.fetchone() == (None,)

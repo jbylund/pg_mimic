@@ -78,6 +78,21 @@ def test_a_prepared_current_setting_reads_the_setting_each_time(dsn, mock_sessio
                 assert cur.fetchone() == (value,)
 
 
+def test_a_prepared_current_setting_notices_a_setting_appearing(dsn, mock_session):
+    """#63 through the missing_ok branch (#32): a statement prepared while the
+    setting does not exist yet must not go on answering NULL once it does. Twice up
+    front, because psycopg prepares on the second execution."""
+    with _prepared_conn(dsn) as conn:
+        with conn.cursor() as cur:
+            for _ in range(2):
+                cur.execute("SELECT current_setting('later', true)")
+                assert cur.fetchone() == (None,)
+
+            cur.execute("SET later TO 'now'")
+            cur.execute("SELECT current_setting('later', true)")
+            assert cur.fetchone() == ("now",)
+
+
 def test_a_prepared_show_follows_a_rollback(dsn, mock_session):
     """The two halves together: settings are transactional (#45) and a prepared
     SHOW reports the current value (#63). Either bug alone hides the other."""

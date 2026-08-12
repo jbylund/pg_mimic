@@ -37,6 +37,7 @@ from sqlglot import exp
 from sqlglot.executor import execute as sqlglot_execute
 from sqlglot.tokens import TokenType
 
+from . import settings_catalog
 from .catalog import _oid_for_declared_type, information_schema_statement, pg_catalog_statement
 from .copy import copy_statement
 from .errors import (
@@ -45,6 +46,7 @@ from .errors import (
     INVALID_SQL_STATEMENT_NAME,
     NO_ACTIVE_SQL_TRANSACTION,
     SYNTAX_ERROR,
+    UNDEFINED_OBJECT,
     PgError,
 )
 from .results import ResultColumn
@@ -95,6 +97,9 @@ _SHOW_RE = re.compile(r"^\s*SHOW\s+(\S+?)\s*;?\s*$", re.IGNORECASE)
 # The read counterpart of SET TIME ZONE, and the one multi-word SHOW worth
 # special-casing -- _SHOW_RE only matches a single token.
 _SHOW_TIME_ZONE_RE = re.compile(r"^\s*SHOW\s+TIME\s+ZONE\s*;?\s*$", re.IGNORECASE)
+# `SHOW ALL` is the whole table, not a parameter named "all" -- unquoted only, since
+# `SHOW "all"` asks for a parameter of that name and there isn't one.
+_SHOW_ALL_RE = re.compile(r"^\s*SHOW\s+ALL\s*;?\s*$", re.IGNORECASE)
 
 # Connection-state resets. DISCARD ALL is what pgbouncer sends between pooled
 # clients, so anything behind a pooler hits it on every checkout.
@@ -256,6 +261,8 @@ async def set_show(ctx: MiddlewareContext) -> Statement | None:
         return statement
     if _SHOW_TIME_ZONE_RE.match(ctx.sql):
         return _show_statement(ctx.connection, "timezone")
+    if _SHOW_ALL_RE.match(ctx.sql):
+        return _show_all_statement(ctx.connection)
     show_match = _SHOW_RE.match(ctx.sql)
     if show_match:
         return _show_statement(ctx.connection, show_match.group(1))
@@ -795,7 +802,9 @@ def _report_setting(connection: Connection, key: str) -> None:
     """Queue the ParameterStatus a change to `key` owes the client, if it owes one."""
     reported = _REPORTED_SETTINGS.get(key)
     if reported is not None:
-        connection.report_parameter(reported, _setting_value(connection, key))
+        # Every reported setting has a built-in default, so the value is never the
+        # None that means "no such setting" -- the `or` is for the type checker.
+        connection.report_parameter(reported, _setting_value(connection, key) or "")
 
 
 _DEFAULT_SETTINGS = {
@@ -810,11 +819,33 @@ _DEFAULT_SETTINGS = {
     "jit": lambda c: "off",
     "search_path": lambda c: '"$user", public',
     "server_encoding": lambda c: c.server.parameter_status.get("server_encoding", "UTF8"),
+    "port": lambda c: str(c.server.port),
     "server_version": lambda c: c.server.parameter_status.get("server_version", ""),
+    "server_version_num": lambda c: _version_num(c.server.parameter_status.get("server_version", "")),
     "session_authorization": lambda c: c.username,
     "standard_conforming_strings": lambda c: "on",
     "timezone": lambda c: c.server.parameter_status.get("TimeZone", "UTC"),
 }
+
+
+def _version_num(version: str) -> str:
+    """PostgreSQL's numeric spelling of a version string: 16.0 is 160000, 18.4 is 180004.
+
+    Derived rather than catalogued because the two have to agree. The catalogue is
+    generated from whichever server it was pointed at, so leaving this to it tells a
+    client the release of *that* server while `SHOW server_version` and the startup
+    ParameterStatus report pg_mimic's own -- and a client that gates a feature on the
+    number then acts on a version it is not talking to. `port` is the same story: the
+    catalogued 5432 is a fact about PostgreSQL's default, not about this listener.
+    """
+    head = version.split()[0] if version.split() else ""
+    parts = head.split(".")
+    try:
+        major = int(parts[0])
+        minor = int(parts[1]) if len(parts) > 1 else 0
+    except (IndexError, ValueError):
+        return ""
+    return str(major * 10000 + minor)
 
 
 def _show_statement(connection: Connection, name: str) -> Statement:
@@ -823,14 +854,39 @@ def _show_statement(connection: Connection, name: str) -> Statement:
     def rows() -> list[tuple]:
         # Read when the statement runs, not when it is parsed. A prepared SHOW is
         # parsed once and executed many times, and the setting moves under it --
-        # see #63.
-        if key in connection.state.session_vars:
-            return [(connection.state.session_vars[key],)]
-        if key in _DEFAULT_SETTINGS:
-            return [(_DEFAULT_SETTINGS[key](connection),)]
-        return [("",)]
+        # see #63. The same goes for whether the setting exists at all: a `SET
+        # app.x` between Parse and Execute turns this from an error into a value.
+        value = _setting_value(connection, key)
+        if value is None:
+            raise _unrecognized_setting(key)
+        return [(value,)]
 
     return StaticStatement(f"SHOW {name}", [ResultColumn(key, TEXT)], rows)
+
+
+def _show_all_statement(connection: Connection) -> Statement:
+    """Every parameter this connection can see, in Postgres's three columns.
+
+    Answered from the catalogue plus whatever the connection has set. Before there
+    was a catalogue this read as a parameter named "all" and returned one bogus
+    empty row; once unknown names started erroring it became a 42704, which is worse
+    for the tools that run it on connect.
+    """
+    columns = [ResultColumn("name", TEXT), ResultColumn("setting", TEXT), ResultColumn("description", TEXT)]
+
+    def rows() -> list[tuple]:
+        names = set(settings_catalog.SETTINGS) | set(_DEFAULT_SETTINGS)
+        names |= set(connection.state.session_vars) | set(connection.state.known_settings)
+        found = []
+        for name in sorted(names):
+            value = _setting_value(connection, name)
+            if value is None:
+                continue
+            entry = settings_catalog.SETTINGS.get(name)
+            found.append((name, value, entry["short_desc"] if entry else ""))
+        return found
+
+    return StaticStatement("SHOW ALL", columns, rows)
 
 
 _SESSION_NULLARY_FUNCS = {
@@ -842,14 +898,61 @@ _SESSION_NULLARY_FUNCS = {
 }
 
 
-def _setting_value(connection: Connection, key: str) -> str:
-    """Current value of a setting. Unknown settings read as empty rather than
-    failing, matching what SHOW already does for them."""
+def _setting_value(connection: Connection, key: str) -> str | None:
+    """Current value of a setting, or None if this connection has never heard of
+    the name at all -- which every caller turns into 42704 or NULL as its own
+    semantics require.
+
+    The three states are Postgres's, not an invention here. A name is *known* if
+    it is one pg_mimic answers for itself (`_DEFAULT_SETTINGS`), one of the ~400
+    a real server is born knowing (`settings_catalog`), or one this connection has
+    written; a known name with no current override reads as its default, or as the
+    empty string if it never had one; an unknown one does not read at all. What
+    makes the middle state worth tracking is
+    `current_setting('app.tenant', true) IS NULL`, the usual row-level-security
+    probe for "was this ever set?" -- answering it with an empty string sends the
+    caller down the wrong branch silently. See #32.
+
+    Order is Postgres's too. The catalog default outranks `known_settings` because
+    RESET means different things to the two kinds of name: `SET work_mem = '8MB';
+    RESET work_mem` reads back 4MB, its default, while the same pair on `app.x`
+    reads back empty. Only a name with no default falls through to the blank.
+    """
     if key in connection.state.session_vars:
         return connection.state.session_vars[key]
     if key in _DEFAULT_SETTINGS:
         return _DEFAULT_SETTINGS[key](connection)
-    return ""
+    catalogued = settings_catalog.default(key)
+    if catalogued is not None:
+        return catalogued
+    if key in connection.state.known_settings:
+        return ""  # written once, since reset: PG keeps the name and blanks the value
+    return None
+
+
+def _unrecognized_setting(name: str) -> PgError:
+    """Postgres's own wording, quoted name included -- clients match on it."""
+    return PgError(UNDEFINED_OBJECT, f'unrecognized configuration parameter "{name}"')
+
+
+def _missing_ok(node: exp.Expression) -> bool | None:
+    """`current_setting`'s second argument, or None if it isn't a boolean this can
+    read statically -- a column reference or a parameter, say, which belongs to
+    the session rather than here.
+
+    Quoted spellings count: the argument is `boolean`, so Postgres coerces the
+    unknown-typed literal in `current_setting('x', 't')` and means the same thing
+    by it -- measured on PostgreSQL 18.
+    """
+    if isinstance(node, exp.Boolean):
+        return bool(node.this)
+    if isinstance(node, exp.Literal) and node.is_string:
+        text = str(node.this).strip().lower()
+        if text in ("t", "true", "y", "yes", "on", "1"):
+            return True
+        if text in ("f", "false", "n", "no", "off", "0"):
+            return False
+    return None
 
 
 def _literal_text(node: exp.Expression) -> str | None:
@@ -861,6 +964,34 @@ def _literal_text(node: exp.Expression) -> str | None:
     if isinstance(node, exp.Boolean):
         return "on" if node.this else "off"
     return None
+
+
+def _current_setting_literal(connection: Connection, arguments: list[exp.Expression]) -> exp.Expression | None:
+    """What `current_setting(name[, missing_ok])` reads as, or None if the call
+    isn't one this can answer statically.
+
+    The flag is the whole point of the two-argument form: true asks for NULL where
+    the one-argument form raises 42704. A NULL flag makes the call NULL whatever
+    the setting is -- `current_setting(text, bool)` is strict, so the name is never
+    looked at, and PostgreSQL 18 answers NULL even for `work_mem`.
+
+    The name is folded but not trimmed, because Postgres matches GUCs
+    case-insensitively and `current_setting('  work_mem  ')` is still an error there.
+    """
+    raw = str(arguments[0].this)
+    missing_ok: bool | None = False
+    if len(arguments) > 1:
+        if isinstance(arguments[1], exp.Null):
+            return exp.Null()
+        missing_ok = _missing_ok(arguments[1])
+        if missing_ok is None:
+            return None
+    value = _setting_value(connection, raw.lower())
+    if value is not None:
+        return exp.Literal.string(value)
+    if missing_ok:
+        return exp.Null()
+    raise _unrecognized_setting(raw)
 
 
 def _substitute_session_functions(
@@ -889,8 +1020,10 @@ def _substitute_session_functions(
     for node in list(expr.find_all(exp.Anonymous)):
         name = node.this.lower() if isinstance(node.this, str) else ""
         if name == "current_setting" and node.expressions and isinstance(node.expressions[0], exp.Literal):
-            key = str(node.expressions[0].this).lower()
-            node.replace(exp.Literal.string(_setting_value(connection, key)))
+            replacement = _current_setting_literal(connection, node.expressions)
+            if replacement is None:
+                continue  # a missing_ok we can't read -- leave it for the session
+            node.replace(replacement)
             substitutions += 1
         elif name == "set_config" and len(node.expressions) >= 2 and isinstance(node.expressions[0], exp.Literal):
             key = str(node.expressions[0].this).lower()
@@ -922,7 +1055,17 @@ def _apply_set_config(connection: Connection, key: str, value: str | None, local
 
     Every write lands in `session_vars`, which is what SHOW reads. A write that is
     not `SET LOCAL` also lands in `committed_vars`, which is what survives COMMIT.
+    Naming a setting is also what makes it exist: `known_settings` records the name
+    for good, so a RESET leaves it readable-but-blank rather than unrecognised --
+    unless it has a built-in default, which outranks the blank (see `_setting_value`).
+
+    That reaches only the names this module handles. A dotted custom GUC never
+    arrives here at all -- `_SETTING_NAME` excludes the dot on purpose, so
+    `SET app.tenant = 'acme'` falls through to the session -- and so does not become
+    known. `current_setting('app.tenant', true)` is therefore still NULL after one,
+    which is the gap `Session.set_parameter()` closes (#35).
     """
+    connection.state.known_settings.add(key)
     for target in (connection.state.session_vars, connection.state.committed_vars):
         if value is None:
             target.pop(key, None)

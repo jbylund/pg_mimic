@@ -436,6 +436,19 @@ before it ever reaches your `Session`, so real clients/ORMs/`psql` work without 
   can keep.
 - Session functions: `SELECT version()`, `current_user`, `current_database()`, `current_setting('x')`,
   `set_config()`, `pg_backend_pid()` — things only the connection can answer.
+
+  A setting nothing has ever set does not exist, as in real Postgres: `SHOW never.set` and
+  `current_setting('never.set')` raise `42704`, while `current_setting('never.set', true)` is `NULL`
+  — which is what `current_setting('app.tenant', true) IS NULL`, the usual row-level-security probe
+  for "was this ever set?", is actually asking. A name pg_mimic answers itself stays known once set,
+  and reads blank through `RESET`, `DISCARD ALL` and a rolled-back transaction, the same as there;
+  one with a built-in default reads that default back instead, so `SET work_mem = '8MB'; RESET
+  work_mem` is `4MB`, again as there.
+
+  A *dotted* name is the exception worth knowing about. `SET app.tenant = 'acme'` is passed through
+  to your session rather than answered here, so pg_mimic never sees the write and
+  `current_setting('app.tenant', true)` stays `NULL` afterwards. A session that wants the probe to
+  answer has to record the value itself until `Session.set_parameter()` lands.
 - asyncpg's type introspection, so it can build codecs for array and other non-builtin types.
 - `information_schema.tables` / `information_schema.columns`, and the slice of `pg_catalog` psql's
   `\dt`, `\d <table>` and `\dn` read — both built from your `Session.schema()`.

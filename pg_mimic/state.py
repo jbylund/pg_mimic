@@ -54,6 +54,19 @@ class SessionState:
     # the last write and the two dicts differ by lifetime rather than by scope.
     committed_vars: dict[str, str] = field(default_factory=dict)
 
+    # Every setting name this connection has ever written, whether or not the
+    # write survived. Postgres knows its built-in GUCs from birth and learns a
+    # custom (dotted) one the first time a session writes it; from then on the
+    # name reads back as the empty string rather than erroring, which is what
+    # tells `current_setting('app.tenant', true) IS NULL` apart from "set to
+    # nothing". Measured on PostgreSQL 18, the knowledge outlives everything that
+    # drops the *value*: RESET, RESET ALL, DISCARD ALL, and rollback of the
+    # transaction that did the setting. Hence a plain set, untouched by reset()
+    # and absent from the scope frames below. A session that owns settings of its
+    # own -- or would simply rather answer blanks than errors -- registers them
+    # here, and they read back like any other.
+    known_settings: set[str] = field(default_factory=set)
+
     # One frame per open fork point -- the transaction itself, then one per
     # savepoint -- holding both dicts as they stood when it opened. Postgres keeps
     # a stack per setting instead; with a handful of settings, copying the dicts
@@ -70,7 +83,8 @@ class SessionState:
     savepoints: list[str] = field(default_factory=list)
 
     def reset(self) -> None:
-        """What `DISCARD ALL` does: forget everything but who is connected."""
+        """What `DISCARD ALL` does: forget everything but who is connected -- and
+        which settings this connection has heard of, which real Postgres keeps."""
         self.session_vars.clear()
         self.committed_vars.clear()
         self._scopes.clear()

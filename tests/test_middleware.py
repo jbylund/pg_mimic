@@ -8,6 +8,7 @@ emulation it delegates to.
 from __future__ import annotations
 
 import psycopg
+import pytest
 from conftest import ServerThread
 
 from pg_mimic import PgServer, ResultColumn, Session, StaticStatement, middleware
@@ -184,14 +185,93 @@ def test_set_config_null_resets_the_setting(conn, mock_session):
         assert cur.fetchone() == ('"$user", public',)
 
 
-def test_current_setting_of_an_unknown_setting_is_empty(conn, mock_session):
-    """Unknown settings read as empty rather than falling through to the session,
-    matching what SHOW already does -- a fall-through here is what made a client
-    retry against a session that can't answer connection questions."""
+def test_current_setting_of_an_unknown_setting_raises(conn, mock_session):
+    """A name nothing has ever set doesn't exist, and real Postgres says so rather
+    than reading as empty (#32). Still answered here rather than falling through:
+    a fall-through is what made a client retry against a session that can't answer
+    connection questions."""
     with conn.cursor() as cur:
-        cur.execute("SELECT current_setting('some.unknown.guc')")
-        assert cur.fetchone() == ("",)
+        with pytest.raises(psycopg.errors.UndefinedObject) as excinfo:
+            cur.execute("SELECT current_setting('some.unknown.guc')")
+        assert excinfo.value.sqlstate == "42704"
+        assert 'unrecognized configuration parameter "some.unknown.guc"' in str(excinfo.value)
     assert mock_session.queries == []
+
+
+def test_current_setting_missing_ok_is_null_for_an_unknown_setting(conn, mock_session):
+    """`current_setting('app.tenant', true) IS NULL` is how row-level-security code
+    asks "was this ever set?". Answering it with the empty string sends the caller
+    down the wrong branch, silently -- the bug in #32."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT current_setting('app.tenant', true) IS NULL")
+        assert cur.fetchone() == (True,)
+
+        cur.execute("SELECT current_setting('app.tenant', true)")
+        assert cur.fetchone() == (None,)
+
+        # A quoted flag is the same flag: the argument is boolean, so Postgres
+        # coerces the literal.
+        cur.execute("SELECT current_setting('app.tenant', 't') IS NULL")
+        assert cur.fetchone() == (True,)
+    assert mock_session.queries == []
+
+
+def test_current_setting_missing_ok_false_still_raises(conn, mock_session):
+    with conn.cursor() as cur:
+        with pytest.raises(psycopg.errors.UndefinedObject) as excinfo:
+            cur.execute("SELECT current_setting('app.tenant', false)")
+        assert excinfo.value.sqlstate == "42704"
+    assert mock_session.queries == []
+
+
+def test_current_setting_with_a_null_flag_is_null(conn, mock_session):
+    """`current_setting(text, bool)` is strict, so a NULL flag makes the call NULL
+    without the setting being looked at -- true even of a setting that exists."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT current_setting('search_path', NULL) IS NULL")
+        assert cur.fetchone() == (True,)
+    assert mock_session.queries == []
+
+
+def test_current_setting_of_a_setting_that_was_set_is_never_null(conn, mock_session):
+    """The other half of the probe: setting a name is what makes it exist, and it
+    goes on existing after a RESET blanks it -- measured against PostgreSQL 18,
+    where a custom GUC stays known for the life of the session."""
+    with conn.cursor() as cur:
+        cur.execute("SET mytenant TO 'acme'")
+        cur.execute("SELECT current_setting('mytenant', true)")
+        assert cur.fetchone() == ("acme",)
+
+        cur.execute("RESET mytenant")
+        cur.execute("SELECT current_setting('mytenant', true) IS NULL, current_setting('mytenant')")
+        assert cur.fetchone() == (False, "")
+    assert mock_session.queries == []
+
+
+def test_a_dotted_custom_guc_is_unknown_here_because_the_session_owns_it(conn, mock_session):
+    """The boundary this change runs into: a dotted name's SET goes to the session
+    (test_custom_gucs_reach_the_session), so the connection genuinely has not seen
+    it and says so. Reading it back as empty is what #32 is about -- an RLS probe
+    told "set, to nothing" takes the wrong branch in silence, where NULL and 42704
+    both fail where someone will look. Once `Session.set_parameter()` lands (#35)
+    the session can register the name and these become answers."""
+    with conn.cursor() as cur:
+        cur.execute("SET app.tenant_id = 5")
+        with pytest.raises(psycopg.errors.UndefinedObject):
+            cur.execute("SHOW app.tenant_id")
+        cur.execute("SELECT current_setting('app.tenant_id', true) IS NULL")
+        assert cur.fetchone() == (True,)
+
+
+def test_current_setting_with_an_unreadable_flag_falls_through(conn, mock_session):
+    """A flag that isn't a literal isn't ours to evaluate -- the same rule
+    set_config() follows for a value it can't read."""
+    mock_session.columns = [ResultColumn.for_type("v", str)]
+    mock_session.rows = [("from the session",)]
+    with conn.cursor() as cur:
+        cur.execute("SELECT current_setting('app.tenant', 'maybe')")
+        assert cur.fetchall() == [("from the session",)]
+    assert [sql for sql, _params in mock_session.queries] == ["SELECT current_setting('app.tenant', 'maybe')"]
 
 
 async def test_set_config_applies_at_execute_not_parse():
