@@ -421,7 +421,7 @@ def _transaction_statement(connection: Connection, tag: str) -> Statement:
         if not redundant_begin:
             # Every savepoint belongs to the transaction that opened it, so a new
             # or finished transaction block starts with an empty stack either way.
-            connection.savepoints.clear()
+            connection.state.savepoints.clear()
 
     return StaticStatement(tag, None, [], on_execute)
 
@@ -449,10 +449,10 @@ def _savepoint_statement(connection: Connection, sql: str, kind: str, name: str)
         if kind == "SAVEPOINT":
             # Repeating a name is legal: the new savepoint shadows the old one,
             # which is why this is a stack and not a set.
-            connection.savepoints.append(name)
+            connection.state.savepoints.append(name)
             return
 
-        stack = connection.savepoints
+        stack = connection.state.savepoints
         try:
             index = len(stack) - 1 - stack[::-1].index(name)
         except ValueError:
@@ -476,10 +476,11 @@ def _discard_statement(connection: Connection, sql: str, kind: str) -> Statement
         # the narrower forms are allowed there, hence the check being in here.
         if connection.tx_status != b"I":
             raise PgError(ACTIVE_SQL_TRANSACTION, "DISCARD ALL cannot run inside a transaction block")
+        # _reset_all first, because it does what reset() cannot: it reports each
+        # changed setting back to the client. reset() then clears the rest of the
+        # DISCARD ALL surface (and the settings again, by then already empty).
         _reset_all(connection)
-        connection.statements.clear()
-        connection.portals.clear()
-        connection.savepoints.clear()
+        connection.state.reset()
 
     return StaticStatement(sql, None, [], on_execute)
 
@@ -494,8 +495,8 @@ def _deallocate_statement(connection: Connection, sql: str, raw_name: str) -> St
 
     def on_execute() -> None:
         if discard_every:
-            connection.statements.clear()
-        elif connection.statements.pop(name, None) is None:
+            connection.state.statements.clear()
+        elif connection.state.statements.pop(name, None) is None:
             raise PgError(INVALID_SQL_STATEMENT_NAME, f'prepared statement "{name}" does not exist')
 
     return StaticStatement(sql, None, [], on_execute)
@@ -602,8 +603,8 @@ def _reset_all_statement(connection: Connection, sql: str) -> Statement:
 def _reset_all(connection: Connection) -> None:
     """Drop every SET this connection has made. Reported settings are reported
     again on the way out, at whatever value they revert to."""
-    names = list(connection.session_vars)
-    connection.session_vars.clear()
+    names = list(connection.state.session_vars)
+    connection.state.session_vars.clear()
     for name in names:
         _report_setting(connection, name)
 
@@ -659,8 +660,8 @@ _DEFAULT_SETTINGS = {
 
 def _show_statement(connection: Connection, name: str) -> Statement:
     key = _setting_name(name)
-    if key in connection.session_vars:
-        value = connection.session_vars[key]
+    if key in connection.state.session_vars:
+        value = connection.state.session_vars[key]
     elif key in _DEFAULT_SETTINGS:
         value = _DEFAULT_SETTINGS[key](connection)
     else:
@@ -680,8 +681,8 @@ _SESSION_NULLARY_FUNCS = {
 def _setting_value(connection: Connection, key: str) -> str:
     """Current value of a setting. Unknown settings read as empty rather than
     failing, matching what SHOW already does for them."""
-    if key in connection.session_vars:
-        return connection.session_vars[key]
+    if key in connection.state.session_vars:
+        return connection.state.session_vars[key]
     if key in _DEFAULT_SETTINGS:
         return _DEFAULT_SETTINGS[key](connection)
     return ""
@@ -755,9 +756,9 @@ def _apply_set_config(connection: Connection, key: str, value: str | None) -> No
     """Apply one setting change, from SET/RESET or from set_config(). None means
     "back to the built-in default", i.e. forget the override."""
     if value is None:
-        connection.session_vars.pop(key, None)
+        connection.state.session_vars.pop(key, None)
     else:
-        connection.session_vars[key] = value
+        connection.state.session_vars[key] = value
     _report_setting(connection, key)
 
 

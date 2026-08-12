@@ -26,6 +26,7 @@ from abc import ABC, abstractmethod
 from typing import Any, AsyncIterable, AsyncIterator, Awaitable, Iterable, Sequence
 
 from .results import ResultColumn
+from .state import SessionState
 from .types import TEXT
 
 Row = tuple
@@ -234,6 +235,13 @@ class Session(BaseSession):
     # class-definition time. An explicit () means "no middleware at all".
     _connection: Any = None
     middleware: Sequence[Any] | None = None
+
+    #: The connection's session state -- settings, prepared statements, portals,
+    #: savepoints, and who is connected. Assigned by the framework before init()
+    #: runs, so an override may use it without calling super(). Read what the
+    #: middleware decided (`self.state.session_vars["search_path"]`), or manage it
+    #: yourself if you set `middleware = ()`. See pg_mimic.state.
+    state: SessionState = None  # type: ignore[assignment]
 
     async def init(self, connection: Any) -> None:
         self._connection = connection

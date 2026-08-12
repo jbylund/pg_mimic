@@ -28,6 +28,7 @@ from .messages import TARGET_STATEMENT, FieldSpec, ParsedBind, ParsedParse
 from .middleware import allowed_in_failed_transaction
 from .results import ResultColumn, encode_row, format_code_for
 from .session import BaseSession, Row, Session, Statement
+from .state import SessionState
 from .stream import ConnectionClosed, PgStream
 from .types import decode_binary_param, decode_text_param
 
@@ -119,17 +120,19 @@ class Connection:
         self.username = startup_params.get("user", "")
         self.database = startup_params.get("database", self.username)
 
+        # Everything `DISCARD ALL` would reset, shared with the session. See
+        # pg_mimic.state; the wire machinery below deliberately stays here.
+        self.state = SessionState(
+            username=self.username,
+            database=self.database,
+            application_name=startup_params.get("application_name", ""),
+        )
+
         self.tx_status = b"I"
-        self.session_vars: dict[str, str] = {}
-        self.statements: dict[str, Statement] = {}
-        self.portals: dict[str, PortalEntry] = {}
         self._ignore_until_sync = False
         self._current_task: asyncio.Task | None = None
-
-        # Session state the middleware owns but only the connection can carry:
-        # the open savepoint names (innermost last) and the ParameterStatus
-        # reports a GUC_REPORT change owes the client. See report_parameter().
-        self.savepoints: list[str] = []
+        # The ParameterStatus reports a GUC_REPORT change owes the client, which
+        # only the connection can deliver. See report_parameter().
         self._pending_parameter_status: dict[str, str] = {}
 
     def request_cancel(self) -> None:
@@ -165,6 +168,10 @@ class Connection:
                 # the whole middleware chain (it fell back to always
                 # constructing a bare CallbackStatement instead).
                 self.session._connection = self
+                # Same reasoning for the shared state: assigned here rather than
+                # handed to init(), so a session that overrides init() without
+                # calling super() still has it -- and has it before init() runs.
+                self.session.state = self.state
             await self.session.init(self)
             await self._command_loop()
         except ConnectionClosed:
@@ -333,12 +340,12 @@ class Connection:
     async def _handle_parse(self, parsed: ParsedParse) -> None:
         param_oids: list[int | None] = [oid if oid != 0 else None for oid in parsed.param_oids]
         statement = await self.session.prepare(parsed.sql, param_oids)
-        self.statements[parsed.statement_name] = statement
+        self.state.statements[parsed.statement_name] = statement
         self.stream.write(messages.make_parse_complete())
 
     def _get_statement(self, name: str) -> Statement:
         try:
-            return self.statements[name]
+            return self.state.statements[name]
         except KeyError:
             raise PgError(INVALID_SQL_STATEMENT_NAME, f'prepared statement "{name}" does not exist') from None
 
@@ -351,7 +358,7 @@ class Connection:
         ]
         portal = statement.bind(text_params)
         columns = await statement.describe()
-        self.portals[parsed.portal_name] = PortalEntry(portal, columns, statement.sql, parsed.result_format_codes)
+        self.state.portals[parsed.portal_name] = PortalEntry(portal, columns, statement.sql, parsed.result_format_codes)
         self.stream.write(messages.make_bind_complete())
 
     def _decode_param(self, value: bytes | None, format_code: int, param_oids: list[int | None], index: int) -> Any:
@@ -373,7 +380,7 @@ class Connection:
 
     def _get_portal(self, name: str) -> PortalEntry:
         try:
-            return self.portals[name]
+            return self.state.portals[name]
         except KeyError:
             raise PgError(INVALID_SQL_STATEMENT_NAME, f'portal "{name}" does not exist') from None
 
@@ -424,9 +431,9 @@ class Connection:
 
     async def _handle_close(self, parsed) -> None:
         if parsed.kind == TARGET_STATEMENT:
-            self.statements.pop(parsed.name, None)
+            self.state.statements.pop(parsed.name, None)
         else:
-            self.portals.pop(parsed.name, None)
+            self.state.portals.pop(parsed.name, None)
         self.stream.write(messages.make_close_complete())
 
     # --- COPY sub-protocol -----------------------------------------------------------

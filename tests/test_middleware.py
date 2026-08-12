@@ -11,6 +11,7 @@ import psycopg
 from conftest import ServerThread
 
 from pg_mimic import PgServer, ResultColumn, Session, StaticStatement, middleware
+from pg_mimic.state import SessionState
 
 
 class ForgetfulSession(Session):
@@ -199,7 +200,9 @@ async def test_set_config_applies_at_execute_not_parse():
 
     class FakeConnection:
         def __init__(self):
-            self.session_vars = {}
+            # The real thing: SessionState needs no socket, so a fake connection
+            # carries the same state object a live one does.
+            self.state = SessionState(username="u", database="d")
             self.database = "d"
             self.username = "u"
             self.pid = 1
@@ -213,10 +216,61 @@ async def test_set_config_applies_at_execute_not_parse():
 
     statement = await middleware.session_functions(ctx)
     assert statement is not None
-    assert connection.session_vars == {}, "Parse must not have applied it yet"
+    assert connection.state.session_vars == {}, "Parse must not have applied it yet"
 
     portal = statement.bind([])
-    assert connection.session_vars == {}, "Bind must not have applied it either"
+    assert connection.state.session_vars == {}, "Bind must not have applied it either"
 
     await portal.execute(0)
-    assert connection.session_vars == {"a": "b"}
+    assert connection.state.session_vars == {"a": "b"}
+
+
+def test_a_session_reads_the_state_the_middleware_owns():
+    """The point of the shared state: SET is answered by the middleware, and the
+    session can still see what it decided without a hook and without reaching
+    into the Connection."""
+
+    class Peeking(Session):
+        seen: str | None = None
+
+        async def describe(self, sql, param_oids):
+            return [ResultColumn.for_type("search_path", str)]
+
+        async def query(self, sql, params):
+            yield (self.state.session_vars.get("search_path", ""),)
+
+    server = PgServer(session_factory=Peeking)
+    thread = ServerThread(server)
+    port = thread.start()
+    try:
+        with psycopg.Connection.connect(f"host=127.0.0.1 port={port} user=test dbname=test", autocommit=True) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SET search_path TO myschema")  # answered by the middleware
+                cur.execute("SELECT whatever")  # reaches the session, which reads it back
+                assert cur.fetchall() == [("myschema",)]
+    finally:
+        thread.stop()
+
+
+def test_state_is_populated_even_if_session_init_skips_super():
+    """Assigned by the framework rather than delivered through init(), for the
+    same reason _connection is -- see ForgetfulSession above."""
+
+    class Forgetful(Session):
+        async def init(self, connection):
+            pass
+
+        async def describe(self, sql, param_oids):
+            return [ResultColumn.for_type("who", str)]
+
+        async def query(self, sql, params):
+            yield (f"{self.state.username}/{self.state.database}",)
+
+    server = PgServer(session_factory=Forgetful)
+    thread = ServerThread(server)
+    port = thread.start()
+    try:
+        with psycopg.Connection.connect(f"host=127.0.0.1 port={port} user=alice dbname=shop", autocommit=True) as conn:
+            assert conn.execute("SELECT anything").fetchall() == [("alice/shop",)]
+    finally:
+        thread.stop()
