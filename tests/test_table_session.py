@@ -401,6 +401,90 @@ def test_bare_list_and_dict_declarations_are_refused_as_ever():
         TableSession({"docs": [{"body": {"a": 1}}]}, columns={"docs": {"body": dict}})
 
 
+# --- identifier folding --------------------------------------------------------------
+#
+# A dict key is the identifier as written, so it is what a *quoted* reference
+# matches, and an unquoted reference folds to lower case before anything looks it
+# up. Every case below was run against PostgreSQL 18 first.
+
+MIXED_CASE = {"Users": [{"Id": 1, "userName": "alice"}]}
+
+
+@pytest.fixture
+def mixed_conn():
+    with serve_in_thread(lambda: TableSession(MIXED_CASE)) as server:
+        with psycopg.Connection.connect(server.dsn(), autocommit=True) as conn:
+            yield conn
+
+
+@pytest.mark.parametrize(argnames=["name"], argvalues=[("users",), ("Users",), ("USERS",), ('"users"',)])
+def test_a_lower_case_table_is_found_however_the_query_capitalises_it(conn, name):
+    """The case that will actually be hit: SQL written with capitalised table
+    names, which Postgres folds down to the lower-case relation."""
+    assert conn.execute(f"SELECT count(*) FROM {name}").fetchone() == (2,)
+
+
+def test_a_quoted_name_does_not_reach_a_lower_case_table(conn):
+    """`FROM "Users"` is a different relation from `users`, and Postgres says so
+    rather than resolving it -- 42P01, not a column complaint from further in."""
+    with pytest.raises(psycopg.errors.UndefinedTable, match='relation "Users" does not exist'):
+        conn.execute('SELECT id FROM "Users"')
+
+
+@pytest.mark.parametrize(argnames=["column"], argvalues=[("name",), ("Name",), ("NAME",), ('"name"',)])
+def test_a_lower_case_column_is_found_however_the_query_capitalises_it(conn, column):
+    assert conn.execute(f"SELECT {column} FROM users ORDER BY id").fetchall() == [("alice",), ("bob",)]
+
+
+def test_a_quoted_name_does_not_reach_a_lower_case_column(conn):
+    with pytest.raises(psycopg.errors.UndefinedColumn):
+        conn.execute('SELECT "Name" FROM users')
+
+
+def test_a_mixed_case_table_is_reached_by_its_quoted_name(mixed_conn):
+    """#42: the key `Users` is what `CREATE TABLE "Users"` makes, so the quoted
+    reference is the one that finds it -- and finds its mixed-case columns too."""
+    cursor = mixed_conn.execute('SELECT "Id", "userName" FROM "Users"')
+    assert cursor.fetchall() == [(1, "alice")]
+    assert _names(cursor) == ["Id", "userName"]
+
+
+def test_star_over_a_mixed_case_table_keeps_the_declared_names(mixed_conn):
+    """Not `could not derive a Postgres type for the output column '*'`: the star
+    expands against a schema whose columns the query can actually name."""
+    cursor = mixed_conn.execute('SELECT * FROM "Users"')
+    assert cursor.fetchall() == [(1, "alice")]
+    assert _names(cursor) == ["Id", "userName"]
+
+
+def test_an_unquoted_reference_does_not_reach_a_mixed_case_table(mixed_conn):
+    """It folds to `users`, which is not what was declared -- and the error names
+    the folded relation, as Postgres's does."""
+    with pytest.raises(psycopg.errors.UndefinedTable, match='relation "users" does not exist'):
+        mixed_conn.execute('SELECT "Id" FROM Users')
+
+
+def test_an_unquoted_reference_does_not_reach_a_mixed_case_column(mixed_conn):
+    with pytest.raises(psycopg.errors.UndefinedColumn):
+        mixed_conn.execute('SELECT Id FROM "Users"')
+
+
+def test_an_output_column_name_folds_like_any_other_identifier(conn):
+    cursor = conn.execute('SELECT id AS Alias, name AS "Kept" FROM users')
+    assert _names(cursor) == ["alias", "Kept"]
+
+
+def test_the_catalog_reports_the_declared_names(mixed_conn):
+    """Whatever the keys say, verbatim: `\\d` and information_schema describe the
+    table that was declared, not a folded version of it."""
+    rows = mixed_conn.execute("SELECT table_name FROM information_schema.tables").fetchall()
+    assert rows == [("Users",)]
+    rows = mixed_conn.execute(
+        "SELECT column_name, data_type FROM information_schema.columns WHERE table_name = 'Users' ORDER BY ordinal_position"
+    ).fetchall()
+    assert rows == [("Id", "bigint"), ("userName", "text")]
+
+
 # --- the derived schema itself -------------------------------------------------------
 
 

@@ -102,6 +102,13 @@ answers table-less `SELECT`s elsewhere in pg_mimic. `schema()` is derived from t
 too. Rows may be dicts (the executor's native shape) or tuples, in which case declare their names:
 `TableSession({"users": [(1, "alice")]}, columns={"users": ["id", "name"]})`.
 
+A dict key is the identifier **as written**, exactly as `CREATE TABLE` reads one. Postgres folds an
+unquoted name to lower case and preserves a quoted one, so `{"users": ...}` answers `FROM users`,
+`FROM Users` and `FROM "users"`, while `{"Users": ...}` answers only `FROM "Users"` and reports
+`FROM Users` as a missing relation. Column keys work the same way — a `{"userId": ...}` row is
+`SELECT "userId"`, not `SELECT userId`. Lower-case keys are the ones that behave the way hand-written
+SQL expects.
+
 ### Where the column types come from
 
 pg_mimic treats column shape as a **declared fact**, not something read off result rows (see
