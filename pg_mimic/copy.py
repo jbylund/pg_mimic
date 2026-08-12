@@ -29,7 +29,7 @@ from __future__ import annotations
 import codecs
 import re
 from dataclasses import dataclass
-from typing import Any, AsyncIterator, Sequence
+from typing import Any, AsyncIterator, Iterator, Sequence
 
 from .errors import (
     FEATURE_NOT_SUPPORTED,
@@ -71,16 +71,109 @@ class ParsedCopy:
     options: CopyOptions
 
 
+# --- tokenizing ---------------------------------------------------------------------
+
+# One literal-aware pass over COPY text, shared by the endpoint scan and the option
+# list. Only the shapes a COPY statement can hold need telling apart: a string
+# constant in either spelling, a quoted identifier, the punctuation the option grammar
+# gives meaning to, the `;` that ends a statement -- a token of its own, or `STDIN;`
+# is a word that isn't STDIN -- and everything else as a word.
+#
+# The two quoted forms earn their place by what they *stop*: the apostrophe in
+# `$$it's$$` or `"it's"` ends no literal, and a scanner that reads it as one has lost
+# its place for the rest of the statement.
+_TOKEN_RE = re.compile(
+    r"""\s*(?:(?P<string>'(?:[^']|'')*')
+             |(?P<dollar>\$(?P<tag>[A-Za-z_]\w*|)\$[\s\S]*?\$(?P=tag)\$)
+             |(?P<ident>"(?:[^"]|"")*")
+             |(?P<punct>[(),*;])
+             |(?P<word>[^\s(),*;'"]+))""",
+    re.VERBOSE,
+)
+
+
+def _tokens(text: str, position: int = 0) -> Iterator[tuple[str, str, int]]:
+    """(kind, value, end offset) for each token from `position`.
+
+    The offset is there for the endpoint scan, which hands the text on either side of
+    the endpoint to readers that want it exactly as the client spelled it.
+    """
+    while position < len(text):
+        # The alternation is required, so trailing whitespace alone fails to match.
+        match = _TOKEN_RE.match(text, position)
+        if match is None:
+            if text[position:].strip():
+                raise PgError(SYNTAX_ERROR, f"could not parse COPY options at {text[position:].strip()!r}")
+            return
+        position = match.end()
+        if match.group("string") is not None:
+            yield "string", match.group("string")[1:-1].replace("''", "'"), position
+        elif match.group("dollar") is not None:
+            # A dollar-quoted constant has no escapes at all: its body is itself.
+            fence = len(match.group("tag")) + 2
+            yield "string", match.group("dollar")[fence:-fence], position
+        elif match.group("punct") is not None:
+            yield "punct", match.group("punct"), position
+        else:
+            # A quoted identifier stays as it was written, quotes included: nothing
+            # downstream of here reads one as anything but a word it doesn't know.
+            yield "word", match.group("ident") or match.group("word"), position
+
+
 # --- statement recognition ----------------------------------------------------------
 
-# The endpoint is matched first because it's the single token that says this COPY
-# is a protocol exchange rather than a server-side file read -- the target and the
-# option list are both too free-form to lead with. The non-greedy target lets
-# `COPY (SELECT ... FROM t) TO STDOUT` backtrack past its own FROM.
-_COPY_STDIO_RE = re.compile(
-    r"^\s*COPY\s+(?P<target>.+?)\s+(?:FROM\s+STDIN|TO\s+(?P<stdout>STDOUT))\b(?P<options>.*?)\s*;?\s*$",
-    re.IGNORECASE | re.DOTALL,
-)
+# The endpoint -- FROM STDIN or TO STDOUT -- is what the statement is recognised by,
+# because it's the single token that says this COPY is a protocol exchange rather
+# than a server-side file read; the target and the option list are both too
+# free-form to lead with.
+_COPY_RE = re.compile(r"\s*COPY\s+", re.IGNORECASE)
+_ENDPOINTS = {("FROM", "STDIN"): DIRECTION_IN, ("TO", "STDOUT"): DIRECTION_OUT}
+
+
+def _find_endpoint(sql: str) -> tuple[str, str, str] | None:
+    """(direction, target text, option text), or None if `sql` has no endpoint.
+
+    Scanned through the tokenizer rather than matched against the flat statement,
+    because those words also occur where they are not the endpoint. Read flat,
+    `COPY (SELECT note FROM t WHERE note = 'copied from stdin') TO STDOUT` is a COPY
+    FROM STDIN whose target stops in the middle of a literal -- and that direction of
+    error is the costly one: a copy-out misread as a copy-in has already told the
+    client to start sending by the time anything downstream notices.
+
+    So only a keyword pair outside every literal and outside the parenthesised query
+    counts. Depth does for the query what literal awareness does for the string: the
+    FROM in `COPY (SELECT a FROM t) TO STDOUT` is the query's, not the statement's.
+    """
+    head = _COPY_RE.match(sql)
+    if head is None:
+        return None
+    depth = 0
+    previous: tuple[str, int] | None = None  # the last word at depth 0, and where it starts
+    try:
+        for kind, value, end in _tokens(sql, head.end()):
+            if kind == "word" and depth == 0:
+                if previous is not None and (direction := _ENDPOINTS.get((previous[0], value.upper()))) is not None:
+                    target = sql[head.end() : previous[1]].strip()
+                    # A COPY with no target at all is a syntax error, not ours to answer.
+                    return (direction, target, _strip_terminator(sql[end:])) if target else None
+                previous = (value.upper(), end - len(value))
+                continue
+            if kind == "punct":
+                depth += (value == "(") - (value == ")")
+            previous = None
+    except PgError:
+        # Text the tokenizer can't get through -- an unterminated literal -- is not a
+        # statement to claim. The session answering it is the harmless way to be
+        # wrong here, in the way that inviting a copy-in for it would not be.
+        return None
+    return None
+
+
+def _strip_terminator(options: str) -> str:
+    """The one `;` a client may leave on the end. Anything else trailing is left for
+    the option scanner to refuse."""
+    options = options.strip()
+    return options[:-1].strip() if options.endswith(";") else options
 
 
 def _split_outside_quotes(text: str, separator: str) -> list[str]:
@@ -124,16 +217,12 @@ def parse_copy(sql: str) -> ParsedCopy | None:
     instead would be worse than a clean error: the client is waiting for a
     CopyInResponse and would hang on whatever the session answered with.
     """
-    match = _COPY_STDIO_RE.match(sql)
-    if match is None:
+    found = _find_endpoint(sql)
+    if found is None:
         return None
-    table, columns = _parse_target(match.group("target"))
-    return ParsedCopy(
-        direction=DIRECTION_OUT if match.group("stdout") else DIRECTION_IN,
-        table=table,
-        columns=columns,
-        options=_parse_options(match.group("options")),
-    )
+    direction, target, options = found
+    table, columns = _parse_target(target)
+    return ParsedCopy(direction=direction, table=table, columns=columns, options=_parse_options(options))
 
 
 def _parse_target(target: str) -> tuple[str | None, list[str] | None]:
@@ -161,8 +250,6 @@ def _unquote_identifier(name: str) -> str:
 
 # --- option list scanning -----------------------------------------------------------
 
-_TOKEN_RE = re.compile(r"""\s*(?:(?P<string>'(?:[^']|'')*')|(?P<punct>[(),*])|(?P<word>[^\s(),*']+))""")
-
 # Every option name COPY accepts, whether or not pg_mimic implements it, split by
 # whether the name is followed by a value. Listing the ones we don't implement is
 # the point: FORCE_QUOTE or ENCODING silently dropped would change the bytes on
@@ -187,23 +274,7 @@ _BOOLEAN_WORDS = {"TRUE": True, "FALSE": False, "ON": True, "OFF": False, "1": T
 
 
 def _tokenize(text: str) -> list[tuple[str, str]]:
-    tokens: list[tuple[str, str]] = []
-    position = 0
-    while position < len(text):
-        # The alternation is required, so trailing whitespace alone fails to match.
-        match = _TOKEN_RE.match(text, position)
-        if match is None:
-            if text[position:].strip():
-                raise PgError(SYNTAX_ERROR, f"could not parse COPY options at {text[position:].strip()!r}")
-            break
-        position = match.end()
-        if match.group("string") is not None:
-            tokens.append(("string", match.group("string")[1:-1].replace("''", "'")))
-        elif match.group("punct") is not None:
-            tokens.append(("punct", match.group("punct")))
-        else:
-            tokens.append(("word", match.group("word")))
-    return tokens
+    return [(kind, value) for kind, value, _ in _tokens(text)]
 
 
 def _option_items(text: str) -> list[tuple[str, Any]]:
