@@ -1,27 +1,33 @@
-"""Runs PgServer in a dedicated background thread with its own event loop.
+"""The suite's own fixtures: a configurable MockSession, and the psycopg/asyncpg
+connections the tests drive it through.
 
-This matters for the sync psycopg test fixtures: if the server shared the
-same event loop as the (pytest-asyncio-managed) test loop, a blocking sync
-`psycopg.connect()` call from a plain sync fixture would deadlock -- nothing
-would be driving the server's loop while the sync call blocks waiting for a
-response. Running the server on its own thread/loop makes it independent of
-whatever the test thread is doing, sync or async, exactly like a real
-embedded mimic server would run in practice.
+The server itself comes from `pg_mimic.testing`, the shipped helpers, so this
+suite exercises the same code users get rather than a private copy of it. That
+module's docstring explains why the server runs on its own thread and loop.
+
+`MockSession` and `ServerThread` are re-exported for the tests that import them
+directly: several build their own PgServer (custom auth plugins, a session they
+keep a handle on) and want the thread around it without the context manager.
 """
 
 from __future__ import annotations
 
-import asyncio
 import re
-import threading
 
 import asyncpg
 import psycopg
 import pytest
 import pytest_asyncio
 
-from pg_mimic import PgError, PgServer, ResultColumn, Session
+from pg_mimic import PgError, ResultColumn, Session
 from pg_mimic.errors import UNDEFINED_TABLE
+from pg_mimic.testing import ServerThread, serve_in_thread
+
+# test_testing.py runs the fixture plugin in a nested pytest session to check the
+# fixtures it advertises actually work.
+pytest_plugins = ["pytester"]
+
+__all__ = ["MockSession", "ServerThread"]
 
 # pg_catalog isn't emulated, so a session fronting a real store would report the
 # table as missing. Saying so matters: a client that gets a plausible-but-wrong
@@ -59,45 +65,6 @@ class MockSession(Session):
             yield row
 
 
-class ServerThread:
-    def __init__(self, server: PgServer):
-        self.server = server
-        self.port: int | None = None
-        self._loop = asyncio.new_event_loop()
-        self._ready = threading.Event()
-        self._thread = threading.Thread(target=self._run, daemon=True)
-
-    def _run(self) -> None:
-        asyncio.set_event_loop(self._loop)
-        self._loop.run_until_complete(self.server.start_server(host="127.0.0.1", port=0))
-        self.port = self.server.sockets()[0].getsockname()[1]
-        self._ready.set()
-        try:
-            self._loop.run_until_complete(self.server.serve_forever())
-        except asyncio.CancelledError:
-            pass
-        finally:
-            pending = [t for t in self.server._tasks if not t.done()]
-            if pending:
-                # Cancel rather than await: a connection the test left open keeps
-                # its handler task alive forever, so gathering it would hang here
-                # until stop()'s join gives up -- five seconds and a leaked thread
-                # per test, for what looks like a passing test.
-                for task in pending:
-                    task.cancel()
-                self._loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
-
-    def start(self) -> int:
-        self._thread.start()
-        self._ready.wait()
-        return self.port
-
-    def stop(self) -> None:
-        self._loop.call_soon_threadsafe(self.server.close)
-        self._thread.join(timeout=5)
-        assert not self._thread.is_alive(), "server thread did not shut down -- a connection is still open"
-
-
 @pytest.fixture
 def mock_session():
     return MockSession()
@@ -105,19 +72,15 @@ def mock_session():
 
 @pytest.fixture
 def pg_server(mock_session):
-    server = PgServer(session_factory=lambda: mock_session)
-    thread = ServerThread(server)
-    thread.start()
-    try:
-        yield server, thread.port
-    finally:
-        thread.stop()
+    with serve_in_thread(lambda: mock_session) as server:
+        yield server
 
 
 @pytest.fixture
 def dsn(pg_server):
-    _server, port = pg_server
-    return f"host=127.0.0.1 port={port} user=test dbname=test"
+    # user/dbname are named rather than left at their defaults because tests assert
+    # on what current_user/current_database() report back.
+    return pg_server.dsn(user="test", dbname="test")
 
 
 @pytest_asyncio.fixture
@@ -143,8 +106,7 @@ async def apg_conn(pg_server):
     always requests binary results, where psycopg only does on request, so it
     exercises the binary path far harder.
     """
-    _server, port = pg_server
-    conn = await asyncpg.connect(host="127.0.0.1", port=port, user="test", database="test")
+    conn = await asyncpg.connect(host="127.0.0.1", port=pg_server.port, user="test", database="test")
     try:
         yield conn
     finally:
