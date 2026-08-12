@@ -38,7 +38,18 @@ jobs:
       - name: Install the sqlglot under test
         run: |
           if [ "${{ matrix.sqlglot }}" = "main" ]; then
-            uv pip install --system --upgrade "sqlglot @ git+https://github.com/tobymao/sqlglot@main"
+            # Cloned by hand rather than `uv pip install git+...`, because that runs
+            # `git submodule update --init` and sqlglot pins a submodule by SSH URL
+            # to a private repo (fivetran/sqlglot-integration-tests), which no
+            # runner can authenticate to. A plain clone leaves submodules alone, and
+            # that one is their integration suite -- not needed to build or import.
+            #
+            # --filter=blob:none, not --depth 1: a shallow clone carries no tags, so
+            # setuptools_scm cannot derive a version and produces 0.0.1.dev1, which
+            # then violates our own sqlglot floor. A blobless clone keeps every tag
+            # and is nearly as quick.
+            git clone --quiet --filter=blob:none https://github.com/tobymao/sqlglot "$RUNNER_TEMP/sqlglot-main"
+            uv pip install --system --upgrade "$RUNNER_TEMP/sqlglot-main"
           else
             uv pip install --system --upgrade sqlglot
           fi
