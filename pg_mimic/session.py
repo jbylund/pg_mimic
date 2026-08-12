@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import inspect
 from abc import ABC, abstractmethod
-from typing import Any, AsyncIterable, AsyncIterator, Awaitable, Iterable, Sequence
+from typing import Any, AsyncIterable, AsyncIterator, Awaitable, Callable, Iterable, Sequence
 
 from .results import ResultColumn
 from .state import SessionState
@@ -151,19 +151,28 @@ class CallbackStatement(Statement):
 
 class StaticStatement(Statement):
     """A Statement whose result is already fully known (SET/SHOW/BEGIN/static
-    SELECT/information_schema/...) -- no CallbackStatement/Session involved."""
+    SELECT/information_schema/...) -- no CallbackStatement/Session involved.
+
+    `rows` may be a list, or a callable returning one, and is normalised to a
+    callable here so there is only ever one kind of thing to run. Pass a callable
+    whenever the answer can change between Parse and Execute -- `SHOW x` and
+    `current_setting` both read state a later statement may move. A list is fixed
+    at build time, which is right for the simple protocol (it resolves per
+    execution) and wrong for a prepared one, which resolves once and executes many
+    times: the client would go on being told what was true at Parse. See #63.
+    """
 
     def __init__(
         self,
         sql: str,
         columns: list[ResultColumn] | None,
-        rows: list[Row],
+        rows: list[Row] | Callable[[], list[Row]],
         on_execute=None,
     ):
         self.sql = sql
         self.param_oids: list[int | None] = []
         self._columns = columns
-        self._rows = rows
+        self._rows: Callable[[], list[Row]] = rows if callable(rows) else lambda: rows
         self._on_execute = on_execute
 
     async def describe(self) -> list[ResultColumn] | None:
@@ -174,7 +183,7 @@ class StaticStatement(Statement):
 
 
 class StaticPortal(Portal):
-    def __init__(self, rows: list[Row], on_execute):
+    def __init__(self, rows: Callable[[], list[Row]], on_execute):
         self._rows = rows
         self._on_execute = on_execute
         self._row_source: AsyncIterator[Row] | None = None
@@ -183,7 +192,9 @@ class StaticPortal(Portal):
         if self._row_source is None:
             if self._on_execute is not None:
                 self._on_execute()
-            self._row_source = _rows_as_async_iter(self._rows)
+            # After on_execute, so a statement that both writes and reads back --
+            # `SELECT set_config('x', 'y', false)` -- reports the value it just set.
+            self._row_source = _rows_as_async_iter(self._rows())
         return await drain_rows(self._row_source, max_rows)
 
 
@@ -195,7 +206,7 @@ async def _rows_as_async_iter(rows: list[Row]) -> AsyncIterator[Row]:
 def statement_from_rows(
     sql: str,
     column_names: Iterable[str],
-    rows: list[Row],
+    rows: list[Row] | Callable[[], list[Row]],
     on_execute: Any = None,
 ) -> Statement:
     """A StaticStatement over rows some engine already produced.
@@ -205,8 +216,11 @@ def statement_from_rows(
     than guessed. Shared because that branch is easy to get subtly different in
     each copy.
     """
-    if rows:
-        columns = [ResultColumn.for_type(name, type(value)) for name, value in zip(column_names, rows[0])]
+    # A callable is called once here, because the column types can only come from
+    # real values -- and then passed through, so execution re-runs it.
+    sample = rows() if callable(rows) else rows
+    if sample:
+        columns = [ResultColumn.for_type(name, type(value)) for name, value in zip(column_names, sample[0])]
     else:
         columns = [ResultColumn(name, TEXT) for name in column_names]
     return StaticStatement(sql, columns, rows, on_execute)

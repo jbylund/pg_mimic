@@ -401,7 +401,7 @@ async def session_functions(ctx: MiddlewareContext) -> Statement | None:
     substituted, substitutions, on_execute = _substitute_session_functions(ctx.connection, expr)
     if not substitutions:
         return None
-    return _evaluate_select(substituted, expr, on_execute)
+    return _evaluate_select(substituted, expr, on_execute, connection=ctx.connection)
 
 
 async def static_select(ctx: MiddlewareContext) -> Statement | None:
@@ -819,13 +819,18 @@ _DEFAULT_SETTINGS = {
 
 def _show_statement(connection: Connection, name: str) -> Statement:
     key = _setting_name(name)
-    if key in connection.state.session_vars:
-        value = connection.state.session_vars[key]
-    elif key in _DEFAULT_SETTINGS:
-        value = _DEFAULT_SETTINGS[key](connection)
-    else:
-        value = ""
-    return StaticStatement(f"SHOW {name}", [ResultColumn(key, TEXT)], [(value,)])
+
+    def rows() -> list[tuple]:
+        # Read when the statement runs, not when it is parsed. A prepared SHOW is
+        # parsed once and executed many times, and the setting moves under it --
+        # see #63.
+        if key in connection.state.session_vars:
+            return [(connection.state.session_vars[key],)]
+        if key in _DEFAULT_SETTINGS:
+            return [(_DEFAULT_SETTINGS[key](connection),)]
+        return [("",)]
+
+    return StaticStatement(f"SHOW {name}", [ResultColumn(key, TEXT)], rows)
 
 
 _SESSION_NULLARY_FUNCS = {
@@ -932,10 +937,26 @@ def _evaluate_select(
     substituted: exp.Expression,
     original: exp.Select,
     on_execute: Callable[[], None] | None = None,
+    connection: Connection | None = None,
 ) -> Statement | None:
     try:
         result = sqlglot_execute(substituted, dialect="postgres")
     except Exception:
         return None  # not something we can statically evaluate -- fall through
 
-    return statement_from_rows(original.sql(dialect="postgres"), result.columns, [tuple(row) for row in result.rows], on_execute)
+    rows = [tuple(row) for row in result.rows]
+
+    def rows_again() -> list[tuple]:
+        # Substituted *and* evaluated afresh, because the substitution is where a
+        # session function reads connection state: `current_setting('x')` becomes a
+        # literal at that point, so deferring only the evaluation would still bake
+        # the value in at Parse. See #63.
+        again, _substitutions, _on_execute = _substitute_session_functions(connection, original)
+        return [tuple(row) for row in sqlglot_execute(again, dialect="postgres").rows]
+
+    return statement_from_rows(
+        original.sql(dialect="postgres"),
+        result.columns,
+        rows if connection is None else rows_again,
+        on_execute,
+    )

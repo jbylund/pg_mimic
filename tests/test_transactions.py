@@ -254,9 +254,11 @@ def _search_path(cur) -> str:
 
 @pytest.fixture
 def guc_conn(dsn, mock_session):
-    # prepare_threshold=None: a prepared SHOW answers with the value it had when it
-    # was parsed (#63), which would mask everything this file is checking.
-    with psycopg.Connection.connect(dsn, autocommit=True, prepare_threshold=None) as conn:
+    # prepare_threshold=1: every statement here goes through Parse/Bind/Execute, so
+    # these check the transactional rules on the *prepared* path too. Before #63 a
+    # prepared SHOW answered with the value it had when it was parsed, which would
+    # have masked the lot.
+    with psycopg.Connection.connect(dsn, autocommit=True, prepare_threshold=1) as conn:
         conn.execute("SET search_path TO base")
         yield conn
 
@@ -322,7 +324,7 @@ def test_a_rolled_back_setting_is_reported_to_the_client(dsn, mock_session):
     """A reported GUC that reverts owes the client a ParameterStatus just as one
     that changes does -- otherwise psycopg goes on decoding with the value the
     rolled-back transaction set."""
-    with psycopg.Connection.connect(dsn, autocommit=True, prepare_threshold=None) as conn:
+    with psycopg.Connection.connect(dsn, autocommit=True, prepare_threshold=1) as conn:
         assert conn.info.parameter_status("client_encoding") == "UTF8"
         conn.execute("BEGIN")
         conn.execute("SET client_encoding TO 'LATIN1'")
