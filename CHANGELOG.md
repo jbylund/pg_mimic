@@ -94,12 +94,13 @@ what shipped rather than what was written down at the time.
   anything else is `0A000` naming the statement, with `EXPLAIN` adding why (there
   is no planner behind the example, only sqlglot's executor). A set operation,
   which parses as a query whose first word is SELECT, says that it is the *shape*
-  that is uncovered rather than claiming SELECT is unsupported.
+  that is uncovered rather than claiming SELECT is unsupported. (#108)
 
 - `examples/git_sql.py` refused to serve a linked worktree or a submodule: it
   looked for a `.git` *directory*, and in both of those `.git` is a file pointing
   at the real one. It asks `git rev-parse` now, so it serves anything git itself
   calls a repository — which is what every collector in the file already assumed.
+  (#108)
 
 - `PgServer.run(port=0)` logged `listening on 127.0.0.1:0` instead of the port it
   actually bound. Port 0 means "any free one", and the port the kernel picks is the
