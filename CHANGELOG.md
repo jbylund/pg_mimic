@@ -38,6 +38,15 @@ what shipped rather than what was written down at the time.
 - `PREPARE` / `EXECUTE` / `DEALLOCATE` are answered by the middleware, against
   the same statement registry the extended query protocol uses. (#62)
 - `examples/git_sql.py`: a session that answers SQL over a git repository. (#37)
+- `pg_mimic.describe`: the machinery behind "column shape from a declared
+  schema, without executing anything" is now a module of its own rather than
+  something `TableSession` keeps to itself. `result_columns()` reads the columns
+  off a type-annotated query, `size_integer_literals()` gives an integer constant
+  the width Postgres gives it (run it *before* the annotator), and
+  `oid_for_declared_type()` — exported from `pg_mimic` alongside its Python-type
+  neighbour `oid_for_type()` — turns a `Session.schema()` type name (`"integer"`,
+  `"text[]"`) into an OID. Any session that declares a schema can answer
+  `describe()` with these instead of writing its own. (#88, #89)
 - Packaging: the distributions carry a `LICENSE` (MIT) and a PEP 561 `py.typed`
   marker, so a consumer's type checker reads pg_mimic's annotations instead of
   `Any`, and the PyPI page has classifiers and links back to the repository.
@@ -127,6 +136,12 @@ what shipped rather than what was written down at the time.
   that type instead of falling back to `text`, so `pg_attribute.atttypid` points
   at the array type a client joins `pg_type` on, and `\d+` reports its storage
   as extended. (#43)
+- `examples/git_sql.py` describes `select 3000000000` as `int8` and
+  `select 9223372036854775808` as `numeric`, rather than telling a binary client
+  `int4` and crashing its decoder (#40), and names an unaliased output column
+  `?column?` as Postgres does rather than `_col_0`. It had its own copy of the
+  derivation and never got those fixes; it goes through `pg_mimic.describe` now,
+  so it cannot fall behind again. (#88)
 
 ### Internal
 

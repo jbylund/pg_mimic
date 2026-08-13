@@ -188,6 +188,41 @@ because a Postgres array OID carries no dimensionality; that rides in each value
 Arrays work in both wire formats, and must be rectangular — a ragged list is rejected rather than
 silently reshaped, since Postgres has no wire representation for one.
 
+### Declaring a schema
+
+`schema()` returns `{table: {column: type_name}}`, where each type name is a SQL spelling Postgres
+itself uses — `"integer"`, `"character varying"`, `"text[]"`. `information_schema` and the
+`pg_catalog` slice psql's `\d` reads are built out of it (see
+[What's handled automatically](#whats-handled-automatically)), and so is `TableSession`'s answer to
+every `Describe`.
+
+`oid_for_declared_type()` is how one of those names becomes an OID, and the reason a session that
+declares a schema needs no type table of its own. Its neighbour `oid_for_type()` answers the same
+question about a *Python* type, which is what `ResultColumn.for_type` reads:
+
+```python
+from pg_mimic import oid_for_declared_type, oid_for_type
+
+oid_for_declared_type("integer")  # int4 — the SQL spelling a schema() declares
+oid_for_declared_type("text[]")  # text[] — any number of `[]`, arrays carrying no dimensionality
+oid_for_type(int)  # int8 — the Python type
+```
+
+`pg_mimic.describe` goes one step further and derives a whole query's column shape from the declared
+schema, without running it. Three steps, and the order is the part worth remembering:
+
+```python
+from sqlglot.optimizer.annotate_types import annotate_types
+from pg_mimic.describe import result_columns, size_integer_literals
+
+size_integer_literals(qualified)  # before the annotator, or `select 3000000000` describes as int4
+annotated = annotate_types(qualified, schema=my_schema, dialect="postgres")
+columns = result_columns(annotated, param_oids)
+```
+
+`TableSession` and [`examples/git_sql.py`](examples/git_sql.py) both answer `describe()` through
+this, which is what keeps them agreeing with each other and with Postgres.
+
 ### Bulk data: `COPY`
 
 `COPY ... FROM STDIN` and `COPY ... TO STDOUT` are the standard bulk path — `psql`'s `\copy`,

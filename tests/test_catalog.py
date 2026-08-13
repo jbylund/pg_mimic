@@ -183,9 +183,9 @@ _TABLE_SESSION_TYPE_NAMES = _names_table_session_emits()
     ids=sorted(_TABLE_SESSION_TYPE_NAMES),
 )
 def test_a_declared_type_maps_back_to_the_oid_it_was_named_from(declared, oid):
-    from pg_mimic.catalog import _oid_for_declared_type
+    from pg_mimic import oid_for_declared_type
 
-    assert _oid_for_declared_type(declared) == oid
+    assert oid_for_declared_type(declared) == oid
 
 
 def test_an_array_column_is_catalogued_as_the_array_type(conn, mock_session):

@@ -38,8 +38,9 @@ from sqlglot.executor import execute as sqlglot_execute
 from sqlglot.tokens import TokenType
 
 from . import settings_catalog
-from .catalog import _oid_for_declared_type, information_schema_statement, pg_catalog_statement
+from .catalog import information_schema_statement, pg_catalog_statement
 from .copy import copy_statement
+from .describe import oid_for_declared_type
 from .errors import (
     ACTIVE_SQL_TRANSACTION,
     INVALID_SAVEPOINT_SPECIFICATION,
@@ -391,7 +392,7 @@ async def prepared_statements(ctx: MiddlewareContext) -> Statement | None:
 
 async def _prepare_statement(ctx: MiddlewareContext, match: re.Match) -> Statement:
     name = _identifier(match.group(1))
-    declared = [_oid_for_declared_type(part) for part in _split_arguments(match.group(2) or "")]
+    declared = [oid_for_declared_type(part) for part in _split_arguments(match.group(2) or "")]
     inner = match.group(3)
 
     # Resolved now rather than in on_execute, which is synchronous -- and resolved
