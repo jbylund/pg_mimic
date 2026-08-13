@@ -27,12 +27,14 @@ from typing import TYPE_CHECKING
 from sqlglot import exp
 from sqlglot.errors import OptimizeError
 from sqlglot.executor import execute as sqlglot_execute
+from sqlglot.optimizer.annotate_types import annotate_types
+from sqlglot.optimizer.qualify import qualify
 
 from . import types as pg_types
 from .arrays import ARRAY_OID, is_array_oid
 from .catalog_data import INFORMATION_SCHEMA_SCHEMA, PG_CATALOG_SCHEMA
 from .catalog_rewrite import rewrite_for_executor
-from .describe import oid_for_declared_type
+from .describe import oid_for_declared_type, result_columns
 from .errors import FEATURE_NOT_SUPPORTED, UNDEFINED_COLUMN, PgError
 from .results import ResultColumn
 from .session import Statement, StaticStatement, statement_from_rows
@@ -434,6 +436,32 @@ def _undefined_column_message(error: OptimizeError) -> str:
     return f'column "{match.group(1)}" does not exist'
 
 
+def _declared_columns(expr: exp.Expression, schema: dict) -> list[ResultColumn] | None:
+    """Column shape from the catalog's declared schema, or None if it cannot be had.
+
+    `statement_from_rows` types each column from the *first row*, which is the only
+    place a session yielding bare rows can look. The catalog is not that: it builds
+    the schema before it builds the rows, and then dropped it here -- so a column
+    whose first value happened to be NULL described as text, and every later value
+    in it went out as a string. `information_schema.columns` made that easy to hit,
+    since the type-dependent columns are NULL for the columns that have no such
+    property. See #101.
+
+    This is the same route TableSession takes, against the same shared helpers, so
+    the catalog now answers the way the rest of the project claims column shape is
+    settled: from what is declared, never from what a query happened to return.
+
+    None means fall back. An expression the annotator cannot type is not an error
+    here -- first-row inference is what this replaced, and it remains better than
+    refusing a query the executor already answered.
+    """
+    try:
+        qualified = qualify(expr.copy(), schema=schema, dialect="postgres")
+        return result_columns(annotate_types(qualified, schema=schema, dialect="postgres"), [])
+    except Exception:
+        return None
+
+
 def _as_statement(expr: exp.Expression, schema: dict, tables: dict, *, strict: bool) -> Statement | None:
     """Run a catalog query, or decide what its failure means. See #39.
 
@@ -483,12 +511,25 @@ def _as_statement(expr: exp.Expression, schema: dict, tables: dict, *, strict: b
         )
         return _empty_result(expr)
 
-    return statement_from_rows(expr.sql(dialect="postgres"), result.columns, [tuple(row) for row in result.rows])
+    sql = expr.sql(dialect="postgres")
+    rows = [tuple(row) for row in result.rows]
+    declared = _declared_columns(expr, schema)
+    if declared is not None and len(declared) == len(result.columns):
+        return StaticStatement(sql, declared, rows)
+    return statement_from_rows(sql, result.columns, rows)
 
 
 async def _user_schema(connection: Connection) -> dict:
+    """What the session declares, or nothing -- never None.
+
+    `Session.schema()` returns None by default, and the `or {}` guarding that used
+    to bind to the else branch instead of the whole conditional, so a session that
+    did not override it crashed every catalog query with `'NoneType' object has no
+    attribute 'items'`. Nothing caught it because the sessions in this suite either
+    declare a schema or are TableSession, which always does.
+    """
     schema_fn = getattr(connection.session, "schema", None)
-    return (await schema_fn()) if schema_fn is not None else {} or {}
+    return ((await schema_fn()) if schema_fn is not None else {}) or {}
 
 
 async def information_schema_statement(connection: Connection, expr: exp.Select) -> Statement | None:
