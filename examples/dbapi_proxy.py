@@ -6,7 +6,7 @@ sqlite's dialect via sqlglot before running it.
     psql "host=127.0.0.1 port=5432 user=test dbname=test" -c "select * from users"
 """
 
-import asyncio
+import logging
 
 import sqlglot
 from sqlglot import exp
@@ -58,12 +58,7 @@ def params_for_describe(param_oids: list[int | None]) -> list[None]:
     return [None] * len(param_oids)
 
 
-async def main():
-    server = PgServer(session_factory=SqliteSession)
-    await server.start_server(host="127.0.0.1", port=5432)
-    print("pg_mimic listening on port 5432 (backed by an in-memory sqlite3 db)")
-    await server.serve_forever()
-
-
 if __name__ == "__main__":
-    asyncio.run(main())
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    logging.info("backed by an in-memory sqlite3 db")
+    PgServer(session_factory=SqliteSession).run()

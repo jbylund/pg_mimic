@@ -36,6 +36,7 @@ most of them. THE RULE above pushdown() is what keeps that safe.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import re
 import subprocess
@@ -734,16 +735,12 @@ def _as_literal(value) -> exp.Expression:
         return exp.Literal.string(str(value))
 
 
-async def main():
+if __name__ == "__main__":
     repo = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else ".")
     port = int(sys.argv[2]) if len(sys.argv) > 2 else 5432
     if not os.path.isdir(os.path.join(repo, ".git")):
         sys.exit(f"{repo} is not a git repository")
-    server = PgServer(session_factory=lambda: GitSession(repo))
-    await server.start_server(host="127.0.0.1", port=port)
-    print(f"pg_mimic serving {repo} on port {port} -- tables: {', '.join(TABLE_NAMES)}")
-    await server.serve_forever()
 
-
-if __name__ == "__main__":
-    asyncio.run(main())
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    logging.info("serving %s -- tables: %s", repo, ", ".join(TABLE_NAMES))
+    PgServer(session_factory=lambda: GitSession(repo)).run(port=port)

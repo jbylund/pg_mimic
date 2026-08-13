@@ -30,7 +30,6 @@ pip install pg-mimic
 ## Quick start
 
 ```python
-import asyncio
 from pg_mimic import PgServer, ResultColumn, Session
 
 
@@ -43,13 +42,7 @@ class MySession(Session):
         yield ("world", 2)
 
 
-async def main():
-    server = PgServer(session_factory=MySession)
-    await server.start_server(host="127.0.0.1", port=5432)
-    await server.serve_forever()
-
-
-asyncio.run(main())
+PgServer(session_factory=MySession).run(port=5432)
 ```
 
 ```bash
