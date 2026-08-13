@@ -124,7 +124,8 @@ what shipped rather than what was written down at the time.
   and so could only ever listen on 5432 — unusable, without editing the file, on any
   machine that already has PostgreSQL there, which is most machines belonging to
   someone evaluating a Postgres mimic. `--open-port` takes any free port and logs
-  which one.
+  which one, and is mutually exclusive with `--port` rather than quietly overriding
+  it.
 
   `examples/git_sql.py` keeps its positional repo path and gains the shared flags;
   its port is now `--port N` rather than a second positional argument. `examples/`

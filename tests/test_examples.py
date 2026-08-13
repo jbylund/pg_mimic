@@ -71,3 +71,27 @@ def test_an_example_starts_on_an_open_port_and_reports_it(example):
     finally:
         process.kill()
         process.wait(timeout=10)
+
+
+@pytest.mark.parametrize(
+    argnames=["example"],
+    argvalues=[["simple.py"], ["git_sql.py"]],
+    ids=["a parser with nothing of its own", "a parser that adds a positional"],
+)
+def test_port_and_open_port_are_mutually_exclusive(example):
+    """They answer the same question two ways, so asking both ways is a mistake
+    worth being told about rather than one of them silently winning.
+
+    Both parser shapes, because a mutually exclusive group has to survive
+    argparse's `parents=` to reach the example that extends it -- which is the half
+    that would fail quietly if it didn't.
+    """
+    result = subprocess.run(
+        [sys.executable, str(EXAMPLES / example), "--port", "6000", "--open-port"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        cwd=EXAMPLES.parent,
+    )
+    assert result.returncode == 2, f"argparse should refuse this, not serve:\n{result.stdout}{result.stderr}"
+    assert "not allowed with argument --port" in result.stderr

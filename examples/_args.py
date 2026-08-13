@@ -72,14 +72,20 @@ def _common() -> argparse.ArgumentParser:
 
     `add_help=False` is what makes it usable as one: the child adds `-h` itself,
     and two parsers both adding it is an argparse error rather than a warning.
+
+    `--port` and `--open-port` are mutually exclusive because they answer the same
+    question two ways, and `--open-port` would otherwise silently win: `--port 6000
+    --open-port` would listen on neither 6000 nor anything the caller had in mind.
+    Being told so beats guessing which one meant it.
     """
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--host", default=DEFAULT_HOST, help=f"interface to listen on (default: {DEFAULT_HOST})")
-    parser.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"port to listen on (default: {DEFAULT_PORT})")
-    parser.add_argument(
+    which_port = parser.add_mutually_exclusive_group()
+    which_port.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"port to listen on (default: {DEFAULT_PORT})")
+    which_port.add_argument(
         "--open-port",
         action="store_true",
-        help="listen on any free port instead of --port, and log which one -- for when 5432 is taken",
+        help="listen on any free port and log which one -- for when 5432 is a real PostgreSQL",
     )
     return parser
 
