@@ -65,7 +65,7 @@ from pg_mimic import (
     oid_for_declared_type,
 )
 from pg_mimic.describe import result_columns, size_integer_literals
-from pg_mimic.errors import FEATURE_NOT_SUPPORTED, PgError
+from pg_mimic.errors import FEATURE_NOT_SUPPORTED, READ_ONLY_SQL_TRANSACTION, PgError
 
 # --- patterns --------------------------------------------------------------------
 
@@ -540,6 +540,39 @@ TABLE_NAMES = (*LOG_PROJECTIONS, *COLLECTORS)
 
 # --- the session ---------------------------------------------------------------------
 
+# Statements whose refusal is about a git repo being read-only rather than about what
+# this example covers. Only long-standing sqlglot node names: anything else (TRUNCATE,
+# ALTER, ...) lands in the coverage refusal, which is equally true of it.
+_WRITES = (exp.Insert, exp.Update, exp.Delete, exp.Merge, exp.Create, exp.Drop)
+
+
+def _refuse(sql: str, expr: exp.Expression) -> None:
+    """Say which of the two reasons this statement is being refused for.
+
+    They are not the same refusal, and one message for both misdescribes half of
+    them: EXPLAIN reads nothing and writes nothing, so telling its author that a git
+    repo is read-only sends them looking for a permission that was never the problem.
+    Writes are the ones the repo's read-only-ness actually refuses, and they get
+    Postgres's own SQLSTATE for it.
+    """
+    tag = sql.strip().split(None, 1)[0].upper() if sql.strip() else "statement"
+    if isinstance(expr, _WRITES):
+        raise PgError(READ_ONLY_SQL_TRANSACTION, f"cannot execute {tag} -- this example serves a git repo read-only")
+    if isinstance(expr, exp.Query):
+        # A set operation and a parenthesized query both parse as a Query that is not
+        # a Select, and their first word is SELECT or "(" -- so the message below
+        # would tell their author that SELECT is not supported. Everything here is
+        # written against one Select: qualification, pushdown, parameter substitution.
+        raise PgError(
+            FEATURE_NOT_SUPPORTED,
+            "this example runs a single SELECT -- a set operation or a parenthesized query is not covered",
+        )
+    # EXPLAIN is worth a sentence of its own: it is the read-only statement most
+    # likely to be tried here (psql users type it, BI tools send it), and "not
+    # supported" alone leaves the reader guessing at what would make it supported.
+    hint = " -- there is no planner behind this, only sqlglot's executor" if tag == "EXPLAIN" else ""
+    raise PgError(FEATURE_NOT_SUPPORTED, f"this example runs SELECT only, and cannot run {tag}{hint}")
+
 
 class GitSession(Session):
     def __init__(self, repo: str):
@@ -600,7 +633,7 @@ class GitSession(Session):
     async def query(self, sql, params):
         expr = self._analyze(sql, params)
         if not isinstance(expr, exp.Select):
-            raise PgError(FEATURE_NOT_SUPPORTED, "this example serves SELECT only -- a git repo is read-only")
+            _refuse(sql, expr)
         # git, the file reads and the executor are all blocking, and pg_mimic runs one
         # task per connection -- without this hop a slow query freezes every other
         # session on the event loop, including psql's opening handshake.
@@ -742,8 +775,14 @@ if __name__ == "__main__":
     args = parse_args(parser)
 
     repo = os.path.abspath(args.repo)
-    if not os.path.isdir(os.path.join(repo, ".git")):
-        sys.exit(f"{repo} is not a git repository")
+    # Asking git rather than looking for a `.git` directory: in a linked worktree
+    # (`git worktree add`) and in a submodule, `.git` is a *file* pointing at the real
+    # one, and both were refused as "not a git repository" -- while every collector
+    # below, which shells out to git the same way this does, would have served them.
+    try:
+        _git(repo, "rev-parse", "--git-dir")
+    except PgError as error:
+        sys.exit(f"{repo} is not a git repository: {error.message}")
 
     logging.info("serving %s -- tables: %s", repo, ", ".join(TABLE_NAMES))
     serve(lambda: GitSession(repo), args)
