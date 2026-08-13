@@ -47,6 +47,9 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "asyncpg>=0.30",
+    # A third protocol implementation, and the only client that asks for every
+    # column in text format -- see tests/test_pg8000.py.
+    "pg8000>=1.31",
     "psycopg[binary]>=3.1",
     "pytest>=8.0",
     "pytest-asyncio>=0.24",

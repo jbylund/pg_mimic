@@ -1,5 +1,5 @@
-"""The suite's own fixtures: a configurable MockSession, and the psycopg/asyncpg
-connections the tests drive it through.
+"""The suite's own fixtures: a configurable MockSession, and the
+psycopg/asyncpg/pg8000 connections the tests drive it through.
 
 The server itself comes from `pg_mimic.testing`, the shipped helpers, so this
 suite exercises the same code users get rather than a private copy of it. That
@@ -19,6 +19,7 @@ from __future__ import annotations
 import re
 
 import asyncpg
+import pg8000.dbapi
 import psycopg
 import pytest
 import pytest_asyncio
@@ -157,3 +158,23 @@ async def apg_conn(pg_server):
         yield conn
     finally:
         await conn.close()
+
+
+@pytest.fixture
+def pg8000_conn(pg_server):
+    """pg8000 against the same server the psycopg and asyncpg fixtures use.
+
+    The third protocol implementation in the suite -- psycopg is libpq-based,
+    asyncpg and pg8000 each hand-rolled the wire protocol separately -- and the
+    only client that asks for every column in text format, where asyncpg always
+    asks for binary. See tests/test_pg8000.py.
+
+    Autocommit so it matches the other fixtures; the transaction tests turn it
+    off themselves.
+    """
+    conn = pg8000.dbapi.connect(host="127.0.0.1", port=pg_server.port, user="test", database="test")
+    conn.autocommit = True
+    try:
+        yield conn
+    finally:
+        conn.close()
