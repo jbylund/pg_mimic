@@ -65,9 +65,10 @@ def test_an_unrunnable_information_schema_query_is_an_error_not_no_rows(conn, mo
 def test_an_unmodelled_information_schema_column_is_still_empty(conn, mock_session):
     """Pinning current behaviour, not endorsing it: Postgres answers 42703 here.
 
-    It stays lenient only because the model is too thin to be strict against --
-    information_schema.columns carries 7 of Postgres' ~44 -- so raising would turn
-    ordinary introspection into errors. See #66; this test flips with it."""
+    What kept it lenient was the width of the model rather than the principle, and
+    #99 has since taken both views to Postgres' full width -- so a column reaching
+    this branch is now genuinely one Postgres does not have either. See #66; this
+    test flips with it."""
 
     async def schema():
         return {"users": {"id": "integer"}}
@@ -77,6 +78,283 @@ def test_an_unmodelled_information_schema_column_is_still_empty(conn, mock_sessi
     with conn.cursor() as cur:
         cur.execute("SELECT nosuchcolumn FROM information_schema.tables")
         assert cur.fetchall() == []
+
+
+# --- information_schema at Postgres' width --------------------------------------------
+#
+# #99. `columns` carried 7 of Postgres' 44 and `tables` 4 of its 12, and a column that
+# was not declared answered *empty* rather than erroring -- so a client asking for
+# `column_default` was told the table has no columns at all, which an ORM reads as an
+# empty table rather than as a gap in the mimic.
+#
+# The shape is now generated from a live server into pg_mimic/information_schema.json;
+# the values stay in code, derived from Session.schema() where they can be and NULL
+# where they cannot. Expected values throughout this section were read off PostgreSQL
+# 18.4 for a table declared with the same types, not reasoned about -- which is how
+# is_generated turned out to be 'NEVER' rather than the 'NO' #99 predicted.
+
+
+_ISSUE_99_COLUMNS = {
+    "character_maximum_length": None,
+    "column_default": None,
+    "datetime_precision": None,
+    "is_generated": "NEVER",
+    "is_identity": "NO",
+    "numeric_precision": 32,
+    "numeric_scale": 0,
+    "udt_name": "int4",
+}
+
+
+@pytest.mark.parametrize(
+    argnames=["column", "expected"],
+    argvalues=sorted(_ISSUE_99_COLUMNS.items()),
+    ids=sorted(_ISSUE_99_COLUMNS),
+)
+def test_a_column_issue_99_named_answers_about_the_columns_that_exist(conn, mock_session, column, expected):
+    """Each of these came back as no rows at all, for a table that has a column.
+
+    Asserted as a row rather than as `!= []`: a NULL that arrives *in a row* is the
+    honest answer, and is the whole difference from the row never arriving."""
+
+    async def schema():
+        return {"users": {"id": "integer"}}
+
+    mock_session.schema = schema
+
+    with conn.cursor() as cur:
+        cur.execute(f"SELECT column_name, {column} FROM information_schema.columns")
+        assert cur.fetchall() == [("id", expected)]
+
+
+# What Postgres reports about a column *because of its type*. One declared type per
+# case, against every column it moves -- so a type whose facts are wrong fails on the
+# facts rather than on whichever query happened to reach it.
+_TYPE_DEPENDENT_COLUMNS = {
+    "integer": {
+        "character_octet_length": None,
+        "numeric_precision": 32,
+        "numeric_precision_radix": 2,
+        "numeric_scale": 0,
+        "datetime_precision": None,
+        "udt_name": "int4",
+    },
+    "bigint": {
+        "character_octet_length": None,
+        "numeric_precision": 64,
+        "numeric_precision_radix": 2,
+        "numeric_scale": 0,
+        "datetime_precision": None,
+        "udt_name": "int8",
+    },
+    "double precision": {
+        "character_octet_length": None,
+        "numeric_precision": 53,
+        # A float has a precision but no scale -- the two are not a pair.
+        "numeric_precision_radix": 2,
+        "numeric_scale": None,
+        "datetime_precision": None,
+        "udt_name": "float8",
+    },
+    "numeric": {
+        "character_octet_length": None,
+        # The only radix-10 type, and with no typmod there is no precision to report.
+        "numeric_precision": None,
+        "numeric_precision_radix": 10,
+        "numeric_scale": None,
+        "datetime_precision": None,
+        "udt_name": "numeric",
+    },
+    "text": {
+        # 2^30, Postgres' answer for any character type with no length limit --
+        # which is every one pg_mimic serves, since a declared type carries no typmod.
+        "character_octet_length": 1073741824,
+        "numeric_precision": None,
+        "numeric_precision_radix": None,
+        "numeric_scale": None,
+        "datetime_precision": None,
+        "udt_name": "text",
+    },
+    "character varying": {
+        "character_octet_length": 1073741824,
+        "numeric_precision": None,
+        "numeric_precision_radix": None,
+        "numeric_scale": None,
+        "datetime_precision": None,
+        "udt_name": "varchar",
+    },
+    "date": {
+        "character_octet_length": None,
+        "numeric_precision": None,
+        "numeric_precision_radix": None,
+        "numeric_scale": None,
+        # Whole seconds, where the rest of the datetime family is microseconds.
+        "datetime_precision": 0,
+        "udt_name": "date",
+    },
+    "timestamptz": {
+        "character_octet_length": None,
+        "numeric_precision": None,
+        "numeric_precision_radix": None,
+        "numeric_scale": None,
+        "datetime_precision": 6,
+        "udt_name": "timestamptz",
+    },
+    "boolean": {
+        "character_octet_length": None,
+        "numeric_precision": None,
+        "numeric_precision_radix": None,
+        "numeric_scale": None,
+        "datetime_precision": None,
+        "udt_name": "bool",
+    },
+    "text[]": {
+        # Postgres reports none of these for an array, whatever its element type --
+        # and names the array type itself, which is what makes udt_name worth having
+        # while data_type still says `text[]`.
+        "character_octet_length": None,
+        "numeric_precision": None,
+        "numeric_precision_radix": None,
+        "numeric_scale": None,
+        "datetime_precision": None,
+        "udt_name": "_text",
+    },
+}
+
+
+@pytest.mark.parametrize(
+    argnames=["declared", "expected"],
+    argvalues=[(declared, _TYPE_DEPENDENT_COLUMNS[declared]) for declared in sorted(_TYPE_DEPENDENT_COLUMNS)],
+    ids=sorted(_TYPE_DEPENDENT_COLUMNS),
+)
+def test_the_type_dependent_columns_say_what_postgres_says_for_that_type(conn, mock_session, declared, expected):
+    """One column in the table, so each result column is typed from its own value."""
+
+    async def schema():
+        return {"t": {"c": declared}}
+
+    mock_session.schema = schema
+
+    names = sorted(expected)
+    with conn.cursor() as cur:
+        cur.execute(f"SELECT {', '.join(names)} FROM information_schema.columns")
+        assert dict(zip(names, cur.fetchone())) == expected
+
+
+# PostgreSQL 18's ordinal_position order, written out rather than read back from the
+# generated JSON: a test that compares the model against itself would pass just as
+# happily on a file that had lost half its columns.
+_POSTGRES_COLUMN_ORDER = {
+    "tables": [
+        "table_catalog",
+        "table_schema",
+        "table_name",
+        "table_type",
+        "self_referencing_column_name",
+        "reference_generation",
+        "user_defined_type_catalog",
+        "user_defined_type_schema",
+        "user_defined_type_name",
+        "is_insertable_into",
+        "is_typed",
+        "commit_action",
+    ],
+    "columns": [
+        "table_catalog",
+        "table_schema",
+        "table_name",
+        "column_name",
+        "ordinal_position",
+        "column_default",
+        "is_nullable",
+        "data_type",
+        "character_maximum_length",
+        "character_octet_length",
+        "numeric_precision",
+        "numeric_precision_radix",
+        "numeric_scale",
+        "datetime_precision",
+        "interval_type",
+        "interval_precision",
+        "character_set_catalog",
+        "character_set_schema",
+        "character_set_name",
+        "collation_catalog",
+        "collation_schema",
+        "collation_name",
+        "domain_catalog",
+        "domain_schema",
+        "domain_name",
+        "udt_catalog",
+        "udt_schema",
+        "udt_name",
+        "scope_catalog",
+        "scope_schema",
+        "scope_name",
+        "maximum_cardinality",
+        "dtd_identifier",
+        "is_self_referencing",
+        "is_identity",
+        "identity_generation",
+        "identity_start",
+        "identity_increment",
+        "identity_maximum",
+        "identity_minimum",
+        "identity_cycle",
+        "is_generated",
+        "generation_expression",
+        "is_updatable",
+    ],
+}
+
+
+@pytest.mark.parametrize(
+    argnames=["view", "expected"],
+    argvalues=[(view, _POSTGRES_COLUMN_ORDER[view]) for view in sorted(_POSTGRES_COLUMN_ORDER)],
+    ids=sorted(_POSTGRES_COLUMN_ORDER),
+)
+def test_select_star_returns_postgres_column_order(conn, mock_session, view, expected):
+    """A client that unpacks `SELECT *` positionally reads the wrong column otherwise,
+    and never finds out. The generator checks the JSON against a live server; this
+    checks that the executor still serves it in that order."""
+
+    async def schema():
+        return {"users": {"id": "integer"}}
+
+    mock_session.schema = schema
+
+    with conn.cursor() as cur:
+        cur.execute(f"SELECT * FROM information_schema.{view}")
+        assert [description.name for description in cur.description] == expected
+
+
+def test_the_tables_view_carries_the_eight_columns_it_had_been_missing(conn, mock_session):
+    """`is_insertable_into` and `is_typed` are what a client actually reads of the
+    eight; the other six are NULL for every ordinary table, in Postgres too."""
+
+    async def schema():
+        return {"users": {"id": "integer"}}
+
+    mock_session.schema = schema
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT is_insertable_into, is_typed FROM information_schema.tables")
+        assert cur.fetchall() == [("YES", "NO")]
+
+        cur.execute(
+            "SELECT self_referencing_column_name, reference_generation, user_defined_type_catalog, "
+            "user_defined_type_schema, user_defined_type_name, commit_action FROM information_schema.tables"
+        )
+        assert cur.fetchall() == [(None,) * 6]
+
+
+def test_the_generated_shape_is_the_shape_the_catalog_declares():
+    """The JSON is the only place the column list lives -- there is no second copy in
+    catalog.py to drift from it -- so this pins the count that #99 was about."""
+    from pg_mimic.catalog_data import INFORMATION_SCHEMA_SCHEMA
+
+    views = INFORMATION_SCHEMA_SCHEMA["information_schema"]
+    assert {view: len(columns) for view, columns in views.items()} == {"tables": 12, "columns": 44}
 
 
 def test_pg_catalog_stays_lenient_so_psql_keeps_working(conn, mock_session):

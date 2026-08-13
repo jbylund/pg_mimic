@@ -8,9 +8,23 @@ That cycle is why this module exists. The rewrite needs to know which columns
 hold integers, which is a fact about the schema below -- reading it back from
 pg_mimic.catalog meant either a lazy import or passing the set in as an argument,
 both of which were working around the layering rather than fixing it.
+
+The two halves of the shape are written down differently on purpose. pg_catalog
+is inline below, because pg_mimic serves a deliberate slice of it -- the columns
+psql's \\d family reads, and no more. information_schema is generated from a live
+server into information_schema.json, because there the whole view is the unit: a
+column left off answers empty rather than erroring, so listing them by hand is
+how `columns` came to carry 7 of Postgres' 44 (#99). Regenerate that file against
+a newer major release rather than editing it by hand::
+
+    python tools/generate_information_schema.py "host=127.0.0.1 dbname=postgres"
 """
 
 from __future__ import annotations
+
+import json
+from importlib.resources import files
+from typing import Any
 
 PG_CATALOG_SCHEMA = {
     "pg_catalog": {
@@ -174,6 +188,32 @@ PG_CATALOG_SCHEMA = {
 # than listed again, so a column added there is covered without anyone remembering.
 INTEGER_COLUMNS = {
     column for table in PG_CATALOG_SCHEMA["pg_catalog"].values() for column, column_type in table.items() if column_type == "INT"
+}
+
+
+# --- information_schema, as generated ------------------------------------------------
+
+# The types those views are declared with, against sqlglot's spelling. Only three
+# occur across the 56 columns, and a fourth appearing is a regeneration that needs
+# looking at rather than a default worth guessing -- so this is a lookup that
+# raises, not a .get() with a fallback.
+_SQLGLOT_TYPE = {"name": "TEXT", "character varying": "TEXT", "integer": "INT"}
+
+_INFORMATION_SCHEMA_DOCUMENT: dict[str, Any] = json.loads(
+    files(__package__).joinpath("information_schema.json").read_text(encoding="utf-8")
+)
+
+#: The declared shape of the information_schema views pg_mimic serves, in the form
+#: sqlglot's executor wants.
+#:
+#: Column order is Postgres' `ordinal_position` and is load-bearing: `SELECT *` comes
+#: back in the order this dict lists, so it has to be the order a real server would.
+#: The generator checks that against the server -- see tools/generate_information_schema.py.
+INFORMATION_SCHEMA_SCHEMA: dict[str, dict[str, dict[str, str]]] = {
+    "information_schema": {
+        view: {column["name"]: _SQLGLOT_TYPE[column["data_type"]] for column in columns}
+        for view, columns in _INFORMATION_SCHEMA_DOCUMENT["views"].items()
+    }
 }
 
 

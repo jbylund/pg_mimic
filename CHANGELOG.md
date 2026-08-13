@@ -10,6 +10,18 @@ what shipped rather than what was written down at the time.
 ## Unreleased
 
 ### Added
+- `information_schema.tables` and `information_schema.columns` are served at
+  PostgreSQL's full width: 12 columns and 44, up from 4 and 7, in the server's own
+  `ordinal_position` order so `SELECT *` lines up positionally. A column pg_mimic
+  did not declare answered *empty* rather than erroring, so a client asking for
+  `column_default` was told the table has no columns at all — every column a tool
+  commonly reads (`column_default`, `character_maximum_length`, `numeric_precision`,
+  `numeric_scale`, `datetime_precision`, `udt_name`, `is_identity`, `is_generated`)
+  now answers about the columns that exist. What a declared `Session.schema()` can
+  settle is derived; the rest is honestly NULL. The shape comes from
+  `pg_mimic/information_schema.json`, generated from a live server by
+  `tools/generate_information_schema.py`. (#99)
+
 - `PgServer.run(host=..., port=...)` — a blocking entry point for when the server
   is the program. It owns the event loop, logs the listening address through the
   package logger, and returns on SIGINT or SIGTERM rather than raising. The signals

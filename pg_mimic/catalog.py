@@ -29,13 +29,31 @@ from sqlglot.executor import execute as sqlglot_execute
 
 from . import types as pg_types
 from .arrays import ARRAY_OID, is_array_oid
-from .catalog_data import PG_CATALOG_SCHEMA
+from .catalog_data import INFORMATION_SCHEMA_SCHEMA, PG_CATALOG_SCHEMA
 from .catalog_rewrite import rewrite_for_executor
 from .describe import oid_for_declared_type
 from .errors import FEATURE_NOT_SUPPORTED, PgError
 from .results import ResultColumn
 from .session import Statement, StaticStatement, statement_from_rows
-from .types import BPCHAR, BYTEA, JSON, JSONB, NUMERIC, TEXT, VARCHAR
+from .types import (
+    BPCHAR,
+    BYTEA,
+    DATE,
+    FLOAT4,
+    FLOAT8,
+    INT2,
+    INT4,
+    INT8,
+    INTERVAL,
+    JSON,
+    JSONB,
+    NUMERIC,
+    TEXT,
+    TIME,
+    TIMESTAMP,
+    TIMESTAMPTZ,
+    VARCHAR,
+)
 
 if TYPE_CHECKING:
     from .connection import Connection
@@ -52,53 +70,139 @@ _HEAP_AM_OID = 2
 _FIRST_USER_OID = 16384
 
 
+_CATALOG_NAME = "pg_mimic"
+
+# Postgres' character_octet_length for any character type with no length limit --
+# 2^30, the largest a varlena can be. pg_mimic declares no typmods, so every
+# character column it serves is that one.
+_UNBOUNDED_OCTET_LENGTH = 1073741824
+
+# What information_schema.columns reports about a column *of this type*, as opposed
+# to about the column itself. Copied from the server rather than reasoned about --
+# these are information_schema's own helper functions, answered for each type at
+# typmod -1, which is the typmod pg_mimic gives every column:
+#
+#   SELECT information_schema._pg_char_max_length(oid, -1),
+#          information_schema._pg_char_octet_length(oid, -1),
+#          information_schema._pg_numeric_precision(oid, -1),
+#          information_schema._pg_numeric_precision_radix(oid, -1),
+#          information_schema._pg_numeric_scale(oid, -1),
+#          information_schema._pg_datetime_precision(oid, -1)
+#   FROM pg_type WHERE typname = ...
+#
+# Keyed by OID rather than by the declared spelling so `int` and `integer` land on
+# the same row, and so an array -- whose OID is in neither this table nor pg_mimic's
+# scalar list -- comes out all-NULL, which is what Postgres says of an array column.
+#
+# character_maximum_length is absent from every entry on purpose: without a typmod
+# there is no limit to report, so it is NULL for `character varying` too.
+_TYPE_FACTS: dict[int, dict[str, int]] = {
+    BPCHAR: {"character_octet_length": _UNBOUNDED_OCTET_LENGTH},
+    TEXT: {"character_octet_length": _UNBOUNDED_OCTET_LENGTH},
+    VARCHAR: {"character_octet_length": _UNBOUNDED_OCTET_LENGTH},
+    # Integers carry a scale of 0; the floats and bare `numeric` carry none.
+    INT2: {"numeric_precision": 16, "numeric_precision_radix": 2, "numeric_scale": 0},
+    INT4: {"numeric_precision": 32, "numeric_precision_radix": 2, "numeric_scale": 0},
+    INT8: {"numeric_precision": 64, "numeric_precision_radix": 2, "numeric_scale": 0},
+    FLOAT4: {"numeric_precision": 24, "numeric_precision_radix": 2},
+    FLOAT8: {"numeric_precision": 53, "numeric_precision_radix": 2},
+    # The one radix-10 type, and the only place the radix is worth anything.
+    NUMERIC: {"numeric_precision_radix": 10},
+    # A date has whole-second resolution, hence 0; everything else defaults to
+    # microseconds, which Postgres reports as 6 rather than as NULL.
+    DATE: {"datetime_precision": 0},
+    TIME: {"datetime_precision": 6},
+    TIMESTAMP: {"datetime_precision": 6},
+    TIMESTAMPTZ: {"datetime_precision": 6},
+    INTERVAL: {"datetime_precision": 6},
+}
+
+
+def _information_schema_row(view: str, **derived) -> dict:
+    """One row of `view`: every column it declares, NULL except what was derived.
+
+    Declaring a column and populating it are one step -- a column in the schema but
+    absent from a row is not a NULL, it is a `KeyError` out of the executor, which
+    reaches the client as a 0A000. So the declared list is what builds the row and
+    `derived` fills in the part a session can actually answer. Regenerating
+    information_schema.json against a newer release then adds its new columns as
+    NULL rather than as an error; see tests/test_catalog.py's guard.
+    """
+    row = dict.fromkeys(INFORMATION_SCHEMA_SCHEMA["information_schema"][view])
+    unknown = sorted(set(derived) - set(row))
+    if unknown:
+        raise KeyError(f"information_schema.{view} does not declare {unknown}")
+    row.update(derived)
+    return row
+
+
 def _build_information_schema(user_schema: dict) -> tuple[dict, dict]:
-    """user_schema: {table_name: {col_name: type_str}} (Session.schema()'s shape)."""
+    """user_schema: {table_name: {col_name: type_str}} (Session.schema()'s shape).
+
+    The columns filled in below are the ones a declared schema genuinely settles,
+    plus the handful Postgres answers with a constant for any ordinary table --
+    `is_updatable`, `is_generated` and friends, which read as constants here because
+    pg_mimic has no views, no generated columns and no identity sequences to make
+    them vary. Everything else is honestly NULL rather than absent, which is the
+    difference between a query that answers and one that returns no rows at all.
+    """
+    type_rows = pg_type_by_oid()
     tables_rows = []
     columns_rows = []
     for table_name, cols in user_schema.items():
         tables_rows.append(
-            {
-                "table_catalog": "pg_mimic",
-                "table_schema": "public",
-                "table_name": table_name,
-                "table_type": "BASE TABLE",
-            }
+            _information_schema_row(
+                "tables",
+                table_catalog=_CATALOG_NAME,
+                table_schema="public",
+                table_name=table_name,
+                table_type="BASE TABLE",
+                # Every table a session declares is an ordinary one, which Postgres
+                # reports as insertable and untyped whatever the session then does
+                # with a write -- refusing it is TableSession's business, not the
+                # catalog's.
+                is_insertable_into="YES",
+                is_typed="NO",
+            )
         )
         for i, (col_name, col_type) in enumerate(cols.items(), start=1):
+            oid = oid_for_declared_type(col_type)
             columns_rows.append(
-                {
-                    "table_catalog": "pg_mimic",
-                    "table_schema": "public",
-                    "table_name": table_name,
-                    "column_name": col_name,
-                    "ordinal_position": i,
-                    "data_type": col_type,
-                    "is_nullable": "YES",
-                }
+                _information_schema_row(
+                    "columns",
+                    table_catalog=_CATALOG_NAME,
+                    table_schema="public",
+                    table_name=table_name,
+                    column_name=col_name,
+                    ordinal_position=i,
+                    # A declared schema names types, not constraints, so nothing here
+                    # is NOT NULL -- as pg_catalog already says with attnotnull.
+                    is_nullable="YES",
+                    data_type=col_type,
+                    udt_catalog=_CATALOG_NAME,
+                    # The underlying type, named as pg_type names it -- `int4`,
+                    # `_text` -- and read from the same rows pg_catalog serves, so
+                    # the two halves of the catalog cannot disagree about it.
+                    udt_schema="pg_catalog",
+                    udt_name=type_rows[oid]["typname"],
+                    # Postgres' own identifier for the column's type descriptor,
+                    # which for a table column is just its attnum as a string.
+                    dtd_identifier=str(i),
+                    is_self_referencing="NO",
+                    is_identity="NO",
+                    # 'NO' rather than NULL even with no identity at all: the view
+                    # reads a NULL seqcycle through a CASE whose ELSE is 'NO'.
+                    identity_cycle="NO",
+                    # 'NEVER', not the 'NO' the yes_or_no columns use -- is_generated
+                    # is character_data, and its other value is 'ALWAYS'.
+                    is_generated="NEVER",
+                    is_updatable="YES",
+                    **_TYPE_FACTS.get(oid, {}),
+                )
             )
 
-    schema = {
-        "information_schema": {
-            "tables": {
-                "table_catalog": "TEXT",
-                "table_schema": "TEXT",
-                "table_name": "TEXT",
-                "table_type": "TEXT",
-            },
-            "columns": {
-                "table_catalog": "TEXT",
-                "table_schema": "TEXT",
-                "table_name": "TEXT",
-                "column_name": "TEXT",
-                "ordinal_position": "INT",
-                "data_type": "TEXT",
-                "is_nullable": "TEXT",
-            },
-        }
-    }
     tables = {"information_schema": {"tables": tables_rows, "columns": columns_rows}}
-    return schema, tables
+    return INFORMATION_SCHEMA_SCHEMA, tables
 
 
 def _pg_type_rows() -> list[dict]:
@@ -327,11 +431,13 @@ def _as_statement(expr: exp.Expression, schema: dict, tables: dict, *, strict: b
     except OptimizeError as error:
         # A catalog column pg_mimic doesn't model. Empty is *not* the right answer
         # here -- Postgres says 42703, and no rows is the same kind of lie the
-        # executor branch below refuses to tell. It stays lenient only because the
-        # model is too thin to be strict against: information_schema.columns
-        # carries 7 of Postgres's ~44, so raising would turn ordinary ORM
-        # introspection into errors overnight. Model the columns first, then make
-        # this 42703 -- see #66.
+        # executor branch below refuses to tell. What kept it lenient was the width
+        # of the model rather than the principle: information_schema carried 7 of
+        # Postgres' 44 columns and 4 of its 12, so raising would have turned
+        # ordinary ORM introspection into errors overnight. Both views are now
+        # served at full width (#99), which leaves pg_catalog -- a deliberate slice,
+        # where psql asks after columns a mimic has no business modelling. Making
+        # this 42703 for information_schema alone is #66.
         logger.debug("catalog query answered empty, nothing models it: %s -- %s", error, expr.sql(dialect="postgres"))
         return _empty_result(expr)
     except Exception as error:

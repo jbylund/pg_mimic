@@ -39,8 +39,11 @@ before it ever reaches your `Session`, so real clients/ORMs/`psql` work without 
   `NOTIFY` deferred to transaction commit the way Postgres defers it — see
   [Notices, and LISTEN/NOTIFY](./notices-and-notify.md).
 - asyncpg's type introspection, so it can build codecs for array and other non-builtin types.
-- `information_schema.tables` / `information_schema.columns`, and the slice of `pg_catalog` psql's
-  `\dt`, `\d <table>` and `\dn` read — both built from your `Session.schema()`.
+- `information_schema.tables` and `information_schema.columns` at PostgreSQL's full width — all 12
+  columns and all 44, in the server's own order, so `SELECT *` lines up positionally and a query for
+  `column_default`, `udt_name` or `numeric_precision` answers about the columns that exist instead of
+  returning nothing. Plus the slice of `pg_catalog` psql's `\dt`, `\d <table>` and `\dn` read — all
+  built from your `Session.schema()`.
 - Multi-statement simple-query batches (`"BEGIN; INSERT ...; COMMIT;"` sent as one `'Q'` message, e.g. by
   `psql -f script.sql`) are split into individual statements (via sqlglot), each getting its own
   `RowDescription`/`DataRow*`/`CommandComplete` — not silently merged or truncated.
