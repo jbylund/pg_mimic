@@ -1,12 +1,13 @@
 """Minimal pg_mimic server: answers every query with the same static rows.
 
 python examples/simple.py
+# or --open-port for any free port, when 5432 is a real PostgreSQL
 psql "host=127.0.0.1 port=5432 user=test dbname=test" -c "select * from anything"
 """
 
-import logging
+from _args import example_parser, parse_args, serve
 
-from pg_mimic import PgServer, ResultColumn, Session
+from pg_mimic import ResultColumn, Session
 
 
 class MySession(Session):
@@ -19,5 +20,4 @@ class MySession(Session):
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format="%(message)s")
-    PgServer(session_factory=MySession).run()
+    serve(MySession, parse_args(example_parser(__doc__)))

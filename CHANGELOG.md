@@ -85,6 +85,12 @@ what shipped rather than what was written down at the time.
   — those no longer reach your session as settings. A major version pg_mimic
   doesn't speak is refused with `0A000` rather than misread. (#27)
 
+### Fixed
+- `PgServer.run(port=0)` logged `listening on 127.0.0.1:0` instead of the port it
+  actually bound. Port 0 means "any free one", and the port the kernel picks is the
+  one thing a client cannot guess — so the log line was useless in exactly the case
+  it exists for. It now reports `self.port`. (#106)
+
 ### Changed
 - **Breaking.** `SET` checks whether the parameter exists and whether a session may
   change it, where before it accepted any name at all. A name that is not a
@@ -111,6 +117,21 @@ what shipped rather than what was written down at the time.
   *qualified* name. Dotted custom GUCs are unaffected — `SET app.tenant = 'acme'`
   still reaches your session, which is what the row-level-security pattern rests
   on. (#77)
+
+- All six examples take `--host`, `--port` and `--open-port`, from one parent parser
+  in `examples/_args.py`. Four of them (`simple.py`, `tables.py`,
+  `parameterized.py`, `dbapi_proxy.py`) previously called `run()` with no arguments
+  and so could only ever listen on 5432 — unusable, without editing the file, on any
+  machine that already has PostgreSQL there, which is most machines belonging to
+  someone evaluating a Postgres mimic. `--open-port` takes any free port and logs
+  which one, and is mutually exclusive with `--port` rather than quietly overriding
+  it.
+
+  `examples/git_sql.py` keeps its positional repo path and gains the shared flags;
+  its port is now `--port N` rather than a second positional argument. `examples/`
+  is not a package and is not shipped (`packages = ["pg_mimic"]`), so `_args.py` is
+  plumbing for the examples rather than public API — an example finds it because a
+  script's own directory is on `sys.path`. (#106)
 
 - **Breaking.** An `information_schema` query naming a column pg_mimic does not
   model now raises `42703 undefined_column`, as Postgres does, instead of

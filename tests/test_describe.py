@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import sys
 from pathlib import Path
 
 import pytest
@@ -41,16 +42,22 @@ def _git_sql_example():
     sqlglot ships -- one of them starts passing if the example's INTERVAL is left
     in place. describe() never reaches the executor, so nothing here wants those
     edits anyway.
+
+    `examples/` goes on sys.path for the duration because the example imports its
+    sibling `_args` for the shared command line. Running it as a script puts that
+    directory there automatically; loading it by path does not.
     """
     import sqlglot.executor.env as executor_env
 
     saved = dict(executor_env.ENV)
+    sys.path.insert(0, str(_GIT_SQL.parent))
     try:
         spec = importlib.util.spec_from_file_location("git_sql_example", _GIT_SQL)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         return module
     finally:
+        sys.path.remove(str(_GIT_SQL.parent))
         executor_env.ENV.clear()
         executor_env.ENV.update(saved)
 

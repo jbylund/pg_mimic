@@ -1,6 +1,7 @@
 """SQL over a git repository, served on the Postgres wire protocol.
 
-    python examples/git_sql.py [repo-path] [port]   # defaults to the cwd, port 5432
+    python examples/git_sql.py [repo-path] [--port 5432]   # repo defaults to the cwd
+    python examples/git_sql.py --open-port                 # any free port, when 5432 is taken
     psql "host=127.0.0.1 port=5432 user=me dbname=git"
 
 Needs git 2.37+ (mid-2022) for --since-as-filter; see THE RULE below for why
@@ -46,6 +47,7 @@ from datetime import datetime, timedelta, timezone
 
 import sqlglot
 import sqlglot.executor.env as executor_env
+from _args import example_parser, parse_args, serve
 from sqlglot import exp
 from sqlglot.executor import execute as sqlglot_execute
 from sqlglot.optimizer.annotate_types import annotate_types
@@ -59,7 +61,6 @@ from pg_mimic import (
     INT8,
     NUMERIC,
     TIMESTAMP,
-    PgServer,
     Session,
     oid_for_declared_type,
 )
@@ -736,11 +737,13 @@ def _as_literal(value) -> exp.Expression:
 
 
 if __name__ == "__main__":
-    repo = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else ".")
-    port = int(sys.argv[2]) if len(sys.argv) > 2 else 5432
+    parser = example_parser(__doc__)
+    parser.add_argument("repo", nargs="?", default=".", help="path to the git repository (default: the cwd)")
+    args = parse_args(parser)
+
+    repo = os.path.abspath(args.repo)
     if not os.path.isdir(os.path.join(repo, ".git")):
         sys.exit(f"{repo} is not a git repository")
 
-    logging.basicConfig(level=logging.INFO, format="%(message)s")
     logging.info("serving %s -- tables: %s", repo, ", ".join(TABLE_NAMES))
-    PgServer(session_factory=lambda: GitSession(repo)).run(port=port)
+    serve(lambda: GitSession(repo), args)

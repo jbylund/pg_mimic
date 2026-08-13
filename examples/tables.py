@@ -2,6 +2,7 @@
 describe()/query()/schema() work, so real SQL over Python rows just works.
 
     python examples/tables.py
+    # or --open-port for any free port, when 5432 is a real PostgreSQL
     psql "host=127.0.0.1 port=5432 user=test dbname=test" -c "\\dt"
     psql "host=127.0.0.1 port=5432 user=test dbname=test" \\
         -c "select u.name, sum(o.total) as spent
@@ -15,7 +16,9 @@ import datetime
 import logging
 from decimal import Decimal
 
-from pg_mimic import JSONB, PgServer, TableSession
+from _args import example_parser, parse_args, serve
+
+from pg_mimic import JSONB, TableSession
 
 TABLES = {
     "users": [
@@ -41,7 +44,7 @@ COLUMNS = {
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    args = parse_args(example_parser(__doc__))
     logging.info("serving %d tables read-only", len(TABLES))
     # A session per connection, so the factory builds one rather than sharing it.
-    PgServer(session_factory=lambda: TableSession(TABLES, columns=COLUMNS)).run()
+    serve(lambda: TableSession(TABLES, columns=COLUMNS), args)

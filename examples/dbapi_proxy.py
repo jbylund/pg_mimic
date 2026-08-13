@@ -3,15 +3,17 @@ in-memory sqlite3 database, translating the incoming Postgres-dialect SQL to
 sqlite's dialect via sqlglot before running it.
 
     python examples/dbapi_proxy.py
+    # or --open-port for any free port, when 5432 is a real PostgreSQL
     psql "host=127.0.0.1 port=5432 user=test dbname=test" -c "select * from users"
 """
 
 import logging
 
 import sqlglot
+from _args import example_parser, parse_args, serve
 from sqlglot import exp
 
-from pg_mimic import PgServer, ResultColumn, Session
+from pg_mimic import ResultColumn, Session
 from pg_mimic.types import TEXT
 
 
@@ -59,6 +61,6 @@ def params_for_describe(param_oids: list[int | None]) -> list[None]:
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    args = parse_args(example_parser(__doc__))
     logging.info("backed by an in-memory sqlite3 db")
-    PgServer(session_factory=SqliteSession).run()
+    serve(SqliteSession, args)
