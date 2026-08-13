@@ -27,13 +27,15 @@ from sqlglot import exp
 from sqlglot.errors import OptimizeError
 from sqlglot.executor import execute as sqlglot_execute
 
+from . import types as pg_types
+from .arrays import ARRAY_OID, is_array_oid
 from .catalog_data import PG_CATALOG_SCHEMA
 from .catalog_rewrite import rewrite_for_executor
 from .describe import oid_for_declared_type
 from .errors import FEATURE_NOT_SUPPORTED, PgError
 from .results import ResultColumn
 from .session import Statement, StaticStatement, statement_from_rows
-from .types import TEXT
+from .types import BPCHAR, BYTEA, JSON, JSONB, NUMERIC, TEXT, VARCHAR
 
 if TYPE_CHECKING:
     from .connection import Connection
@@ -106,9 +108,6 @@ def _pg_type_rows() -> list[dict]:
     encode is a type the catalog can describe -- rather than a second list that
     drifts from the first.
     """
-    from . import types as pg_types
-    from .arrays import ARRAY_OID
-
     rows = []
     seen = set()
     for name in dir(pg_types):
@@ -169,9 +168,6 @@ def _storage_for(oid: int) -> str:
     what psql's \\d+ "Storage" column is reporting anyway: variable-length types are
     TOASTable ('x'), fixed-width ones are laid out plain ('p').
     """
-    from .arrays import is_array_oid
-    from .types import BPCHAR, BYTEA, JSON, JSONB, NUMERIC, TEXT, VARCHAR
-
     # Every array is variable-length whatever its element is, so they are all 'x'
     # in Postgres and none of them need listing individually.
     return "x" if is_array_oid(oid) or oid in {TEXT, VARCHAR, BPCHAR, BYTEA, JSON, JSONB, NUMERIC} else "p"
