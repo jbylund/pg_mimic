@@ -86,6 +86,14 @@ what shipped rather than what was written down at the time.
   doesn't speak is refused with `0A000` rather than misread. (#27)
 
 ### Changed
+- **Breaking.** An `information_schema` query naming a column pg_mimic does not
+  model now raises `42703 undefined_column`, as Postgres does, instead of
+  answering no rows. Empty was worse than an error for an ORM, which concludes
+  the table has no such column rather than that pg_mimic cannot say. Both views
+  are served at Postgres' full width, so a column reaching this is one Postgres
+  does not have either. `pg_catalog` stays lenient on purpose — psql asks it for
+  things a mimic has no business modelling, and raising there breaks `\d` and
+  `\l`. (#66)
 - **Breaking.** A `session_factory` that returns the *same* `Session` object for
   more than one live connection is now refused at connect time with a `FATAL`,
   rather than accepted and answered wrongly. A session holds per-connection state,
