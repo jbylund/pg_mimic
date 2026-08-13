@@ -39,17 +39,32 @@ def test_information_schema_columns(conn, mock_session):
 
 
 def test_an_unrunnable_information_schema_query_is_an_error_not_no_rows(conn, mock_session):
-    """`date_trunc` is missing from sqlglot's executor -- `name 'TIMESTAMPTRUNC' is
-    not defined` (#58). What matters here is the *shape* of the answer, not which
-    function is missing: before #39 an executor failure came back as zero rows and a
-    clean exit status.
+    """Before #39 an executor failure came back as zero rows and a clean exit status.
+    What matters is the *shape* of the answer, so the query needs a construct the
+    executor cannot run -- and picking one is less obvious than it looks.
 
-    The vehicle used to be `||`, which sqlglot implemented in tobymao/sqlglot#8146,
-    and `length()` before that, implemented in #8145 and released in v30.17.0. So
-    this test needs a construct the executor still cannot run, and loses it each
-    time one is fixed -- `test_date_trunc_is_implementable` in
-    test_sqlglot_workarounds.py is the tripwire that will say when this one needs a
-    new vehicle again.
+    Two vehicles have already rotted out from under this test: `length()`, which
+    sqlglot implemented in
+    https://redirect.github.com/tobymao/sqlglot/pull/8145 (released in v30.17.0),
+    and `||`, implemented in
+    https://redirect.github.com/tobymao/sqlglot/pull/8146. Anything on the #49/#58
+    lists will go the same way, since those lists exist to be emptied.
+
+    `pg_partition_ancestors` does not, and *not* because it is obscure. It is a
+    Postgres catalog function rather than general SQL, so a generic SQL executor has
+    no reason to grow one -- and pg_mimic has no partition tree for it to walk even
+    if sqlglot did. It is also the vehicle the pg_catalog half of this pair already
+    uses (`test_pg_catalog_stays_lenient_so_psql_keeps_working`), which is where it
+    came from.
+
+    The tempting alternatives are all worse, because they are wrong rather than
+    fragile. `1/0`, `no_such_func()` and `CAST('users' AS INT)` do each raise in the
+    executor -- but Postgres answers them `22012`, `42883` and `22P02`, and
+    `0A000 feature_not_supported` means "Postgres does this and pg_mimic cannot".
+    Pinning `0A000` to any of them would assert a wrong answer and leave a trap for
+    whoever later maps one of those codes properly: they would break a test whose
+    name says they broke unrunnable-query handling. A vehicle that never rots would
+    only manage it by being permanently wrong.
 
     `length()` stays asserted below rather than dropped: it is why the sqlglot floor
     is 30.17.0, and a downgrade should surface as this failing rather than as
@@ -64,7 +79,7 @@ def test_an_unrunnable_information_schema_query_is_an_error_not_no_rows(conn, mo
 
     with conn.cursor() as cur:
         with pytest.raises(psycopg.errors.FeatureNotSupported):
-            cur.execute("SELECT date_trunc('day', now()) FROM information_schema.tables")
+            cur.execute("SELECT pg_partition_ancestors('16384') FROM information_schema.tables")
 
         cur.execute("SELECT table_name, length(table_name) FROM information_schema.tables")
         rows = cur.fetchall()

@@ -187,9 +187,7 @@ def test_concatenation_exists():
     Split from the `length()` case above because the two were fixed separately:
     implemented upstream in
     https://redirect.github.com/tobymao/sqlglot/pull/8146, merged but not in any
-    release as of v30.17.0. When it ships, this mark comes off, the floor moves,
-    and `test_an_unrunnable_information_schema_query_is_an_error_not_no_rows` in
-    test_catalog.py needs a construct that still fails.
+    release as of v30.17.0. When it ships, this mark comes off and the floor moves.
     """
     assert _rows("SELECT s || '!' FROM q", *_TEXT) == [("Bump version!",), ("Add feature!",)]
 
