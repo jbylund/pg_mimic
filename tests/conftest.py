@@ -62,7 +62,15 @@ class MockSession(Session):
         fixture stays a single configurable thing while every connection still gets
         its own session.
         """
-        return MockSession(template=self)
+        # object.__new__ rather than calling the class: a subclass may take
+        # constructor arguments this knows nothing about, and it needs none of them
+        # anyway -- everything the template was configured with is read through
+        # __getattribute__. Naming MockSession here instead of type(self) would
+        # quietly return a base session for a subclass, dropping whatever it
+        # overrode; test_arrays.DeclaringSession is exactly that shape.
+        clone = object.__new__(type(self))
+        clone.__dict__["_template"] = self
+        return clone
 
     # Everything a test configures lands in the template's *instance* dict, and that
     # is what a spawned session has to read -- including names the class already
