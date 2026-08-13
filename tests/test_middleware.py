@@ -229,16 +229,22 @@ def test_current_setting_with_a_null_flag_is_null(conn, mock_session):
 
 
 def test_current_setting_of_a_setting_that_was_set_is_never_null(conn, mock_session):
-    """The other half of the probe: setting a name is what makes it exist, and it
-    goes on existing after a RESET blanks it -- measured against PostgreSQL 18,
-    where a custom GUC stays known for the life of the session."""
+    """The other half of the probe: naming a setting is what makes it exist, and it
+    goes on existing after the value is blanked -- measured against PostgreSQL 18,
+    where a custom GUC stays known for the life of the session.
+
+    Through set_config() with a dotted name, which since #77 is the only way to
+    reach that state: an undotted name that is not in the catalogue is refused
+    rather than created, and a dotted SET belongs to the session (#35). `NULL` is
+    set_config's spelling of RESET, and unlike `RESET app.mytenant` it does not
+    fall through."""
     with conn.cursor() as cur:
-        cur.execute("SET mytenant TO 'acme'")
-        cur.execute("SELECT current_setting('mytenant', true)")
+        cur.execute("SELECT set_config('app.mytenant', 'acme', false)")
+        cur.execute("SELECT current_setting('app.mytenant', true)")
         assert cur.fetchone() == ("acme",)
 
-        cur.execute("RESET mytenant")
-        cur.execute("SELECT current_setting('mytenant', true) IS NULL, current_setting('mytenant')")
+        cur.execute("SELECT set_config('app.mytenant', NULL, false)")
+        cur.execute("SELECT current_setting('app.mytenant', true) IS NULL, current_setting('app.mytenant')")
         assert cur.fetchone() == (False, "")
     assert mock_session.queries == []
 
@@ -287,7 +293,7 @@ async def test_set_config_applies_at_execute_not_parse():
             self.reported[name] = value
 
     connection = FakeConnection()
-    ctx = middleware.MiddlewareContext(connection, "SELECT set_config('a', 'b', false)", [])
+    ctx = middleware.MiddlewareContext(connection, "SELECT set_config('search_path', 'myschema', false)", [])
 
     statement = await middleware.session_functions(ctx)
     assert statement is not None
@@ -297,7 +303,7 @@ async def test_set_config_applies_at_execute_not_parse():
     assert connection.state.session_vars == {}, "Bind must not have applied it either"
 
     await portal.execute(0)
-    assert connection.state.session_vars == {"a": "b"}
+    assert connection.state.session_vars == {"search_path": "myschema"}
 
 
 def test_a_session_reads_the_state_the_middleware_owns():

@@ -20,21 +20,36 @@ before it ever reaches your `Session`, so real clients/ORMs/`psql` work without 
   *authorization*, and pg_mimic has no role catalog to validate against and no privilege model to
   apply, so they fall through to your session rather than being accepted on a promise nothing here
   can keep.
+
+  A `SET` is checked against the parameter list rather than accepted on sight, so a name that isn't a
+  parameter is `42704` and a parameter a session may not change is `55P02` — with the wording
+  Postgres picks for *why*, which differs by parameter: `SET shared_buffers` "cannot be changed
+  without restarting the server", `SET autovacuum_naptime` "cannot be changed now". 199 of the 398
+  are refused (`postmaster`, `sighup`, `internal`, `backend`, `superuser-backend`), and the 199
+  accepted cover everything a client library sets on a connection. The 48 `superuser` parameters are
+  accepted by decision rather than by the manual: pg_mimic reports `is_superuser = off`, but there is
+  no privilege model behind that answer, and refusing them would break clients that set `log_*` for
+  their own diagnostics against a server that keeps no log. `set_config()` is checked the same way —
+  it names its parameter as a string rather than as syntax, and would otherwise be the way around
+  this.
 - Session functions: `SELECT version()`, `current_user`, `current_database()`, `current_setting('x')`,
   `set_config()`, `pg_backend_pid()` — things only the connection can answer.
 
   A setting nothing has ever set does not exist, as in real Postgres: `SHOW never.set` and
   `current_setting('never.set')` raise `42704`, while `current_setting('never.set', true)` is `NULL`
   — which is what `current_setting('app.tenant', true) IS NULL`, the usual row-level-security probe
-  for "was this ever set?", is actually asking. A name pg_mimic answers itself stays known once set,
-  and reads blank through `RESET`, `DISCARD ALL` and a rolled-back transaction, the same as there;
-  one with a built-in default reads that default back instead, so `SET work_mem = '8MB'; RESET
-  work_mem` is `4MB`, again as there.
+  for "was this ever set?", is actually asking. A parameter with a built-in default reads that
+  default back after a `RESET`, so `SET work_mem = '8MB'; RESET work_mem` is `4MB`, as there. A name
+  without one stays known once named and reads blank through `RESET`, `DISCARD ALL` and a rolled-back
+  transaction, also as there.
 
-  A *dotted* name is the exception worth knowing about. `SET app.tenant = 'acme'` is passed through
-  to your session rather than answered here, so pg_mimic never sees the write and
+  A *dotted* name is the exception worth knowing about, and since parameters are checked against the
+  list it is now the only name that can be introduced at all. `SET app.tenant = 'acme'` is passed
+  through to your session rather than answered here, so pg_mimic never sees the write and
   `current_setting('app.tenant', true)` stays `NULL` afterwards. A session that wants the probe to
   answer has to record the value itself until `Session.set_parameter()` lands.
+  `set_config('app.tenant', 'acme', false)` is the one route that does register the name here, since
+  it passes it as a string rather than as syntax.
 - `LISTEN`/`UNLISTEN`/`NOTIFY` and `pg_notify()`, fanned out across the server's connections, with
   `NOTIFY` deferred to transaction commit the way Postgres defers it — see
   [Notices, and LISTEN/NOTIFY](./notices-and-notify.md).

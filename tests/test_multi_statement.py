@@ -37,13 +37,13 @@ def test_set_does_not_absorb_following_statement(conn, mock_session):
     mock_session.rows = [(2,)]
 
     with conn.cursor() as cur:
-        cur.execute("SET x = 1; SELECT a FROM t;")
+        cur.execute("SET extra_float_digits = 1; SELECT a FROM t;")
         assert cur.statusmessage == "SET"
         cur.nextset()
         assert cur.fetchall() == [(2,)]
 
         # the SET value itself must be exactly "1", not "1; SELECT 2"
-        cur.execute("SHOW x")
+        cur.execute("SHOW extra_float_digits")
         assert cur.fetchone() == ("1",)
 
 

@@ -17,6 +17,7 @@ import pytest
 from psycopg.pq import TransactionStatus
 from wire import SYNC, connect_and_get_backend_key, make_parse, make_query, read_message
 
+from pg_mimic import middleware, settings_catalog
 from pg_mimic.testing import serve_in_thread
 
 # sql -> the command tag real Postgres completes it with (src/include/tcop/cmdtaglist.h).
@@ -186,14 +187,21 @@ def test_show_of_a_setting_nothing_has_ever_set_raises(conn, mock_session):
 
 
 def test_a_setting_stays_known_once_set(conn, mock_session):
-    """Setting a name is what makes it exist, and nothing that drops the *value*
-    unmakes it -- checked against PostgreSQL 18 for RESET, RESET ALL and DISCARD
-    ALL, all of which leave a custom GUC reading as the empty string."""
+    """Naming a setting is what makes it exist, and nothing that drops the *value*
+    unmakes it -- checked against PostgreSQL 18.4 for RESET ALL and DISCARD ALL,
+    both of which leave a custom GUC reading as the empty string.
+
+    This once used `SET mytenant`, on a docstring claiming the same measurement.
+    18.4 answers that with 42704 (guc.c:1169, `assignable_custom_variable_name`):
+    a placeholder GUC needs a *qualified* name, so the behaviour was only ever
+    real for a dotted one. Set here through set_config(), since a dotted SET goes
+    to the session (#35), and blanked with set_config's NULL, since `RESET
+    app.mytenant` goes there too."""
     with conn.cursor() as cur:
-        cur.execute("SET mytenant TO 'acme'")
-        for forget in ("RESET mytenant", "RESET ALL", "DISCARD ALL"):
+        cur.execute("SELECT set_config('app.mytenant', 'acme', false)")
+        for forget in ("SELECT set_config('app.mytenant', NULL, false)", "RESET ALL", "DISCARD ALL"):
             cur.execute(forget)
-            cur.execute("SHOW mytenant")
+            cur.execute("SHOW app.mytenant")
             assert cur.fetchone() == ("",), f"unknown again after {forget}"
 
 
@@ -537,3 +545,165 @@ def test_a_dotted_guc_does_not_become_known_by_setting_it(conn, mock_session):
         cur.execute("SET app.tenant = 'acme'")
         cur.execute("SELECT current_setting('app.tenant', true)")
         assert cur.fetchone() == (None,)
+
+
+# --- which parameters a session may actually set (#77) --------------------------------
+
+# One parameter per refusable context, with the message PostgreSQL 18.4 refuses it
+# with. All five are 55P02 and the wording differs by context -- guc.c picks it in
+# set_config_with_handle() -- so this is a table rather than one assertion: a client
+# that matches on message text can tell "restart the server" from "not now".
+_REFUSED_BY_CONTEXT = {
+    "postmaster": {
+        "sql": "SET shared_buffers = '64MB'",
+        "message": 'parameter "shared_buffers" cannot be changed without restarting the server',
+    },
+    "sighup": {
+        "sql": "SET autovacuum_naptime = 30",
+        "message": 'parameter "autovacuum_naptime" cannot be changed now',
+    },
+    "internal": {
+        "sql": "SET server_version = 'x'",
+        "message": 'parameter "server_version" cannot be changed',
+    },
+    "backend": {
+        "sql": "SET post_auth_delay = 1",
+        "message": 'parameter "post_auth_delay" cannot be set after connection start',
+    },
+    "superuser_backend": {
+        "sql": "SET log_connections = 'all'",
+        "message": 'parameter "log_connections" cannot be set after connection start',
+    },
+}
+
+
+@pytest.mark.parametrize(
+    argnames=sorted(next(iter(_REFUSED_BY_CONTEXT.values()))),
+    argvalues=[[v for k, v in sorted(_REFUSED_BY_CONTEXT[name].items())] for name in sorted(_REFUSED_BY_CONTEXT)],
+    ids=sorted(_REFUSED_BY_CONTEXT),
+)
+def test_a_parameter_a_session_cannot_change_is_refused(conn, mock_session, sql, message):
+    with conn.cursor() as cur:
+        with pytest.raises(psycopg.errors.CantChangeRuntimeParam) as excinfo:
+            cur.execute(sql)
+        assert excinfo.value.sqlstate == "55P02"
+        assert message in str(excinfo.value)
+    assert mock_session.queries == []
+
+
+def test_resetting_a_parameter_a_session_cannot_change_is_refused_too(conn, mock_session):
+    """`RESET x` is `SET x TO DEFAULT`, and 18.4 refuses it identically -- the
+    parameter is no more changeable for being changed back."""
+    with conn.cursor() as cur:
+        with pytest.raises(psycopg.errors.CantChangeRuntimeParam) as excinfo:
+            cur.execute("RESET shared_buffers")
+        assert excinfo.value.sqlstate == "55P02"
+        assert 'parameter "shared_buffers" cannot be changed without restarting the server' in str(excinfo.value)
+    assert mock_session.queries == []
+
+
+def test_setting_a_name_that_is_not_a_parameter_is_refused(conn, mock_session):
+    """The half of #77 that costs the most: every undotted name used to be settable,
+    which made `SET` unable to tell a typo from a parameter. 18.4 refuses it at
+    guc.c:1169, because an undotted name has no placeholder to create."""
+    with conn.cursor() as cur:
+        for sql in ("SET not_a_real_guc = 1", "RESET not_a_real_guc"):
+            with pytest.raises(psycopg.errors.UndefinedObject) as excinfo:
+                cur.execute(sql)
+            assert excinfo.value.sqlstate == "42704", sql
+            assert 'unrecognized configuration parameter "not_a_real_guc"' in str(excinfo.value), sql
+    assert mock_session.queries == []
+
+
+def test_a_superuser_context_parameter_is_still_accepted(conn, mock_session):
+    """A decision, not a reading of the manual (#77). pg_mimic reports
+    `is_superuser = off`, so read literally these 48 owe 42501 -- but there is no
+    privilege model behind that answer, and clients set `log_*` for their own
+    diagnostics against something that keeps no log. Accepting is the cheaper lie."""
+    with conn.cursor() as cur:
+        cur.execute("SET log_statement = 'all'")
+        cur.execute("SHOW log_statement")
+        assert cur.fetchone() == ("all",)
+    assert mock_session.queries == []
+
+
+def test_set_config_cannot_set_what_set_refuses(conn, mock_session):
+    """The hole the check is placed to close: set_config() names its parameter as a
+    string rather than as syntax, so it never passes the SET grammar. Both routes
+    meet in _apply_set_config, and 18.4 refuses both the same way."""
+    with conn.cursor() as cur:
+        with pytest.raises(psycopg.errors.CantChangeRuntimeParam):
+            cur.execute("SELECT set_config('shared_buffers', '1GB', false)")
+        with pytest.raises(psycopg.errors.UndefinedObject):
+            cur.execute("SELECT set_config('not_a_real_guc', 'x', false)")
+    assert mock_session.queries == []
+
+
+def test_set_local_outside_a_transaction_warns_and_then_still_refuses(conn, mock_session):
+    """Both, in that order, measured on 18.4: CheckTransactionBlock warns before the
+    GUC machinery has looked the parameter up, and refusing it is still the answer.
+    Warning without the error would leave `SET LOCAL shared_buffers` reading as
+    accepted."""
+    with conn.cursor() as cur:
+        with pytest.raises(psycopg.errors.CantChangeRuntimeParam):
+            cur.execute("SET LOCAL shared_buffers = '1GB'")
+        # the settable one still only warns
+        cur.execute("SET LOCAL work_mem = '9MB'")
+    assert mock_session.queries == []
+
+
+def test_reset_all_is_not_refused_by_any_of_them(conn, mock_session):
+    """RESET ALL drops what this connection set rather than assigning anything, so
+    it has no name to refuse -- and 18.4 takes it without complaint even though 199
+    parameters could not be set individually."""
+    with conn.cursor() as cur:
+        cur.execute("SET work_mem = '8MB'")
+        cur.execute("RESET ALL")
+        cur.execute("SHOW work_mem")
+        assert cur.fetchone() == ("4MB",)
+    assert mock_session.queries == []
+
+
+# What psycopg, asyncpg, pg8000 and SQLAlchemy set on or just after connect. #77 is
+# the one change in its cluster that can only *remove* working behaviour, so the
+# thing worth pinning is not which parameters are refused but which are still
+# accepted: every name here is `user` context, which is why refusing the other 199
+# costs no client anything. A parameter arriving in this list with a refusable
+# context is a regression in the accept set, whatever the tests below say.
+_SENT_BY_REAL_CLIENTS = (
+    "application_name",
+    "bytea_output",
+    "client_encoding",
+    "client_min_messages",
+    "datestyle",
+    "default_transaction_isolation",
+    "default_transaction_read_only",
+    "extra_float_digits",
+    "idle_in_transaction_session_timeout",
+    "intervalstyle",
+    "jit",
+    "lock_timeout",
+    "row_security",
+    "search_path",
+    "standard_conforming_strings",
+    "statement_timeout",
+    "synchronous_commit",
+    "timezone",
+    "work_mem",
+)
+
+
+def test_every_parameter_a_client_sends_on_connect_is_still_settable():
+    refused = {name: settings_catalog.context(name) for name in _SENT_BY_REAL_CLIENTS}
+    refused = {name: context for name, context in refused.items() if context not in middleware._SETTABLE_CONTEXTS}
+    assert refused == {}
+
+
+def test_every_context_in_the_catalogue_is_one_of_the_two_lists():
+    """The generator can grow a context the split has never seen -- PostgreSQL could
+    add one, or the catalogue could be regenerated against a different release. Then
+    `_check_settable` would fall back to a bare "cannot be changed" for it, quietly.
+    This is what makes that loud instead."""
+    known = middleware._SETTABLE_CONTEXTS | middleware._UNSETTABLE_CONTEXTS.keys()
+    unaccounted = {entry["context"] for entry in settings_catalog.SETTINGS.values()} - known
+    assert unaccounted == set()
