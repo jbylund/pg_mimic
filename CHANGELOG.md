@@ -86,6 +86,21 @@ what shipped rather than what was written down at the time.
   doesn't speak is refused with `0A000` rather than misread. (#27)
 
 ### Fixed
+- `examples/git_sql.py` refused every non-SELECT statement with one sentence —
+  "this example serves SELECT only -- a git repo is read-only" — which was only
+  true of half of them. `EXPLAIN` writes nothing, so being told the repo is
+  read-only sent its author looking for a permission that was never the problem.
+  A write is now `25006 read_only_sql_transaction`, Postgres's own code for it;
+  anything else is `0A000` naming the statement, with `EXPLAIN` adding why (there
+  is no planner behind the example, only sqlglot's executor). A set operation,
+  which parses as a query whose first word is SELECT, says that it is the *shape*
+  that is uncovered rather than claiming SELECT is unsupported.
+
+- `examples/git_sql.py` refused to serve a linked worktree or a submodule: it
+  looked for a `.git` *directory*, and in both of those `.git` is a file pointing
+  at the real one. It asks `git rev-parse` now, so it serves anything git itself
+  calls a repository — which is what every collector in the file already assumed.
+
 - `PgServer.run(port=0)` logged `listening on 127.0.0.1:0` instead of the port it
   actually bound. Port 0 means "any free one", and the port the kernel picks is the
   one thing a client cannot guess — so the log line was useless in exactly the case
