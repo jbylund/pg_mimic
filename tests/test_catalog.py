@@ -39,12 +39,21 @@ def test_information_schema_columns(conn, mock_session):
 
 
 def test_an_unrunnable_information_schema_query_is_an_error_not_no_rows(conn, mock_session):
-    """`||` is missing from sqlglot's executor (#38). Before this it came back as
-    zero rows and a clean exit status.
+    """`date_trunc` is missing from sqlglot's executor -- `name 'TIMESTAMPTRUNC' is
+    not defined` (#58). What matters here is the *shape* of the answer, not which
+    function is missing: before #39 an executor failure came back as zero rows and a
+    clean exit status.
 
-    `length()` was missing too until sqlglot v30.17.0, which is part of why the floor
-    is 30.17.0. It is asserted here rather than dropped, so a downgrade shows up as
-    this test failing rather than as introspection quietly going empty again."""
+    The vehicle used to be `||`, which sqlglot implemented in tobymao/sqlglot#8146,
+    and `length()` before that, implemented in #8145 and released in v30.17.0. So
+    this test needs a construct the executor still cannot run, and loses it each
+    time one is fixed -- `test_date_trunc_is_implementable` in
+    test_sqlglot_workarounds.py is the tripwire that will say when this one needs a
+    new vehicle again.
+
+    `length()` stays asserted below rather than dropped: it is why the sqlglot floor
+    is 30.17.0, and a downgrade should surface as this failing rather than as
+    introspection quietly going empty again."""
     import psycopg
     import pytest
 
@@ -55,7 +64,7 @@ def test_an_unrunnable_information_schema_query_is_an_error_not_no_rows(conn, mo
 
     with conn.cursor() as cur:
         with pytest.raises(psycopg.errors.FeatureNotSupported):
-            cur.execute("SELECT table_name || '!' FROM information_schema.tables")
+            cur.execute("SELECT date_trunc('day', now()) FROM information_schema.tables")
 
         cur.execute("SELECT table_name, length(table_name) FROM information_schema.tables")
         rows = cur.fetchall()
