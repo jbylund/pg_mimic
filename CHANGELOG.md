@@ -59,6 +59,13 @@ what shipped rather than what was written down at the time.
   doesn't speak is refused with `0A000` rather than misread. (#27)
 
 ### Changed
+- **Breaking.** A `session_factory` that returns the *same* `Session` object for
+  more than one live connection is now refused at connect time with a `FATAL`,
+  rather than accepted and answered wrongly. A session holds per-connection state,
+  so sharing one gave every connection the last one's identity and settings —
+  connection A reporting connection B's `current_user`, and reading B's
+  `search_path`. Returning the same object for the *next* connection is still fine;
+  only an overlap is refused. (#84)
 
 - `SET LOCAL` outside a transaction block now emits the `WARNING` real Postgres
   emits (`25P01`, "SET LOCAL can only be used in transaction blocks") instead of

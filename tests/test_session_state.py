@@ -145,7 +145,7 @@ def test_discard_all_is_refused_inside_a_transaction(conn, mock_session):
 def test_deallocate_drops_a_prepared_statement(mock_session):
     """Protocol-level prepared statements share Postgres's SQL-level namespace, so
     DEALLOCATE has to reach the ones the Connection is holding."""
-    server = PgServer(session_factory=lambda: mock_session)
+    server = PgServer(session_factory=mock_session.spawn)
     thread = ServerThread(server)
     port = thread.start()
     try:
@@ -312,7 +312,7 @@ def test_application_name_is_reported_even_when_unset(conn):
 async def test_parameter_status_arrives_before_ready_for_query(mock_session):
     """Real Postgres reports changed GUCs at the end of the command, immediately
     before ReadyForQuery -- not spliced into the command's own messages."""
-    server = PgServer(session_factory=lambda: mock_session)
+    server = PgServer(session_factory=mock_session.spawn)
     thread = ServerThread(server)
     port = thread.start()
     try:
@@ -397,7 +397,7 @@ async def test_sql_can_deallocate_a_protocol_level_statement(mock_session):
     Driven over the wire so the statement gets a name of our choosing, rather than
     depending on how psycopg happens to name its own.
     """
-    server = PgServer(session_factory=lambda: mock_session)
+    server = PgServer(session_factory=mock_session.spawn)
     thread = ServerThread(server)
     port = thread.start()
     try:
@@ -454,7 +454,7 @@ def test_a_session_can_take_prepare_back(mock_session):
     from pg_mimic import middleware as mw
 
     mock_session.middleware = tuple(link for link in mw.DEFAULT_MIDDLEWARE if link is not mw.prepared_statements)
-    server = PgServer(session_factory=lambda: mock_session)
+    server = PgServer(session_factory=mock_session.spawn)
     thread = ServerThread(server)
     port = thread.start()
     try:

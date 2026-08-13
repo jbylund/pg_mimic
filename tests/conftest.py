@@ -41,11 +41,45 @@ class MockSession(Session):
     query with them, ignoring the SQL text -- except catalog queries, which it
     reports as missing tables the way a real session would."""
 
-    def __init__(self):
-        self.rows: list[tuple] = []
-        self.columns: list[ResultColumn] | None = None
-        self.queries: list[tuple[str, list]] = []
-        self.error: Exception | None = None
+    def __init__(self, template: "MockSession | None" = None):
+        self._template = template
+        if template is None:
+            self.rows: list[tuple] = []
+            self.columns: list[ResultColumn] | None = None
+            self.queries: list[tuple[str, list]] = []
+            self.error: Exception | None = None
+
+    def spawn(self) -> "MockSession":
+        """One session object per connection, sharing this one's configuration.
+
+        A `Session` holds per-connection state -- `_connection` and `state` -- so
+        handing the same object to every connection makes each answer as whichever
+        attached last (#84). The framework refuses that now, and this is how a
+        fixture stays a single configurable thing while every connection still gets
+        its own session.
+        """
+        return MockSession(template=self)
+
+    # Everything a test configures lands in the template's *instance* dict, and that
+    # is what a spawned session has to read -- including names the class already
+    # defines, which is most of them: `schema` and `describe` are methods on Session,
+    # `middleware` is a class attribute, so ordinary lookup finds those and never asks
+    # the template. Hence __getattribute__ rather than __getattr__.
+    #
+    # `_connection` and `state` are the exception and the whole point: the framework
+    # assigns them per connection, and reading them from the template is the bug this
+    # exists to prevent.
+    _PER_CONNECTION = frozenset({"_connection", "state", "_template"})
+
+    def __getattribute__(self, name: str):
+        if name.startswith("__") or name in MockSession._PER_CONNECTION:
+            return object.__getattribute__(self, name)
+        template = object.__getattribute__(self, "__dict__").get("_template")
+        if template is not None:
+            configured = object.__getattribute__(template, "__dict__")
+            if name in configured:
+                return configured[name]
+        return object.__getattribute__(self, name)
 
     async def describe(self, sql, param_oids):
         self._reject_catalog(sql)
@@ -72,7 +106,7 @@ def mock_session():
 
 @pytest.fixture
 def pg_server(mock_session):
-    with serve_in_thread(lambda: mock_session) as server:
+    with serve_in_thread(mock_session.spawn) as server:
         yield server
 
 

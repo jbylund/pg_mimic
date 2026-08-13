@@ -82,7 +82,7 @@ bad_message_lengths = {
     ids=sorted(bad_message_lengths),
 )
 async def test_a_length_that_cannot_be_true_is_refused(mock_session, expected, length):
-    with serve_in_thread(lambda: mock_session) as server:
+    with serve_in_thread(mock_session.spawn) as server:
         reader, writer, _pid, _secret = await connect_and_get_backend_key(server.port)
 
         # The header and nothing else: a client sending 2GB would have to send it,
@@ -117,7 +117,7 @@ bad_startup_lengths = {
     ids=sorted(bad_startup_lengths),
 )
 async def test_a_startup_packet_length_that_cannot_be_true_is_refused(mock_session, expected, length):
-    with serve_in_thread(lambda: mock_session) as server:
+    with serve_in_thread(mock_session.spawn) as server:
         reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
         writer.write(make_lying_startup(length))
         await writer.drain()
@@ -136,7 +136,7 @@ async def test_the_startup_limit_is_postgres_own_however_large_messages_may_get(
     """A generous `max_message_size` does not buy the startup packet room. Nothing
     has authenticated at that point, so the ceiling stays the 10000 bytes real
     Postgres allows -- which every real client fits inside with room to spare."""
-    with serve_in_thread(lambda: mock_session, max_message_size=256 * 1024 * 1024) as server:
+    with serve_in_thread(mock_session.spawn, max_message_size=256 * 1024 * 1024) as server:
         reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
         writer.write(make_lying_startup(MAX_STARTUP_PACKET_LENGTH + 1))
         await writer.drain()
@@ -155,7 +155,7 @@ async def test_a_large_but_legal_message_still_arrives_whole(mock_session):
     approaches this limit -- goes through untouched."""
     mock_session.columns = [ResultColumn.for_type("x", str)]
     mock_session.rows = [("ok",)]
-    with serve_in_thread(lambda: mock_session) as server:
+    with serve_in_thread(mock_session.spawn) as server:
         reader, writer, _pid, _secret = await connect_and_get_backend_key(server.port)
 
         writer.write(make_parse("SELECT $1", statement_name="s"))
@@ -176,7 +176,7 @@ async def test_max_message_size_is_the_servers_to_set(mock_session):
     refused under a smaller cap, and one that fits is answered as usual."""
     mock_session.columns = [ResultColumn.for_type("x", str)]
     mock_session.rows = [("ok",)]
-    with serve_in_thread(lambda: mock_session, max_message_size=4096) as server:
+    with serve_in_thread(mock_session.spawn, max_message_size=4096) as server:
         reader, writer, _pid, _secret = await connect_and_get_backend_key(server.port)
         writer.write(make_query(f"SELECT '{'x' * 5000}'"))
         await writer.drain()
@@ -202,7 +202,7 @@ async def test_one_clients_bad_frame_is_not_another_clients_problem(mock_session
     listener keeps accepting."""
     mock_session.columns = [ResultColumn.for_type("x", str)]
     mock_session.rows = [("ok",)]
-    with serve_in_thread(lambda: mock_session) as server:
+    with serve_in_thread(mock_session.spawn) as server:
         good_reader, good_writer, _pid, _secret = await connect_and_get_backend_key(server.port)
 
         bad_reader, bad_writer, _pid, _secret = await connect_and_get_backend_key(server.port)
@@ -232,7 +232,7 @@ async def test_a_newer_minor_version_is_negotiated_down(mock_session):
     client is told what it is getting rather than left to assume."""
     mock_session.columns = [ResultColumn.for_type("x", str)]
     mock_session.rows = [("ok",)]
-    with serve_in_thread(lambda: mock_session) as server:
+    with serve_in_thread(mock_session.spawn) as server:
         reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
         writer.write(make_startup(version=PROTOCOL_3_2))
         await writer.drain()
@@ -257,7 +257,7 @@ async def test_a_newer_minor_version_is_negotiated_down(mock_session):
 async def test_the_version_we_do_speak_is_negotiated_silently(mock_session):
     """No NegotiateProtocolVersion when there is nothing to negotiate -- a 3.0
     client's first reply is AuthenticationOk, as it has always been."""
-    with serve_in_thread(lambda: mock_session) as server:
+    with serve_in_thread(mock_session.spawn) as server:
         reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
         writer.write(make_startup())
         await writer.drain()
@@ -274,7 +274,7 @@ async def test_an_unrecognised_protocol_extension_is_reported_not_applied(mock_s
     """NegotiateProtocolVersion's other job. `_pq_.` parameters are protocol
     extension requests, so a session must not see one as a setting it was asked
     to apply -- it is named back to the client instead."""
-    with serve_in_thread(lambda: mock_session) as server:
+    with serve_in_thread(mock_session.spawn) as server:
         reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
         writer.write(make_startup(extra={"_pq_.made_up": "1", "application_name": "app"}))
         await writer.drain()
@@ -310,7 +310,7 @@ async def test_a_major_version_we_do_not_speak_is_refused(mock_session, version)
     """A major version is not negotiable -- 2.0 framed its messages differently.
     Said plainly, rather than left to surface as a parse failure against bytes
     read the wrong way."""
-    with serve_in_thread(lambda: mock_session) as server:
+    with serve_in_thread(mock_session.spawn) as server:
         reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
         writer.write(make_startup(version=version))
         await writer.drain()
@@ -334,7 +334,7 @@ def test_libpq_asking_for_3_2_connects_anyway(mock_session):
     message's version field carries the whole major/minor word."""
     mock_session.columns = [ResultColumn.for_type("x", str)]
     mock_session.rows = [("ok",)]
-    with serve_in_thread(lambda: mock_session) as server:
+    with serve_in_thread(mock_session.spawn) as server:
         dsn = server.dsn(user="test", dbname="test") + " max_protocol_version=latest"
         with psycopg.connect(dsn, autocommit=True) as conn:
             assert conn.execute("SELECT x FROM t").fetchall() == [("ok",)]
