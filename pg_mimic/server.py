@@ -8,10 +8,11 @@ import asyncio
 import inspect
 import logging
 import os
+import signal
 import struct
 from dataclasses import dataclass
 from types import TracebackType
-from typing import Awaitable, Callable
+from typing import Any, Awaitable, Callable
 
 from . import messages
 from .auth import AuthPlugin, IdentityProvider, SimpleIdentityProvider, TrustAuthPlugin
@@ -84,6 +85,66 @@ class PgServer:
         assert self._server is not None, "call start_server()/start_unix_server() first"
         async with self._server:
             await self._server.serve_forever()
+
+    def run(self, host: str = "127.0.0.1", port: int = 5432, **kwargs: Any) -> None:
+        """Serve until interrupted. For when the server *is* the program.
+
+            PgServer(session_factory=MySession).run(port=5432)
+
+        Blocking, and owns the event loop -- it calls `asyncio.run`, so there must
+        not already be one. Inside an existing loop, or anywhere the caller wants
+        the loop for something else, use `start_server()` and `serve_forever()`
+        directly; this is only the common case wrapped up.
+
+        SIGINT and SIGTERM stop it and it returns; neither raises. The signals are
+        handled *by the loop* rather than left to Python's default handler, and
+        that is not tidiness: a default-handled SIGINT raises KeyboardInterrupt
+        into whichever coroutine happens to be running, so a connection parked in
+        `read_message()` dies with an exception nobody retrieves and asyncio prints
+        it. Intermittently, depending on where the signal lands. Handling it here
+        means one future resolves and the shutdown is ordinary.
+
+        The listening address goes out through this module's logger at INFO rather
+        than to stdout, so a program that embeds pg_mimic decides where its own
+        output goes. `logging.basicConfig(level=logging.INFO)` is enough to see it.
+        """
+
+        async def serve() -> None:
+            loop = asyncio.get_running_loop()
+            stop = loop.create_future()
+
+            def request_stop() -> None:
+                if not stop.done():
+                    stop.set_result(None)
+
+            installed = []
+            for signal_number in (signal.SIGINT, signal.SIGTERM):
+                try:
+                    loop.add_signal_handler(signal_number, request_stop)
+                    installed.append(signal_number)
+                except (NotImplementedError, RuntimeError):
+                    # Windows, and any loop that will not take one. The
+                    # KeyboardInterrupt path below is the fallback there.
+                    pass
+
+            await self.start_server(host=host, port=port, **kwargs)
+            logger.info("pg_mimic listening on %s:%s", host, port)
+            try:
+                await stop
+            finally:
+                for signal_number in installed:
+                    loop.remove_signal_handler(signal_number)
+                # Not left to the loop shutdown: close() drops live connections,
+                # and without it a client still attached keeps the server from
+                # finishing at all -- see close()'s own note.
+                self.close()
+                await self.wait_closed()
+
+        try:
+            asyncio.run(serve())
+        except KeyboardInterrupt:  # pragma: no cover -- only where add_signal_handler is unavailable
+            pass
+        logger.info("pg_mimic stopped")
 
     async def __aenter__(self) -> PgServer:
         """Start on an ephemeral port, unless the caller already started us.

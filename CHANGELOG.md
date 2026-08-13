@@ -10,6 +10,12 @@ what shipped rather than what was written down at the time.
 ## Unreleased
 
 ### Added
+- `PgServer.run(host=..., port=...)` — a blocking entry point for when the server
+  is the program. It owns the event loop, logs the listening address through the
+  package logger, and returns on SIGINT or SIGTERM rather than raising. The signals
+  are handled by the loop, so a connection parked mid-read no longer dies with an
+  unretrieved `KeyboardInterrupt` that asyncio prints. The async entry points are unchanged for anyone
+  embedding in an existing loop. All six examples use it. (#90)
 
 - Server-to-client push, the first thing pg_mimic sends that a client didn't ask
   for: `Connection.notice()` emits a `NoticeResponse`, so a session can `WARNING`

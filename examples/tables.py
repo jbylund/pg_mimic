@@ -11,8 +11,8 @@ describe()/query()/schema() work, so real SQL over Python rows just works.
 Read-only: an INSERT is refused rather than applied to the dicts below.
 """
 
-import asyncio
 import datetime
+import logging
 from decimal import Decimal
 
 from pg_mimic import JSONB, PgServer, TableSession
@@ -40,13 +40,8 @@ COLUMNS = {
 }
 
 
-async def main():
-    # A session per connection, so the factory builds one rather than sharing it.
-    server = PgServer(session_factory=lambda: TableSession(TABLES, columns=COLUMNS))
-    await server.start_server(host="127.0.0.1", port=5432)
-    print("pg_mimic listening on port 5432 (serving %d tables read-only)" % len(TABLES))
-    await server.serve_forever()
-
-
 if __name__ == "__main__":
-    asyncio.run(main())
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    logging.info("serving %d tables read-only", len(TABLES))
+    # A session per connection, so the factory builds one rather than sharing it.
+    PgServer(session_factory=lambda: TableSession(TABLES, columns=COLUMNS)).run()

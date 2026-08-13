@@ -15,7 +15,6 @@ Try a few things from psql and watch this process's stdout:
 """
 
 import argparse
-import asyncio
 import logging
 
 from pg_mimic import PgServer, ResultColumn, Session
@@ -49,17 +48,12 @@ class EchoSession(Session):
         yield (sql,)
 
 
-async def main(host: str, port: int) -> None:
-    server = PgServer(session_factory=EchoSession)
-    await server.start_server(host=host, port=port)
-    print(f"pg_mimic echo server listening on {host}:{port}")
-    print(f'Connect with: psql "host={host} port={port} user=test dbname=test"')
-    await server.serve_forever()
-
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=5432)
     args = parser.parse_args()
-    asyncio.run(main(args.host, args.port))
+
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    logging.info('connect with: psql "host=%s port=%s user=test dbname=test"', args.host, args.port)
+    PgServer(session_factory=EchoSession).run(host=args.host, port=args.port)
