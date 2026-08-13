@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import logging
 import os
 import struct
 from dataclasses import dataclass
@@ -18,6 +19,8 @@ from .connection import Connection
 from .errors import FEATURE_NOT_SUPPORTED, PgError, ProtocolViolation
 from .session import BaseSession
 from .stream import DEFAULT_MAX_MESSAGE_SIZE, ConnectionClosed, PgStream
+
+logger = logging.getLogger(__name__)
 
 SessionFactory = Callable[[], BaseSession | Awaitable[BaseSession]]
 AuthPluginFactory = Callable[[str], AuthPlugin]
@@ -60,6 +63,10 @@ class PgServer:
 
         self._server: asyncio.base_events.Server | None = None
         self._connections: dict[int, Connection] = {}
+        # channel -> the connections listening to it. Server-wide because that is
+        # what LISTEN/NOTIFY is: a NOTIFY reaches every connection subscribed to
+        # the channel, not just the one that raised it. See notify().
+        self._listeners: dict[str, set[Connection]] = {}
         self._tasks: set[asyncio.Task] = set()
         self._writers: set[asyncio.StreamWriter] = set()
         self._closing = False
@@ -158,6 +165,58 @@ class PgServer:
         conn = self._connections.get(pid)
         if conn is not None and conn.secret == secret:
             conn.request_cancel()
+
+    # --- LISTEN/NOTIFY registry ---------------------------------------------------
+
+    def add_listener(self, channel: str, connection: Connection) -> None:
+        self._listeners.setdefault(channel, set()).add(connection)
+
+    def remove_listener(self, channel: str, connection: Connection) -> None:
+        subscribers = self._listeners.get(channel)
+        if subscribers is None:
+            return
+        subscribers.discard(connection)
+        # Dropped when empty rather than left as a husk: channel names come from
+        # clients, so a long-lived server would otherwise accumulate one entry per
+        # name anything ever listened to.
+        if not subscribers:
+            del self._listeners[channel]
+
+    def listeners(self, channel: str) -> set[Connection]:
+        """The connections currently listening to `channel`. A copy, so a caller
+        may deliver to it while a delivery changes the registry underneath."""
+        return set(self._listeners.get(channel, ()))
+
+    def notify(self, channel: str, payload: str = "", pid: int = 0) -> int:
+        """Deliver a notification to every connection listening to `channel`, and
+        report how many got it.
+
+        Public: a `NOTIFY` statement is only one way to raise an event, and code
+        embedding the server may want to raise one from outside a session
+        entirely. Delivery is synchronous but never blocking -- see
+        Connection._deliver_async.
+
+        One listener failing does not stop the rest. A connection can be closing
+        while this runs, and a fanout that gave up half way would leave the
+        outcome depending on set iteration order.
+
+        Must be called on the loop the server is running on, because it writes to
+        connections' transports and asyncio transports are not thread-safe. That
+        is automatic from inside a session or a middleware, and is the one thing
+        to watch when the server is on a thread of its own -- hop to its loop
+        (`testing.ServerThread.loop`) rather than calling straight through::
+
+            thread.loop.call_soon_threadsafe(server.notify, "orders", "42")
+        """
+        delivered = 0
+        for connection in self.listeners(channel):
+            try:
+                connection.notify(channel, payload, pid)
+            except Exception:
+                logger.debug("dropping notification on channel %r: connection %s is gone", channel, connection.pid)
+            else:
+                delivered += 1
+        return delivered
 
     def _allocate_pid(self) -> int:
         pid = self._next_pid

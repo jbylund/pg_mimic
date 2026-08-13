@@ -11,6 +11,20 @@ what shipped rather than what was written down at the time.
 
 ### Added
 
+- Server-to-client push, the first thing pg_mimic sends that a client didn't ask
+  for: `Connection.notice()` emits a `NoticeResponse`, so a session can `WARNING`
+  or `NOTICE` the way a real backend does — psycopg's `add_notice_handler` and
+  asyncpg's `add_log_listener` see them. (#24)
+- `LISTEN` / `UNLISTEN <channel>` / `UNLISTEN *` and `NOTIFY <channel>[, payload]`
+  / `pg_notify()`, fanned out to every listening connection on the server, so
+  event-driven code built on `asyncpg.add_listener` or psycopg's
+  `conn.notifies()` can be tested against a fake. `NOTIFY` defers to transaction
+  commit and a `ROLLBACK` drops it, as in Postgres — a rolled-back unit of work
+  must not have announced itself. `PgServer.notify()` raises the same event from
+  outside a session, and `Connection.notify_listeners()` from inside one. (#24)
+- `Session.connection`: the documented accessor for the connection a session is
+  serving, replacing the private `_connection` attribute as the way to reach
+  `notice()`, `notify_listeners()` and the connection's `pid`. (#24)
 - `TableSession`: serve a dict of in-memory tables over the wire with no session
   code at all, with column types inferred from the rows. (#30)
 - `pg_mimic.testing` is public API: `serve()` and `serve_in_thread()` start a
@@ -46,6 +60,10 @@ what shipped rather than what was written down at the time.
 
 ### Changed
 
+- `SET LOCAL` outside a transaction block now emits the `WARNING` real Postgres
+  emits (`25P01`, "SET LOCAL can only be used in transaction blocks") instead of
+  doing nothing silently, which is all it could do before there was a
+  `NoticeResponse` to say it with. (#24)
 - Settings are transactional: `SET` rolls back with its transaction and
   `SET LOCAL` reverts at commit, as in Postgres. `RESET` and `DISCARD` are
   handled, and changes to the settings a client tracks emit `ParameterStatus`.

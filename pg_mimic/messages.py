@@ -46,6 +46,7 @@ ERROR_RESPONSE = b"E"
 NEGOTIATE_PROTOCOL_VERSION = b"v"
 NO_DATA = b"n"
 NOTICE_RESPONSE = b"N"
+NOTIFICATION_RESPONSE = b"A"
 PARAMETER_DESCRIPTION = b"t"
 PARAMETER_STATUS = b"S"
 PARSE_COMPLETE = b"1"
@@ -186,6 +187,18 @@ def make_error_response(fields: dict[str, str]) -> bytes:
 
 def make_notice_response(fields: dict[str, str]) -> bytes:
     return _fields_message(NOTICE_RESPONSE, fields)
+
+
+def make_notification_response(pid: int, channel: str, payload: str = "") -> bytes:
+    """A LISTEN/NOTIFY delivery: the notifying backend's PID, the channel, and the
+    payload (empty string when `NOTIFY chan` carried none -- there is no "absent"
+    encoding, and real Postgres reports `NOTIFY chan` and `NOTIFY chan, ''`
+    identically).
+
+    Unlike every other builder here, this one's *placement* is the hard part
+    rather than its bytes: see Connection._deliver_async for when it may go out.
+    """
+    return _message(NOTIFICATION_RESPONSE, pack_int32(pid) + _cstring(channel) + _cstring(payload))
 
 
 def make_fatal_error(sqlstate: str, message: str) -> bytes:

@@ -79,6 +79,18 @@ class ServerThread:
         self._startup_error: BaseException | None = None
         self._thread = threading.Thread(target=self._run, name="pg_mimic-server", daemon=True)
 
+    @property
+    def loop(self) -> asyncio.AbstractEventLoop:
+        """The loop the server runs on.
+
+        Public because anything that reaches into a live connection from the
+        outside has to get onto it first -- `PgServer.notify()` writes to client
+        transports, and asyncio transports are not thread-safe::
+
+            thread.loop.call_soon_threadsafe(server.notify, "orders", "42")
+        """
+        return self._loop
+
     def start(self) -> int:
         """Start serving and return the bound port. Blocks until the socket is
         bound, so a client can connect the moment this returns."""

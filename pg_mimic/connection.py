@@ -22,6 +22,7 @@ from .errors import (
     INVALID_SQL_STATEMENT_NAME,
     PROTOCOL_VIOLATION,
     QUERY_CANCELED,
+    SUCCESSFUL_COMPLETION,
     PgError,
     ProtocolViolation,
 )
@@ -142,6 +143,17 @@ class Connection:
         # only the connection can deliver. See report_parameter().
         self._pending_parameter_status: dict[str, str] = {}
 
+        # Async messages waiting for a point in the stream where they may legally
+        # go out, and whether we are standing on one. See _deliver_async().
+        self._pending_async: list[bytes] = []
+        self._at_ready_for_query = False
+        # The channels this connection is registered for in the server's registry.
+        # Mirrors state.listening once a transaction has made it real; kept
+        # separately because the two differ for the length of a transaction, and
+        # because unregistering at close needs the effective set, not the pending
+        # one. See sync_listeners().
+        self._registered_channels: set[str] = set()
+
     def request_cancel(self) -> None:
         if self._current_task is not None:
             self._current_task.cancel()
@@ -163,6 +175,149 @@ class Connection:
             self.stream.write(messages.make_parameter_status(name, value))
         self._pending_parameter_status.clear()
 
+    # --- server-to-client push: notices and notifications ----------------------------
+    #
+    # Everything above this point writes to the stream because the client asked
+    # for something. These two do not, which makes *where* in the stream they land
+    # the whole problem: a NotificationResponse dropped between two DataRows is
+    # not a protocol error the client reports, it is a row the client silently
+    # mis-parses.
+    #
+    # The rule, measured on PostgreSQL 18 by reading a raw socket rather than
+    # inferred from a client not complaining:
+    #
+    #   NOTIFY arriving mid-query   -> T D D D D D C A Z   (after CommandComplete)
+    #   NOTIFY arriving while idle  -> A                   (on its own, at once)
+    #   NOTIFY while a portal is
+    #     suspended mid-drain       -> D D s ... then A Z at Sync
+    #
+    # So a notification goes out at exactly one kind of place: between the
+    # ReadyForQuery that ended a command and the next command. A suspended portal
+    # is *not* such a place -- the connection is waiting on the client, but it has
+    # sent PortalSuspended rather than ReadyForQuery, and real Postgres holds the
+    # notification until Sync. `_at_ready_for_query` tracks precisely that, so the
+    # test is a fact about the stream rather than a guess about who is running.
+    #
+    # Notices are the other half and follow the other rule: raised *during* a
+    # query they belong to that query's response, ahead of its CommandComplete
+    # (again measured -- a `DROP TABLE IF EXISTS` of a missing table answers
+    # N C Z). So a notice raised from inside this connection's own command is
+    # written straight out, and only one raised from anywhere else has to queue.
+
+    def notice(self, message: str, severity: str = "NOTICE", **fields: str) -> None:
+        """Send the client a NoticeResponse -- Postgres's out-of-band `RAISE
+        NOTICE` / `WARNING` channel, surfaced by psycopg's `add_notice_handler`
+        and asyncpg's `add_log_listener`.
+
+        Raised from inside a query it attaches to that query's response, before
+        `CommandComplete`, as a real backend's does. Extra `ErrorResponse` fields
+        ride along as keyword arguments keyed by their protocol field byte, the
+        same as `PgError` -- `notice("...", D="a longer explanation")`.
+        """
+        payload = messages.make_notice_response({"S": severity, "V": severity, "C": SUCCESSFUL_COMPLETION, "M": message, **fields})
+        if self._in_own_command():
+            self.stream.write(payload)
+        else:
+            self._deliver_async(payload)
+
+    def notify(self, channel: str, payload: str = "", pid: int | None = None) -> None:
+        """Send *this* client a NotificationResponse, as though `pid` had run
+        `NOTIFY channel, payload`. Defaults to this connection's own pid.
+
+        The direct primitive: it delivers to one client and does not consult the
+        server's registry or wait for a transaction. `notify_listeners()` is the
+        one that behaves like the SQL statement.
+        """
+        self._deliver_async(messages.make_notification_response(self.pid if pid is None else pid, channel, payload))
+
+    def notify_listeners(self, channel: str, payload: str = "") -> None:
+        """Raise a notification the way the `NOTIFY` statement does: fanned out to
+        every connection on the server listening to `channel`, this one included,
+        and deferred to commit if a transaction is open.
+
+        The deferral is not a detail. Measured against PostgreSQL 18, a `NOTIFY`
+        in a transaction that rolls back is never delivered -- and delivering it
+        anyway would mean a rolled-back unit of work still announced itself, which
+        is a false positive in exactly the event-driven code this feature exists to
+        test.
+        """
+        if self.tx_status == b"I":
+            self.server.notify(channel, payload, self.pid)
+            return
+        # Duplicates within one transaction collapse on (channel, payload), as
+        # they do there -- `NOTIFY c,'x'; NOTIFY c,'x'; NOTIFY c,'y'` commits as
+        # two notifications, not three.
+        entry = (channel, payload)
+        if entry not in self.state.pending_notifies:
+            self.state.pending_notifies.append(entry)
+
+    def flush_pending_notifies(self) -> None:
+        """Fan out what a COMMIT just made real. Called by the middleware that
+        answers COMMIT; a ROLLBACK drops the same list instead (SessionState
+        restores it from the scope frame, so there is nothing to do there)."""
+        for channel, payload in self.state.take_pending_notifies():
+            self.server.notify(channel, payload, self.pid)
+
+    def _in_own_command(self) -> bool:
+        """Are we running inside this connection's own command dispatch?
+
+        Which is what tells a notice the session raised while answering a query
+        apart from one raised by a background task that happens to hold a
+        reference to this connection. The first may write immediately; the second
+        may not.
+        """
+        return self._current_task is not None and asyncio.current_task() is self._current_task
+
+    def _deliver_async(self, payload: bytes) -> None:
+        """Write an async message if the stream is standing somewhere one may go,
+        and otherwise hold it until it is.
+
+        No drain: asyncio hands a write straight to the transport unless flow
+        control has kicked in, so an idle connection's notification reaches the
+        socket without one -- which is what lets this stay synchronous and be
+        callable from a fanout that is not this connection's own task.
+        """
+        if self._at_ready_for_query:
+            self.stream.write(payload)
+        else:
+            self._pending_async.append(payload)
+
+    def _flush_async(self) -> None:
+        for payload in self._pending_async:
+            self.stream.write(payload)
+        self._pending_async.clear()
+
+    # --- LISTEN/UNLISTEN, against the server's channel registry ----------------------
+
+    def sync_listeners(self) -> None:
+        """Make `state.listening` real, registering and unregistering with the
+        server to match.
+
+        Called wherever a subscription becomes effective -- a LISTEN outside a
+        transaction, a COMMIT, a ROLLBACK, `DISCARD ALL`. Idempotent by
+        construction (it diffs against what is registered), which is what makes
+        calling it at every one of those points correct rather than merely safe.
+
+        The indirection exists because LISTEN is transactional in a way that is
+        not just rollback: measured on PostgreSQL 18, a `LISTEN` inside an open
+        transaction does not receive a notification sent before its `COMMIT`. So
+        `state.listening` is the pending set and `_registered_channels` the live
+        one, and they differ for the length of a transaction.
+        """
+        for channel in self._registered_channels - self.state.listening:
+            self.server.remove_listener(channel, self)
+        for channel in self.state.listening - self._registered_channels:
+            self.server.add_listener(channel, self)
+        self._registered_channels = set(self.state.listening)
+
+    def _drop_listeners(self) -> None:
+        """Leave the registry entirely, on the way out. Reads
+        `_registered_channels` rather than `state.listening`, which may hold
+        subscriptions from a transaction that never committed."""
+        for channel in self._registered_channels:
+            self.server.remove_listener(channel, self)
+        self._registered_channels.clear()
+
     async def run(self) -> None:
         try:
             if not await self._authenticate():
@@ -179,7 +334,12 @@ class Connection:
                 # handed to init(), so a session that overrides init() without
                 # calling super() still has it -- and has it before init() runs.
                 self.session.state = self.state
+            # Set before init() rather than after: the startup burst ended with a
+            # ReadyForQuery, so a session that greets its client with a notice from
+            # init() is standing on a legal point to send one.
+            self._at_ready_for_query = True
             await self.session.init(self)
+            await self.stream.drain()
             await self._command_loop()
         except ConnectionClosed:
             pass
@@ -192,6 +352,11 @@ class Connection:
             self.stream.write(messages.make_fatal_error(e.sqlstate, e.message))
             await self.stream.drain_quietly()
         finally:
+            # Before session.close(), and outside its try: a connection that stays
+            # in the registry after it has gone is a fanout writing to a dead
+            # stream, and a session whose close() raises must not be what leaves it
+            # there.
+            self._drop_listeners()
             try:
                 await self.session.close()
             except Exception:
@@ -229,6 +394,9 @@ class Connection:
     async def _command_loop(self) -> None:
         while True:
             tag, payload = await self.stream.read_message()
+            # A command has arrived, so the gap async messages were allowed into
+            # has closed. Anything raised from here on queues until the next one.
+            self._at_ready_for_query = False
             if tag == messages.TERMINATE:
                 return
             self._current_task = asyncio.ensure_future(self._dispatch(tag, payload))
@@ -248,8 +416,13 @@ class Connection:
 
             if tag == messages.QUERY or tag == messages.SYNC:
                 self._flush_parameter_status()
+                # After the ParameterStatus reports and before ReadyForQuery, which
+                # is where PostgreSQL 18 puts them -- and the only place in a
+                # command's response where they cannot land inside a DataRow run.
+                self._flush_async()
                 self.stream.write(messages.make_ready_for_query(self.tx_status))
                 self._ignore_until_sync = False
+                self._at_ready_for_query = True
             await self.stream.drain()
 
     async def _dispatch(self, tag: bytes, payload: bytes) -> None:
