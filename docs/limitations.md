@@ -55,12 +55,15 @@
 - **`pg_catalog` is emulated only as far as psql's `\d` family needs.** `pg_class`, `pg_namespace`,
   `pg_attribute`, `pg_type` and `pg_am` are built from your `Session.schema()`; indexes, constraints,
   triggers, policies and defaults are declared but always empty, since pg_mimic models none of them.
-  A catalog query that can't be answered returns no rows rather than falling through to your session,
-  which would otherwise reply with a shape the client reads as catalog data.
+  A `pg_catalog` query that can't be answered returns no rows rather than falling through to your
+  session, which would otherwise reply with a shape the client reads as catalog data. That leniency is
+  deliberate and narrow: psql asks `pg_catalog` for partitions, collations and statistics a mimic has
+  none of, and erroring would break `\d` and `\l` outright. It diverges from Postgres, which raises
+  `42703` for a column that isn't there.
 
-  `information_schema` is the other way round: both views carry every column PostgreSQL 18 has, because
-  a column left off answered *empty* rather than erroring, and a client reads that as a table with no
-  columns. What a declared schema can't settle is NULL rather than absent — pg_mimic has no defaults,
+  `information_schema` is the other way round: both views carry every column PostgreSQL 18 has, and a
+  column that isn't there raises `42703` exactly as Postgres does. Answering *empty* is worse than an
+  error for an ORM, which concludes the table has no such column rather than that pg_mimic cannot say. What a declared schema can't settle is NULL rather than absent — pg_mimic has no defaults,
   identity sequences, collations or domains, so `column_default`, `identity_start` and their neighbours
   are honestly blank while the query still runs. The column list and its order are generated from a live
   server into `pg_mimic/information_schema.json` (see `tools/generate_information_schema.py`); the values

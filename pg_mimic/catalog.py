@@ -21,6 +21,7 @@ executing it, and is a separate problem.
 from __future__ import annotations
 
 import logging
+import re
 from typing import TYPE_CHECKING
 
 from sqlglot import exp
@@ -32,7 +33,7 @@ from .arrays import ARRAY_OID, is_array_oid
 from .catalog_data import INFORMATION_SCHEMA_SCHEMA, PG_CATALOG_SCHEMA
 from .catalog_rewrite import rewrite_for_executor
 from .describe import oid_for_declared_type
-from .errors import FEATURE_NOT_SUPPORTED, PgError
+from .errors import FEATURE_NOT_SUPPORTED, UNDEFINED_COLUMN, PgError
 from .results import ResultColumn
 from .session import Statement, StaticStatement, statement_from_rows
 from .types import (
@@ -419,6 +420,20 @@ def _empty_result(expr: exp.Expression) -> Statement | None:
     return StaticStatement(expr.sql(dialect="postgres"), columns, [])
 
 
+def _undefined_column_message(error: OptimizeError) -> str:
+    """Postgres' wording for a column that isn't there, from sqlglot's.
+
+    sqlglot says `Column '<name>' could not be resolved. Line: 1, Col: 19`; Postgres
+    says `column "<name>" does not exist`. Clients match on the latter, and the line
+    and column numbers are sqlglot's view of a statement pg_mimic rewrote before
+    running -- they point into text the client never sent.
+    """
+    match = re.search(r"Column '([^']+)' could not be resolved", str(error))
+    if match is None:
+        return str(error)
+    return f'column "{match.group(1)}" does not exist'
+
+
 def _as_statement(expr: exp.Expression, schema: dict, tables: dict, *, strict: bool) -> Statement | None:
     """Run a catalog query, or decide what its failure means. See #39.
 
@@ -429,15 +444,22 @@ def _as_statement(expr: exp.Expression, schema: dict, tables: dict, *, strict: b
     try:
         result = sqlglot_execute(expr, schema=schema, tables=tables, dialect="postgres")
     except OptimizeError as error:
-        # A catalog column pg_mimic doesn't model. Empty is *not* the right answer
-        # here -- Postgres says 42703, and no rows is the same kind of lie the
-        # executor branch below refuses to tell. What kept it lenient was the width
-        # of the model rather than the principle: information_schema carried 7 of
-        # Postgres' 44 columns and 4 of its 12, so raising would have turned
-        # ordinary ORM introspection into errors overnight. Both views are now
-        # served at full width (#99), which leaves pg_catalog -- a deliberate slice,
-        # where psql asks after columns a mimic has no business modelling. Making
-        # this 42703 for information_schema alone is #66.
+        # A column the catalog does not model. On information_schema that is the
+        # client's own query and Postgres answers 42703; no rows is the same lie the
+        # executor branch below refuses to tell, and worse than an error for an ORM,
+        # which concludes the table has no such column rather than that pg_mimic
+        # cannot say. What kept this lenient was the width of the model rather than
+        # the principle -- information_schema carried 7 of Postgres' 44 columns and
+        # 4 of its 12, so raising would have turned ordinary introspection into
+        # errors overnight. #99 serves both views at full width, which is what makes
+        # an unmodelled one unusual enough to refuse.
+        if strict:
+            raise PgError(UNDEFINED_COLUMN, _undefined_column_message(error)) from None
+        # pg_catalog stays lenient, and not merely out of caution: measured across
+        # psql's \d family, nothing it asks of pg_catalog is unmodelled any more --
+        # the failures that remain are sqlglot executor bugs (#58) reaching the
+        # branch below. This one is for the columns of a deliberate slice, where psql
+        # asks after things a mimic has no business modelling.
         logger.debug("catalog query answered empty, nothing models it: %s -- %s", error, expr.sql(dialect="postgres"))
         return _empty_result(expr)
     except Exception as error:

@@ -62,13 +62,20 @@ def test_an_unrunnable_information_schema_query_is_an_error_not_no_rows(conn, mo
         assert rows and all(length == len(name) for name, length in rows)
 
 
-def test_an_unmodelled_information_schema_column_is_still_empty(conn, mock_session):
-    """Pinning current behaviour, not endorsing it: Postgres answers 42703 here.
+def test_an_unmodelled_information_schema_column_is_an_error(conn, mock_session):
+    """This answered no rows until #66, which is what Postgres calls 42703.
 
-    What kept it lenient was the width of the model rather than the principle, and
-    #99 has since taken both views to Postgres' full width -- so a column reaching
-    this branch is now genuinely one Postgres does not have either. See #66; this
-    test flips with it."""
+    Empty is worse than an error for an ORM: it concludes the table has no such
+    column rather than that pg_mimic cannot say. What kept it lenient was the width
+    of the model rather than the principle -- #99 took both views to Postgres' full
+    width, so a column reaching this branch is one Postgres does not have either.
+
+    The message is Postgres' wording, not sqlglot's `Column 'x' could not be
+    resolved. Line: 1, Col: 19` -- clients match on the former, and those line and
+    column numbers point into SQL that pg_mimic rewrote before running, which the
+    client never sent."""
+    import psycopg
+    import pytest
 
     async def schema():
         return {"users": {"id": "integer"}}
@@ -76,7 +83,29 @@ def test_an_unmodelled_information_schema_column_is_still_empty(conn, mock_sessi
     mock_session.schema = schema
 
     with conn.cursor() as cur:
-        cur.execute("SELECT nosuchcolumn FROM information_schema.tables")
+        with pytest.raises(psycopg.errors.UndefinedColumn) as excinfo:
+            cur.execute("SELECT nosuchcolumn FROM information_schema.tables")
+        assert excinfo.value.sqlstate == "42703"
+        assert 'column "nosuchcolumn" does not exist' in str(excinfo.value)
+
+
+def test_pg_catalog_stays_lenient_about_an_unmodelled_column(conn, mock_session):
+    r"""The other half of #66, and a deliberate divergence: real Postgres raises
+    42703 here too.
+
+    pg_catalog is a chosen slice, and psql asks after columns a mimic has no
+    business modelling. Measured across the `\d` family nothing psql asks is
+    unmodelled any more -- the failures that remain are sqlglot executor bugs
+    (#58) -- so this branch now guards those. Making it strict before they land
+    would break `\d` and `\l` outright."""
+
+    async def schema():
+        return {"users": {"id": "integer"}}
+
+    mock_session.schema = schema
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT nosuchcolumn FROM pg_catalog.pg_class")
         assert cur.fetchall() == []
 
 
