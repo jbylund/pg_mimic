@@ -27,12 +27,13 @@ from sqlglot import exp
 from sqlglot.errors import OptimizeError
 from sqlglot.executor import execute as sqlglot_execute
 
-from .catalog_data import DECLARED_TYPE_OIDS, PG_CATALOG_SCHEMA
+from .catalog_data import PG_CATALOG_SCHEMA
 from .catalog_rewrite import rewrite_for_executor
+from .describe import oid_for_declared_type
 from .errors import FEATURE_NOT_SUPPORTED, PgError
 from .results import ResultColumn
 from .session import Statement, StaticStatement, statement_from_rows
-from .types import TEXT, oid_for_type
+from .types import TEXT
 
 if TYPE_CHECKING:
     from .connection import Connection
@@ -218,7 +219,7 @@ def _build_pg_catalog(user_schema: dict, database: str = "postgres") -> tuple[di
                 {
                     "attrelid": table_oid,
                     "attname": col_name,
-                    "atttypid": _oid_for_declared_type(col_type),
+                    "atttypid": oid_for_declared_type(col_type),
                     "attnum": position,
                     "attnotnull": False,
                     "atthasdef": False,
@@ -229,7 +230,7 @@ def _build_pg_catalog(user_schema: dict, database: str = "postgres") -> tuple[di
                     "atttypmod": -1,
                     "attstattarget": -1,
                     "attformattype": str(col_type),
-                    "attstorage": _storage_for(_oid_for_declared_type(col_type)),
+                    "attstorage": _storage_for(oid_for_declared_type(col_type)),
                     # '' is Postgres' own "no explicit compression set".
                     "attcompression": "",
                 }
@@ -294,31 +295,6 @@ def _build_pg_catalog(user_schema: dict, database: str = "postgres") -> tuple[di
         }
     }
     return PG_CATALOG_SCHEMA, tables
-
-
-def _oid_for_declared_type(declared: str) -> int:
-    """Session.schema() declares types as free text ("integer", "text[]"), so map the
-    common spellings onto real OIDs and fall back to text for anything else."""
-    from . import types as pg_types
-    from .arrays import ARRAY_OID
-
-    name = str(declared).strip().lower()
-    # A trailing `[]` says array, and how many of them says nothing else: Postgres
-    # has one array type per element type however many dimensions the declaration
-    # spells, so `text[][]` is the same `_text` as `text[]`. Strip them all and
-    # resolve the element once.
-    element = name
-    while element.endswith("[]"):
-        element = element[:-2].rstrip()
-
-    type_name = DECLARED_TYPE_OIDS.get(element)
-    oid = getattr(pg_types, type_name) if type_name is not None else oid_for_type(str)
-    if element == name:
-        return oid
-    # An element with no array type over it is not a case pg_mimic can reach --
-    # everything in DECLARED_TYPE_OIDS has one, as does the text fallback -- so the
-    # element OID is only here to keep an unknown from becoming a KeyError.
-    return ARRAY_OID.get(oid, oid)
 
 
 # --- the statements the middleware hands back ----------------------------------------

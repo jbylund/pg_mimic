@@ -13,7 +13,11 @@ from importlib.metadata import version as _installed_version
 # errors is exported for its SQLSTATE constants. PgError below is the exception a
 # session raises, but `PgError("42P01", ...)` says nothing at the call site --
 # `PgError(errors.UNDEFINED_TABLE, ...)` does, so the codes are public surface too.
-from . import catalog, errors, middleware
+#
+# describe is the machinery behind "column shape from a declared schema, without
+# executing" -- what TableSession answers Describe with, and what any session
+# declaring its own schema() should reach for rather than reimplement (#88).
+from . import catalog, describe, errors, middleware
 from .arrays import ARRAY_OID
 from .auth import (
     AuthPlugin,
@@ -24,6 +28,13 @@ from .auth import (
     SimpleIdentityProvider,
     TrustAuthPlugin,
 )
+
+# The two ways a column's type is named on the way to an OID, exported together
+# because they are one pair: `oid_for_declared_type("text[]")` takes the SQL
+# spelling a Session.schema() declares, `oid_for_type(list[str])` the Python type
+# ResultColumn.for_type reads. A session declaring a schema needs the first to
+# describe its own columns, and used to have to write its own (#89).
+from .describe import oid_for_declared_type
 from .errors import PgError
 from .results import ResultColumn
 from .server import PgServer
@@ -54,6 +65,7 @@ from .types import (
     TIMESTAMPTZ,
     UUID,
     VARCHAR,
+    oid_for_type,
 )
 
 try:
@@ -68,6 +80,7 @@ except PackageNotFoundError:
 __all__ = [
     "PgServer",
     "catalog",
+    "describe",
     "errors",
     "middleware",
     "BaseSession",
@@ -96,6 +109,8 @@ __all__ = [
     "TIMESTAMPTZ",
     "UUID",
     "VARCHAR",
+    "oid_for_declared_type",
+    "oid_for_type",
     "PgError",
     "AuthPlugin",
     "TrustAuthPlugin",

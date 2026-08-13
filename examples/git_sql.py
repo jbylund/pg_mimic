@@ -24,7 +24,9 @@ describe() never runs the query. Column shape comes from sqlglot's type
 annotator against SCHEMA and is exact even through aggregates and arithmetic
 -- count(*) is int8, insertions / 2.0 is float8 -- so Parse/Describe is
 answered without touching git. examples/dbapi_proxy.py has to execute a SELECT
-to learn its own column types; a declared schema buys the difference.
+to learn its own column types; a declared schema buys the difference. The
+derivation itself is pg_mimic.describe's, shared with TableSession: this file
+carried its own for a while and quietly fell behind it (#88).
 
 WHERE conjuncts are pushed into git's own filters, so `WHERE author_name = 'x'`
 becomes `git log --author=x` instead of reading every commit and discarding
@@ -55,12 +57,12 @@ from pg_mimic import (
     INT4,
     INT8,
     NUMERIC,
-    TEXT,
     TIMESTAMP,
     PgServer,
-    ResultColumn,
     Session,
+    oid_for_declared_type,
 )
+from pg_mimic.describe import result_columns, size_integer_literals
 from pg_mimic.errors import FEATURE_NOT_SUPPORTED, PgError
 
 # --- patterns --------------------------------------------------------------------
@@ -146,6 +148,12 @@ executor_env.ENV["INTERVAL"] = _interval_delta
 # slice psql's \d reads from it, sqlglot resolves and type-annotates against it, and
 # the executor uses it to plan. Timestamps are naive UTC on purpose -- sqlglot's now()
 # is naive, and comparing it to an aware datetime raises.
+#
+# Both readings of these type names -- the declared spelling, and the type sqlglot's
+# annotator hands back for a column derived from it -- come from pg_mimic itself
+# (pg_mimic.describe), so neither can drift from the library's. This file used to
+# carry its own copy of both, and did drift: it described `select 3000000000` as
+# int4 long after #40 was fixed for TableSession.
 SCHEMA = {
     "commits": {
         "sha": "text",
@@ -178,28 +186,6 @@ SCHEMA = {
         "last_commit_at": "timestamp",
     },
 }
-
-# sqlglot's annotated types -> Postgres OIDs, for describing the columns a query
-# projects. SCHEMA's own declared type names route through the same map via
-# _declared_oid, so the two readings of SCHEMA cannot drift apart.
-_TYPE_OIDS = {
-    exp.DataType.Type.TEXT: TEXT,
-    exp.DataType.Type.VARCHAR: TEXT,
-    exp.DataType.Type.CHAR: TEXT,
-    exp.DataType.Type.SMALLINT: INT2,
-    exp.DataType.Type.INT: INT4,
-    exp.DataType.Type.BIGINT: INT8,
-    exp.DataType.Type.BOOLEAN: BOOL,
-    exp.DataType.Type.TIMESTAMP: TIMESTAMP,
-    exp.DataType.Type.DOUBLE: FLOAT8,
-    exp.DataType.Type.FLOAT: FLOAT8,
-    exp.DataType.Type.DECIMAL: NUMERIC,
-}
-
-
-def _declared_oid(name: str | None) -> int | None:
-    """A SCHEMA type name ("integer") -> OID, through the map describe() already uses."""
-    return _TYPE_OIDS.get(exp.DataType.build(name).this) if name else None
 
 
 # --- pushdown ------------------------------------------------------------------------
@@ -595,15 +581,19 @@ class GitSession(Session):
         return [oids.get(index) for index in range(max(oids, default=-1) + 1)]
 
     async def describe(self, sql, param_oids):
-        """Column shape without executing anything -- see the module docstring."""
+        """Column shape without executing anything -- see the module docstring.
+
+        The three steps are pg_mimic.describe's, not this file's: sizing before
+        annotation is what makes `select 3000000000` a bigint rather than the int4
+        that crashes asyncpg's binary decoder, and result_columns is what calls an
+        unaliased output column `?column?` the way Postgres does.
+        """
         expr = self._analyze(sql, params=None)
         if not isinstance(expr, exp.Select):
             return None
-        expr = annotate_types(expr, schema=SCHEMA)
-        return [
-            ResultColumn(select.alias_or_name, _TYPE_OIDS.get(select.type.this if select.type else None, TEXT))
-            for select in expr.selects
-        ]
+        size_integer_literals(expr)
+        expr = annotate_types(expr, schema=SCHEMA, dialect="postgres")
+        return result_columns(expr, param_oids)
 
     async def query(self, sql, params):
         expr = self._analyze(sql, params)
@@ -693,7 +683,8 @@ def _oid_of_compared_column(node: exp.Parameter, aliases: dict[str, str]) -> int
         return None
     for side in (parent.this, parent.expression):
         if isinstance(side, exp.Column):
-            return _declared_oid(SCHEMA.get(aliases.get(side.table, ""), {}).get(side.name))
+            declared = SCHEMA.get(aliases.get(side.table, ""), {}).get(side.name)
+            return oid_for_declared_type(declared) if declared else None
     return None
 
 

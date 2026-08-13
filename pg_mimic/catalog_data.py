@@ -179,7 +179,7 @@ INTEGER_COLUMNS = {
 
 # The type spellings a Session.schema() may use, against the pg_mimic.types name of
 # the OID each one means. Scalars only: an array is spelled by suffixing an element
-# type, so catalog._oid_for_declared_type strips the `[]` and looks the element up
+# type, so describe.oid_for_declared_type strips the `[]` and looks the element up
 # here rather than this table carrying a second entry per type.
 DECLARED_TYPE_OIDS = {
     "integer": "INT4",

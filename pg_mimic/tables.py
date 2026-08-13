@@ -63,10 +63,24 @@ from sqlglot.optimizer.qualify import qualify
 from sqlglot.planner import Plan
 from sqlglot.schema import ensure_schema
 
-from .arrays import ARRAY_OID, element_oid_of, is_array_oid
+from .arrays import element_oid_of, is_array_oid
+
+# The declared-schema half of describe(), shared with any other session that
+# declares one (see pg_mimic.describe, and #88 for the copy that had diverged).
+# _PG_NAME and _pg_type_name are re-exported by being imported here: they read as
+# TableSession's own vocabulary from the outside, and the catalog's round-trip test
+# takes them off this module.
+from .describe import (
+    _PG_NAME,
+    _SQLGLOT_NAME,
+    _oid_for_sqlglot_type,
+    _param_index,
+    _pg_type_name,
+    result_columns,
+    size_integer_literals,
+)
 from .errors import (
     FEATURE_NOT_SUPPORTED,
-    INDETERMINATE_DATATYPE,
     INVALID_TEXT_REPRESENTATION,
     READ_ONLY_SQL_TRANSACTION,
     SYNTAX_ERROR,
@@ -78,24 +92,16 @@ from .results import ResultColumn
 from .session import CallbackStatement, Row, Session, Statement
 from .types import (
     BOOL,
-    BPCHAR,
-    BYTEA,
     DATE,
     FLOAT4,
     FLOAT8,
     INT2,
     INT4,
     INT8,
-    INTERVAL,
-    JSON,
-    JSONB,
     NUMERIC,
-    TEXT,
     TIME,
     TIMESTAMP,
     TIMESTAMPTZ,
-    UUID,
-    VARCHAR,
     oid_for_type,
 )
 
@@ -104,49 +110,6 @@ from .types import (
 # no Python type says which Postgres type you meant.
 DeclaredType = Any
 TableRows = Sequence[Mapping[str, Any]] | Sequence[Sequence[Any]]
-
-# (OID, the name Session.schema()/psql show, sqlglot's spelling of it). One table
-# rather than three dicts because these have to agree: a declared type is handed
-# to sqlglot by its spelling and comes back out of the annotator, and that round
-# trip is only lossless if both directions read the same row here.
-_TYPES: tuple[tuple[int, str, str], ...] = (
-    (BOOL, "boolean", "BOOLEAN"),
-    (INT2, "smallint", "SMALLINT"),
-    (INT4, "integer", "INT"),
-    (INT8, "bigint", "BIGINT"),
-    (FLOAT4, "real", "FLOAT"),
-    (FLOAT8, "double precision", "DOUBLE"),
-    (NUMERIC, "numeric", "DECIMAL"),
-    (TEXT, "text", "TEXT"),
-    (VARCHAR, "character varying", "VARCHAR"),
-    (BPCHAR, "character", "CHAR"),
-    (BYTEA, "bytea", "VARBINARY"),
-    (DATE, "date", "DATE"),
-    (TIME, "time", "TIME"),
-    (TIMESTAMP, "timestamp", "TIMESTAMP"),
-    (TIMESTAMPTZ, "timestamptz", "TIMESTAMPTZ"),
-    (INTERVAL, "interval", "INTERVAL"),
-    (UUID, "uuid", "UUID"),
-    (JSON, "json", "JSON"),
-    (JSONB, "jsonb", "JSONB"),
-)
-
-_PG_NAME = {oid: pg_name for oid, pg_name, _ in _TYPES}
-_SQLGLOT_NAME = {oid: sqlglot_name for oid, _, sqlglot_name in _TYPES}
-_OID_FOR_SQLGLOT_TYPE = {exp.DataType.build(sqlglot_name).this: oid for oid, _, sqlglot_name in _TYPES}
-
-# Spellings only the annotator produces -- no declared column uses them, so they
-# belong here rather than in _TYPES, where they would make the round trip above
-# ambiguous. Each maps to what Postgres itself would call the expression.
-_OID_FOR_SQLGLOT_TYPE.update(
-    {
-        exp.DataType.Type.BIGDECIMAL: NUMERIC,
-        exp.DataType.Type.DATETIME: TIMESTAMP,
-        exp.DataType.Type.NCHAR: BPCHAR,
-        exp.DataType.Type.NVARCHAR: VARCHAR,
-        exp.DataType.Type.BINARY: BYTEA,
-    }
-)
 
 _UNTYPED = (exp.DataType.Type.UNKNOWN, exp.DataType.Type.NULL)
 
@@ -159,11 +122,6 @@ _DECIMAL_TYPES = (exp.DataType.Type.DECIMAL, exp.DataType.Type.BIGDECIMAL)
 # listed here has all of its operands in `_child_expressions`, which is what the
 # rewrite reads them with.
 _COMPARISONS = (exp.EQ, exp.NEQ, exp.NullSafeEQ, exp.NullSafeNEQ, exp.GT, exp.GTE, exp.LT, exp.LTE, exp.In, exp.Between)
-
-# The widths Postgres sizes an integer constant into: integer, then bigint, then
-# numeric. Signed, so that -2147483648 is an integer though 2147483648 is not.
-_INT4_RANGE = (-(2**31), 2**31 - 1)
-_INT8_RANGE = (-(2**63), 2**63 - 1)
 
 # Statements whose refusal is about being read-only rather than about coverage.
 # Only long-standing sqlglot node names: anything else (TRUNCATE, ALTER, ...)
@@ -292,7 +250,7 @@ class TableSession(Session):
 
     async def describe(self, sql: str, param_oids: list[int | None]) -> list[ResultColumn] | None:
         plan = self._plan(sql)
-        return _result_columns(plan.expression, param_oids)[: plan.visible_columns]
+        return result_columns(plan.expression, param_oids)[: plan.visible_columns]
 
     async def query(self, sql: str, params: list[Any]) -> list[Row]:
         plan = self._plan(sql)
@@ -393,7 +351,7 @@ class TableSession(Session):
             distinct_on, visible_columns = _distinct_on_keys(qualified)
             # Also before it, so that the width the annotator then reads off a wide
             # literal propagates through whatever the query does with it.
-            _size_integer_literals(qualified)
+            size_integer_literals(qualified)
             annotated = annotate_types(qualified, schema=self._sqlglot_schema, dialect="postgres")
         except PgError:
             raise
@@ -574,15 +532,6 @@ def _inferred_oid(name: str, column: str, values: list[Any]) -> int:
     )
 
 
-def _pg_type_name(oid: int) -> str:
-    """The type name `Session.schema()` declares -- one of the spellings
-    pg_mimic.catalog_data knows, or an array over one, so the catalog maps it back to
-    this same OID (see catalog._oid_for_declared_type, and #43 for when it didn't)."""
-    if is_array_oid(oid):
-        return f"{_pg_type_name(element_oid_of(oid))}[]"
-    return _PG_NAME[oid]  # every OID here passed _sqlglot_type_name's check first
-
-
 def _sqlglot_type_name(name: str, column: str, oid: int) -> str:
     if is_array_oid(oid):
         return f"{_sqlglot_type_name(name, column, element_oid_of(oid))}[]"
@@ -728,42 +677,6 @@ def _execute(expression: exp.Query, schema: dict, tables: dict) -> Any:
 
 
 # --- rewriting what the executor gets wrong -------------------------------------------
-
-
-def _size_integer_literals(expression: exp.Expression) -> None:
-    """Give each integer constant the width Postgres gives it.
-
-    Postgres sizes one by its value -- `integer` up to 2147483647, `bigint` to
-    9223372036854775807, `numeric` past that -- where sqlglot's annotator types
-    every one of them INT. Left alone, `select 3000000000` is described as int4 and
-    a binary client refuses to decode it: asyncpg raises "'i' format requires
-    -2147483648 <= number <= 2147483647", and psycopg only hides it by reading
-    results as text.
-
-    Widening the literal itself rather than the OID afterwards is what makes the
-    width carry: `3000000000 + 0` is then bigint, as Postgres has it, rather than
-    an int4 sum of an int4.
-
-    Only expression literals -- a declared `integer` column still describes as int4,
-    which is the round trip _TYPES exists to keep lossless.
-    """
-    for literal in list(expression.find_all(exp.Literal)):
-        if not literal.is_int:
-            continue
-        # A negation is sized by what it evaluates to, so the outermost one is the
-        # node to wrap: Postgres calls -2147483648 an integer, though 2147483648 on
-        # its own is a bigint.
-        node, value = literal, int(literal.name)
-        while isinstance(node.parent, exp.Neg):
-            node, value = node.parent, -value
-        if isinstance(node.parent, (exp.Limit, exp.Offset)):
-            # A row window is read back off the tree as a count by _take_row_window,
-            # which wants the literal it was handed and has no client to describe to.
-            continue
-        if _INT4_RANGE[0] <= value <= _INT4_RANGE[1]:
-            continue
-        wider = "BIGINT" if _INT8_RANGE[0] <= value <= _INT8_RANGE[1] else "DECIMAL"
-        node.replace(exp.Cast(this=node.copy(), to=exp.DataType.build(wider)))
 
 
 def _make_decimal_comparisons_exact(expression: exp.Expression) -> None:
@@ -1046,78 +959,6 @@ def _hashable(value: Any) -> Any:
     if isinstance(value, dict):
         return tuple(sorted((k, _hashable(v)) for k, v in value.items()))
     return value
-
-
-def _result_columns(expression: exp.Query, param_oids: list[int | None]) -> list[ResultColumn]:
-    return [ResultColumn(_column_name(select), _column_oid(select, param_oids)) for select in expression.selects]
-
-
-def _column_name(select: exp.Expression) -> str:
-    """The output column's name. qualify() has already resolved the easy ones and
-    labelled anything unnameable `_col_N`; name those after their function, as
-    Postgres does, and fall back to Postgres's own `?column?`."""
-    name = select.alias_or_name
-    if name and not name.startswith("_col_"):
-        return name
-    inner = select.unalias()
-    if isinstance(inner, exp.Anonymous):
-        return str(inner.this).lower()
-    if isinstance(inner, exp.Func):
-        return inner.sql_name().lower()
-    return "?column?"
-
-
-def _column_oid(select: exp.Expression, param_oids: list[int | None]) -> int:
-    oid = _oid_for_sqlglot_type(select.type)
-    if oid is not None:
-        return oid
-
-    inner = select.unalias()
-    if isinstance(inner, exp.Null):
-        return TEXT  # an untyped NULL resolves to text in real Postgres too
-    if isinstance(inner, exp.Parameter):
-        # The one type the annotator can't reach and the protocol can: a bare `$1`
-        # in the select list, whose type the client declared in Parse.
-        declared = _param_oid(inner, param_oids)
-        if declared is not None:
-            return declared
-        raise PgError(INDETERMINATE_DATATYPE, f"could not determine data type of parameter ${_param_index(inner)}")
-
-    expression_sql = inner.sql(dialect="postgres")
-    raise PgError(
-        FEATURE_NOT_SUPPORTED,
-        f"TableSession could not derive a Postgres type for the output column {expression_sql!r}. Column types come "
-        f"from the declared table schema, not from the rows a query happens to return, so an expression sqlglot "
-        f"cannot type has none -- name it with a cast, e.g. {expression_sql}::text.",
-    )
-
-
-def _oid_for_sqlglot_type(data_type: exp.DataType | None) -> int | None:
-    if data_type is None:
-        return None
-    # Unwrap array nesting the way types.oid_for_type does: a Postgres array OID
-    # carries no dimensionality, that rides in each value.
-    element = data_type
-    while element.this == exp.DataType.Type.ARRAY:
-        if not element.expressions:
-            return None
-        element = element.expressions[0]
-    oid = _OID_FOR_SQLGLOT_TYPE.get(element.this)
-    if oid is None:
-        return None
-    return ARRAY_OID.get(oid) if element is not data_type else oid
-
-
-def _param_oid(parameter: exp.Parameter, param_oids: list[int | None]) -> int | None:
-    index = _param_index(parameter) - 1
-    return param_oids[index] if 0 <= index < len(param_oids) else None
-
-
-def _param_index(parameter: exp.Parameter) -> int:
-    try:
-        return int(parameter.name)
-    except ValueError:
-        raise PgError(SYNTAX_ERROR, f"unsupported parameter ${parameter.name}") from None
 
 
 # --- binding parameters --------------------------------------------------------------
