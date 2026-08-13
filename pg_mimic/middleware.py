@@ -43,6 +43,7 @@ from .copy import copy_statement
 from .describe import oid_for_declared_type
 from .errors import (
     ACTIVE_SQL_TRANSACTION,
+    CANT_CHANGE_RUNTIME_PARAM,
     INVALID_SAVEPOINT_SPECIFICATION,
     INVALID_SQL_STATEMENT_NAME,
     NO_ACTIVE_SQL_TRANSACTION,
@@ -841,7 +842,8 @@ def _assignment_statement(
     local: bool = False,
 ) -> Statement:
     def on_execute() -> None:
-        if local and connection.tx_status == b"I":
+        outside_a_transaction = local and connection.tx_status == b"I"
+        if outside_a_transaction:
             # Real Postgres does nothing and warns while doing it -- the exact
             # wording, severity and SQLSTATE read off a PostgreSQL 18 socket.
             connection.notice(
@@ -849,6 +851,13 @@ def _assignment_statement(
                 severity="WARNING",
                 C=NO_ACTIVE_SQL_TRANSACTION,
             )
+        # Every name before any assignment, so a statement that assigns several --
+        # SET SESSION CHARACTERISTICS is one -- either applies all of them or none.
+        # This runs even when the SET LOCAL above is going nowhere: 18.4 warns and
+        # *then* refuses `SET LOCAL shared_buffers = '1GB'`, both, in that order.
+        for name, _ in assignments:
+            _check_settable(name)
+        if outside_a_transaction:
             return
         for name, value in assignments:
             _apply_set_config(connection, name, value, local=local)
@@ -1033,6 +1042,55 @@ def _unrecognized_setting(name: str) -> PgError:
     return PgError(UNDEFINED_OBJECT, f'unrecognized configuration parameter "{name}"')
 
 
+# Why a session may not set a parameter, keyed by the catalogue's `context`. All
+# four are 55P02; the wording is what differs, and clients match on wording, so
+# one message for all 199 would be a worse mimic than four. Read off a
+# PostgreSQL 18.4 socket -- guc.c picks these in set_config_with_handle().
+_UNSETTABLE_CONTEXTS = {
+    "postmaster": "cannot be changed without restarting the server",
+    "sighup": "cannot be changed now",
+    "internal": "cannot be changed",
+    "backend": "cannot be set after connection start",
+    "superuser-backend": "cannot be set after connection start",
+}
+
+# The two contexts a session may set: 151 `user` parameters and, by decision
+# rather than by the manual, the 48 `superuser` ones (#77). Read literally
+# pg_mimic reports `is_superuser = off` and so should refuse those 48 with 42501
+# -- but there is no privilege model behind that answer, and refusing them would
+# break clients that set `log_*` for their own diagnostics against something that
+# has no log. `sighup` is not the same case: PostgreSQL refuses
+# `SET autovacuum_naptime` exactly as it refuses `SET shared_buffers`, and the 104
+# are server-operational parameters no client library sets on a connection.
+_SETTABLE_CONTEXTS = frozenset({"user", "superuser"})
+
+
+def _check_settable(name: str) -> None:
+    """Raise unless `name` is a parameter this connection may assign.
+
+    A dotted name is a custom GUC and always assignable -- Postgres creates a
+    placeholder for it, which is what the row-level-security pattern in #32 rests
+    on. `SET app.tenant = 'acme'` never reaches here from a SET statement at all
+    (`_SETTING_NAME` excludes the dot), but `set_config('app.tenant', ...)` does,
+    since it takes the name as a string argument rather than as syntax.
+
+    An *undotted* name that isn't in the catalogue is not a custom GUC and not a
+    parameter: PostgreSQL 18.4 answers `SET mytenant TO 'acme'` with 42704, the
+    same as reading one.
+    """
+    if "." in name:
+        return
+    context = settings_catalog.context(name)
+    if context is None:
+        raise _unrecognized_setting(name)
+    if context in _SETTABLE_CONTEXTS:
+        return
+    reason = _UNSETTABLE_CONTEXTS.get(context)
+    if reason is None:  # a context the catalogue grew that this doesn't know
+        reason = "cannot be changed"
+    raise PgError(CANT_CHANGE_RUNTIME_PARAM, f'parameter "{name}" {reason}')
+
+
 def _missing_ok(node: exp.Expression) -> bool | None:
     """`current_setting`'s second argument, or None if it isn't a boolean this can
     read statically -- a column reference or a parameter, say, which belongs to
@@ -1170,11 +1228,19 @@ def _apply_set_config(connection: Connection, key: str, value: str | None, local
     unless it has a built-in default, which outranks the blank (see `_setting_value`).
 
     That reaches only the names this module handles. A dotted custom GUC never
-    arrives here at all -- `_SETTING_NAME` excludes the dot on purpose, so
-    `SET app.tenant = 'acme'` falls through to the session -- and so does not become
-    known. `current_setting('app.tenant', true)` is therefore still NULL after one,
-    which is the gap `Session.set_parameter()` closes (#35).
+    arrives here *from a SET statement* -- `_SETTING_NAME` excludes the dot on
+    purpose, so `SET app.tenant = 'acme'` falls through to the session -- and so
+    does not become known. `current_setting('app.tenant', true)` is therefore still
+    NULL after one, which is the gap `Session.set_parameter()` closes (#35). The one
+    route that does bring a dotted name here is `set_config('app.tenant', ...)`,
+    which names it as a string rather than as syntax.
+
+    Both callers come through here rather than through their own checks so that
+    `_check_settable` cannot be bypassed: refusing `SET shared_buffers` while
+    allowing `SELECT set_config('shared_buffers', '1GB', false)` would be a hole
+    in the same wall (#77).
     """
+    _check_settable(key)
     connection.state.known_settings.add(key)
     for target in (connection.state.session_vars, connection.state.committed_vars):
         if value is None:

@@ -324,15 +324,19 @@ def test_a_rolled_back_set_leaves_the_setting_known_but_blank(guc_conn):
     """The value is transactional; the setting's *existence* is not. Verified
     against PostgreSQL 18: a custom GUC first set inside a transaction that rolls
     back reads back as the empty string afterwards, not as an unrecognised
-    parameter -- so `current_setting(name, true)` is not NULL either."""
+    parameter -- so `current_setting(name, true)` is not NULL either.
+
+    A dotted name through set_config(), because that is what 18.4 accepts and what
+    since #77 still reaches this state -- `SET mytenant` is 42704 there, undotted
+    names having no placeholder to create."""
     with guc_conn.cursor() as cur:
         cur.execute("BEGIN")
-        cur.execute("SET mytenant TO 'acme'")
+        cur.execute("SELECT set_config('app.mytenant', 'acme', false)")
         cur.execute("ROLLBACK")
 
-        cur.execute("SHOW mytenant")
+        cur.execute("SHOW app.mytenant")
         assert cur.fetchone() == ("",)
-        cur.execute("SELECT current_setting('mytenant', true) IS NULL")
+        cur.execute("SELECT current_setting('app.mytenant', true) IS NULL")
         assert cur.fetchone() == (False,)
 
 

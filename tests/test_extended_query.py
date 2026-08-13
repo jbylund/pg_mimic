@@ -73,23 +73,28 @@ def test_a_prepared_current_setting_reads_the_setting_each_time(dsn, mock_sessio
     with _prepared_conn(dsn) as conn:
         with conn.cursor() as cur:
             for value in ("a", "b", "c"):
-                cur.execute(f"SET myvar TO {value}")
-                cur.execute("SELECT current_setting('myvar')")
+                cur.execute(f"SET search_path TO {value}")
+                cur.execute("SELECT current_setting('search_path')")
                 assert cur.fetchone() == (value,)
 
 
 def test_a_prepared_current_setting_notices_a_setting_appearing(dsn, mock_session):
     """#63 through the missing_ok branch (#32): a statement prepared while the
     setting does not exist yet must not go on answering NULL once it does. Twice up
-    front, because psycopg prepares on the second execution."""
+    front, because psycopg prepares on the second execution.
+
+    A *dotted* name, because since #77 it is the only kind that can appear: every
+    undotted name either is in the catalogue from the start or can never be set at
+    all. Named through set_config() rather than SET for the same reason -- a dotted
+    SET belongs to the session (#35)."""
     with _prepared_conn(dsn) as conn:
         with conn.cursor() as cur:
             for _ in range(2):
-                cur.execute("SELECT current_setting('later', true)")
+                cur.execute("SELECT current_setting('app.later', true)")
                 assert cur.fetchone() == (None,)
 
-            cur.execute("SET later TO 'now'")
-            cur.execute("SELECT current_setting('later', true)")
+            cur.execute("SELECT set_config('app.later', 'now', false)")
+            cur.execute("SELECT current_setting('app.later', true)")
             assert cur.fetchone() == ("now",)
 
 

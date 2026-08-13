@@ -86,6 +86,32 @@ what shipped rather than what was written down at the time.
   doesn't speak is refused with `0A000` rather than misread. (#27)
 
 ### Changed
+- **Breaking.** `SET` checks whether the parameter exists and whether a session may
+  change it, where before it accepted any name at all. A name that is not a
+  parameter is `42704 undefined_object`; a parameter outside a session's reach is
+  `55P02 cant_change_runtime_param`, with the wording Postgres picks for the
+  particular reason — `shared_buffers` "cannot be changed without restarting the
+  server", `autovacuum_naptime` "cannot be changed now", `server_version` "cannot be
+  changed", `post_auth_delay` "cannot be set after connection start" — because
+  clients match on message text. `RESET` and `set_config()` are checked the same
+  way; `set_config()` in particular names its parameter as a string rather than as
+  syntax, and would otherwise be the way around this.
+
+  199 of the 398 catalogued parameters are refused (`postmaster`, `sighup`,
+  `internal`, `backend`, `superuser-backend`). The 48 `superuser` ones are accepted
+  by decision rather than by the manual: pg_mimic reports `is_superuser = off`, but
+  there is no privilege model behind that answer, and refusing them would break
+  clients that set `log_*` for their own diagnostics against a server with no log.
+  Everything psycopg, asyncpg, pg8000 and SQLAlchemy set on a connection is `user`
+  context, and there is a test pinning that, because this is the one change in this
+  area that can only take working behaviour away.
+
+  The visible casualty is invented names: `SET mytenant = 'acme'` used to work and
+  now raises, matching PostgreSQL 18.4, where a placeholder parameter needs a
+  *qualified* name. Dotted custom GUCs are unaffected — `SET app.tenant = 'acme'`
+  still reaches your session, which is what the row-level-security pattern rests
+  on. (#77)
+
 - **Breaking.** An `information_schema` query naming a column pg_mimic does not
   model now raises `42703 undefined_column`, as Postgres does, instead of
   answering no rows. Empty was worse than an error for an ORM, which concludes
