@@ -38,6 +38,7 @@ from __future__ import annotations
 
 from sqlglot import exp
 
+from . import types as pg_types
 from .arrays import ARRAY_OID, element_oid_of, is_array_oid
 from .catalog_data import DECLARED_TYPE_OIDS
 from .errors import (
@@ -132,8 +133,6 @@ def oid_for_declared_type(declared: str) -> int:
     -- and because the alternative was each of them carrying its own half-right
     copy (#89).
     """
-    from . import types as pg_types
-
     name = str(declared).strip().lower()
     # A trailing `[]` says array, and how many of them says nothing else: Postgres
     # has one array type per element type however many dimensions the declaration
