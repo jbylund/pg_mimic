@@ -4,6 +4,7 @@ the `prepare()` override below), and echoes the raw SQL text back as a
 single-column result for anything that isn't otherwise handled.
 
     python examples/echo.py [--port 5432] [--host 127.0.0.1]
+    # or --open-port for any free port, when 5432 is a real PostgreSQL
     psql "host=127.0.0.1 port=5432 user=test dbname=test"
 
 Try a few things from psql and watch this process's stdout:
@@ -14,10 +15,11 @@ Try a few things from psql and watch this process's stdout:
     \\dt
 """
 
-import argparse
 import logging
 
-from pg_mimic import PgServer, ResultColumn, Session
+from _args import example_parser, parse_args, serve
+
+from pg_mimic import ResultColumn, Session
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 log = logging.getLogger("echo")
@@ -49,11 +51,8 @@ class EchoSession(Session):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=5432)
-    args = parser.parse_args()
-
-    logging.basicConfig(level=logging.INFO, format="%(message)s")
-    logging.info('connect with: psql "host=%s port=%s user=test dbname=test"', args.host, args.port)
-    PgServer(session_factory=EchoSession).run(host=args.host, port=args.port)
+    args = parse_args(example_parser(__doc__))
+    # The user and database are what to connect *as*; the address comes from run()'s
+    # own line below, which is the only one that knows the port under --open-port.
+    logging.info("connect as: user=test dbname=test")
+    serve(EchoSession, args)

@@ -128,7 +128,10 @@ class PgServer:
                     pass
 
             await self.start_server(host=host, port=port, **kwargs)
-            logger.info("pg_mimic listening on %s:%s", host, port)
+            # self.port, not the argument: port=0 means "any free one", and the
+            # answer is the only way a client can find the server. Logging the
+            # request would announce ":0", exactly when it matters most.
+            logger.info("pg_mimic listening on %s:%s", host, self.port)
             try:
                 await stop
             finally:

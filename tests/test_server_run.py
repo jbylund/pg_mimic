@@ -130,3 +130,32 @@ def test_either_stop_signal_is_a_clean_exit(tmp_path, repo_root, signal_name):
     assert process.returncode == 0, f"{signal_name} should be a clean exit:\n{output}"
     assert "returned" in output
     assert "Traceback" not in output, f"{signal_name} leaked an unretrieved task exception:\n{output}"
+
+
+@_SUBPROCESS_TIMEOUT
+def test_run_on_port_zero_reports_the_port_it_actually_bound(tmp_path, repo_root):
+    """`port=0` means "any free one", which is the only way to start a server on a
+    machine that already has PostgreSQL on 5432. The port the kernel picked is then
+    the one thing a client cannot guess, so `run()` has to log the bound port rather
+    than the requested one -- it announced ":0" before, exactly when it mattered."""
+    script = tmp_path / "run_server.py"
+    script.write_text(_PROGRAM.format(root=repo_root, port=0))
+    process = subprocess.Popen([sys.executable, str(script)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    try:
+        line = process.stdout.readline()
+        assert "listening on 127.0.0.1:" in line, line
+        port = int(line.rsplit(":", 1)[1])
+        assert port != 0, "the requested port, not the bound one -- a client cannot connect to 0"
+
+        # the reported port is the real one, not merely non-zero
+        with psycopg.connect(f"host=127.0.0.1 port={port} user=u dbname=d", autocommit=True) as conn:
+            assert conn.execute("SELECT id FROM t").fetchone() == (1,)
+
+        process.send_signal(signal.SIGINT)
+        output, _ = process.communicate(timeout=15)
+    finally:
+        if process.poll() is None:
+            process.kill()
+
+    assert process.returncode == 0, output
+    assert "Traceback" not in output

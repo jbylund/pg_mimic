@@ -50,6 +50,15 @@ through), [`examples/parameterized.py`](examples/parameterized.py) (real bind pa
 example, and the one that shows a declared `schema()` paying for itself: `\d` and `information_schema`
 for free, exact `describe()` without executing, and inferred parameter types).
 
+Every example takes `--host`, `--port` and `--open-port`. Use `--open-port` if you already have a real
+PostgreSQL on 5432: it listens on any free port and logs which one.
+
+```console
+$ python examples/tables.py --open-port
+serving 4 tables read-only
+pg_mimic listening on 127.0.0.1:58983
+```
+
 ## Serving in-memory tables
 
 If all you want is "serve these tables", you don't need a `Session` at all. `TableSession` takes Python

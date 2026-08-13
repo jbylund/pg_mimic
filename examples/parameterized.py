@@ -2,6 +2,7 @@
 protocol -- not textually interpolated into the SQL string.
 
     python examples/parameterized.py
+    # or --open-port for any free port, when 5432 is a real PostgreSQL
     psql "host=127.0.0.1 port=5432 user=test dbname=test" \\
         -c "select * from items where price > 10" \\
         --set=PGOPTIONS=  # psql itself uses simple query; try psycopg instead:
@@ -13,9 +14,9 @@ protocol -- not textually interpolated into the SQL string.
     "
 """
 
-import logging
+from _args import example_parser, parse_args, serve
 
-from pg_mimic import PgServer, ResultColumn, Session
+from pg_mimic import ResultColumn, Session
 
 ITEMS = [
     ("widget", 5.0),
@@ -39,5 +40,4 @@ class ItemsSession(Session):
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format="%(message)s")
-    PgServer(session_factory=ItemsSession).run()
+    serve(ItemsSession, parse_args(example_parser(__doc__)))
