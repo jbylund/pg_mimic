@@ -111,6 +111,29 @@ def parse_error_fields(payload: bytes) -> dict[str, str]:
     return {s[:1].decode(): s[1:].decode() for s in payload.split(b"\x00") if s}
 
 
+def parse_notification(payload: bytes) -> tuple[int, str, str]:
+    """A NotificationResponse ('A') body: the notifying pid, channel, payload."""
+    pid = unpack_int32(payload, 0)
+    channel, rest = payload[4:].split(b"\x00", 1)
+    return pid, channel.decode(), rest.split(b"\x00", 1)[0].decode()
+
+
+async def read_until(reader: asyncio.StreamReader, tag: bytes) -> list[bytes]:
+    """Read messages up to and including the first one tagged `tag`, returning the
+    tags in order.
+
+    The whole point of reading tags rather than asserting on a client's parsed
+    result: where an async message lands *between* the others is the thing under
+    test, and no client library will tell you.
+    """
+    tags = []
+    while True:
+        received, _payload = await read_message(reader)
+        tags.append(received)
+        if received == tag:
+            return tags
+
+
 async def connect_and_get_backend_key(
     port: int, startup: bytes | None = None
 ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter, int, int]:

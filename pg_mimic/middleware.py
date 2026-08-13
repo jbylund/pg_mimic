@@ -126,6 +126,14 @@ _EXECUTE_RE = re.compile(rf"^\s*EXECUTE\s+({_IDENT})\s*(?:\((.*)\))?\s*;?\s*$", 
 # so it never reaches _SET_RE; `SET ROLE TO x` does, hence this set.
 _PASSED_THROUGH_SETTINGS = frozenset({"role", "session_authorization"})
 
+# LISTEN/UNLISTEN/NOTIFY. The channel is an ordinary identifier -- `NOTIFY CHAN`
+# and `NOTIFY chan` are one channel, `NOTIFY "CHAN"` another -- and the payload is
+# a bare string literal rather than an expression: PostgreSQL 18 answers
+# `NOTIFY c, 'a' || 'b'` with a syntax error, so there is nothing to evaluate here.
+_LISTEN_RE = re.compile(rf"^\s*LISTEN\s+({_IDENT})\s*;?\s*$", re.IGNORECASE)
+_UNLISTEN_RE = re.compile(rf"^\s*UNLISTEN\s+(\*|{_IDENT})\s*;?\s*$", re.IGNORECASE)
+_NOTIFY_RE = re.compile(rf"^\s*NOTIFY\s+({_IDENT})\s*(?:,\s*'((?:[^']|'')*)')?\s*;?\s*$", re.IGNORECASE)
+
 
 def is_transaction_end(sql: str) -> bool:
     """COMMIT/END/ROLLBACK -- the statements that end a transaction block.
@@ -290,6 +298,72 @@ async def session_reset(ctx: MiddlewareContext) -> Statement | None:
     if match:
         return _deallocate_statement(ctx.connection, ctx.sql, match.group(1))
     return None
+
+
+async def listen_notify(ctx: MiddlewareContext) -> Statement | None:
+    """`LISTEN <channel>`, `UNLISTEN <channel>`, `UNLISTEN *` and
+    `NOTIFY <channel>[, 'payload']`.
+
+    Here rather than in the session for the same reason transaction control is:
+    the subscription lives on the connection and the fanout on the server, and a
+    session can reach neither. `Connection.notify_listeners()` is the seam for a
+    session that wants to raise an event itself.
+
+    All four are transactional, which is the part worth getting right and is
+    modelled on PostgreSQL 18 rather than assumed. A `NOTIFY` is delivered at
+    `COMMIT` and dropped by `ROLLBACK`; a `LISTEN` does not start receiving until
+    its transaction commits; and both revert with a `ROLLBACK TO SAVEPOINT`. See
+    Connection.notify_listeners() and SessionState.
+    """
+    match = _LISTEN_RE.match(ctx.sql)
+    if match:
+        return _listen_statement(ctx.connection, ctx.sql, _identifier(match.group(1)))
+    match = _UNLISTEN_RE.match(ctx.sql)
+    if match:
+        raw = match.group(1)
+        return _unlisten_statement(ctx.connection, ctx.sql, None if raw == "*" else _identifier(raw))
+    match = _NOTIFY_RE.match(ctx.sql)
+    if match:
+        payload = (match.group(2) or "").replace("''", "'")
+        return _notify_statement(ctx.connection, ctx.sql, _identifier(match.group(1)), payload)
+    return None
+
+
+def _listen_statement(connection: Connection, sql: str, channel: str) -> Statement:
+    def on_execute() -> None:
+        connection.state.listening.add(channel)
+        # Outside a transaction the write is immediately real; inside one it waits
+        # for the COMMIT that syncs it. Listening twice is listening once -- a set,
+        # which is also why a repeated LISTEN delivers a notification once.
+        if connection.tx_status == b"I":
+            connection.sync_listeners()
+
+    return StaticStatement(sql, None, [], on_execute)
+
+
+def _unlisten_statement(connection: Connection, sql: str, channel: str | None) -> Statement:
+    """`UNLISTEN x`, or `UNLISTEN *` when `channel` is None.
+
+    Unsubscribing from a channel that was never subscribed to is not an error in
+    Postgres, so `discard` rather than `remove`.
+    """
+
+    def on_execute() -> None:
+        if channel is None:
+            connection.state.listening.clear()
+        else:
+            connection.state.listening.discard(channel)
+        if connection.tx_status == b"I":
+            connection.sync_listeners()
+
+    return StaticStatement(sql, None, [], on_execute)
+
+
+def _notify_statement(connection: Connection, sql: str, channel: str, payload: str) -> Statement:
+    def on_execute() -> None:
+        connection.notify_listeners(channel, payload)
+
+    return StaticStatement(sql, None, [], on_execute)
 
 
 async def prepared_statements(ctx: MiddlewareContext) -> Statement | None:
@@ -482,6 +556,7 @@ DEFAULT_MIDDLEWARE = (
     transaction_control,
     set_show,
     session_reset,
+    listen_notify,
     prepared_statements,
     session_functions,
     information_schema,
@@ -545,6 +620,16 @@ def _end_transaction(connection: Connection, committed: bool) -> None:
     for name in set(before) | set(connection.state.session_vars):
         if before.get(name) != connection.state.session_vars.get(name):
             _report_setting(connection, name)
+
+    # The LISTEN/NOTIFY half of settling the transaction. A COMMIT is where the
+    # notifications it raised become real; a ROLLBACK has already dropped them,
+    # end_transaction() having restored the list from the frame BEGIN opened. Both
+    # then push the subscriptions the transaction left behind to the registry --
+    # which is what makes a LISTEN take effect at commit and a rolled-back one not
+    # take effect at all.
+    if committed:
+        connection.flush_pending_notifies()
+    connection.sync_listeners()
 
 
 def _transaction_statement(connection: Connection, tag: str) -> Statement:
@@ -615,6 +700,11 @@ def _savepoint_statement(connection: Connection, sql: str, kind: str, name: str)
             for setting in set(before) | set(connection.state.session_vars):
                 if before.get(setting) != connection.state.session_vars.get(setting):
                     _report_setting(connection, setting)
+            # restore_scope put the subscriptions back too; the registry has to be
+            # told. A no-op unless the rolled-back scope contained a LISTEN that
+            # had already committed -- which it cannot have, so this is belt and
+            # braces rather than load-bearing, and cheap enough to keep.
+            connection.sync_listeners()
             # The point of the whole feature: the failed-transaction state ends
             # here, and the transaction itself carries on.
             connection.tx_status = b"T"
@@ -635,6 +725,9 @@ def _discard_statement(connection: Connection, sql: str, kind: str) -> Statement
         # DISCARD ALL surface (and the settings again, by then already empty).
         _reset_all(connection)
         connection.state.reset()
+        # `DISCARD ALL` includes `UNLISTEN *` -- reset() cleared the set, and this
+        # is what makes the server stop delivering to us.
+        connection.sync_listeners()
 
     return StaticStatement(sql, None, [], on_execute)
 
@@ -748,9 +841,13 @@ def _assignment_statement(
 ) -> Statement:
     def on_execute() -> None:
         if local and connection.tx_status == b"I":
-            # Real Postgres warns "SET LOCAL can only be used in transaction
-            # blocks" and does nothing. We have no NoticeResponse to warn with
-            # yet (#24), so this is the silent half of that: doing nothing.
+            # Real Postgres does nothing and warns while doing it -- the exact
+            # wording, severity and SQLSTATE read off a PostgreSQL 18 socket.
+            connection.notice(
+                "SET LOCAL can only be used in transaction blocks",
+                severity="WARNING",
+                C=NO_ACTIVE_SQL_TRANSACTION,
+            )
             return
         for name, value in assignments:
             _apply_set_config(connection, name, value, local=local)
@@ -1033,6 +1130,18 @@ def _substitute_session_functions(
             effects.append(partial(_apply_set_config, connection, key, new_value))
             # set_config returns the value it just set; NULL resets and returns empty.
             node.replace(exp.Literal.string(new_value if new_value is not None else ""))
+            substitutions += 1
+        elif name == "pg_notify" and len(node.expressions) == 2:
+            channel = _literal_text(node.expressions[0])
+            message = _literal_text(node.expressions[1])
+            if channel is None:
+                continue  # not a literal we can evaluate -- leave it for the session
+            # Verbatim, not folded: `pg_notify` takes the channel as a string
+            # rather than an identifier, so `pg_notify('PCHAN', ...)` does not
+            # reach `LISTEN pchan` -- measured on PostgreSQL 18.
+            effects.append(partial(connection.notify_listeners, channel, message or ""))
+            # pg_notify returns void, which renders as the empty string.
+            node.replace(exp.Literal.string(""))
             substitutions += 1
         elif name == "pg_backend_pid":
             node.replace(exp.Literal.number(connection.pid))

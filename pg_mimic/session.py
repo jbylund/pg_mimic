@@ -260,6 +260,26 @@ class Session(BaseSession):
     async def init(self, connection: Any) -> None:
         self._connection = connection
 
+    @property
+    def connection(self) -> Any:
+        """The `Connection` this session is answering for -- the way to reach the
+        things that belong to the wire rather than to the query.
+
+        Assigned by the framework before `init()` runs, so it is available from
+        anywhere a session does its work::
+
+            self.connection.notice("row limit reached", severity="WARNING")
+            self.connection.notify_listeners("orders", "42")
+
+        `pid`, `username`, `database` and `startup_params` are the other things
+        worth reading off it; `state` is on the session directly. Raises if read
+        before the session is bound to a connection, which is a clearer failure
+        than the `None` that used to come back from the private attribute.
+        """
+        if self._connection is None:
+            raise RuntimeError("this session is not attached to a connection yet -- available from init() onwards")
+        return self._connection
+
     async def describe(self, sql: str, param_oids: list[int | None]) -> list[ResultColumn] | None:
         return None
 
