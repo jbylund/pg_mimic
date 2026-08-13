@@ -58,6 +58,14 @@
   A catalog query that can't be answered returns no rows rather than falling through to your session,
   which would otherwise reply with a shape the client reads as catalog data.
 
+  `information_schema` is the other way round: both views carry every column PostgreSQL 18 has, because
+  a column left off answered *empty* rather than erroring, and a client reads that as a table with no
+  columns. What a declared schema can't settle is NULL rather than absent — pg_mimic has no defaults,
+  identity sequences, collations or domains, so `column_default`, `identity_start` and their neighbours
+  are honestly blank while the query still runs. The column list and its order are generated from a live
+  server into `pg_mimic/information_schema.json` (see `tools/generate_information_schema.py`); the values
+  are derived in `pg_mimic/catalog.py`.
+
   asyncpg's type introspection is handled separately, in `pg_mimic.typeinfo`: it's a recursive CTE
   that sqlglot can neither parse nor execute, so it's matched by shape and answered from the same
   `pg_type` rows. That's coupled to a query asyncpg could rewrite in any release — narrowly, and it
