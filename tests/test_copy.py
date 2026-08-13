@@ -22,7 +22,6 @@ import asyncpg
 import psycopg
 import pytest
 import pytest_asyncio
-from conftest import ServerThread
 from wire import (
     COPY_DONE,
     FLUSH,
@@ -41,7 +40,7 @@ from wire import (
     read_message,
 )
 
-from pg_mimic import PgError, PgServer, ResultColumn, Session
+from pg_mimic import PgError, ResultColumn, Session
 from pg_mimic.copy import CopyEncoder, CopyInDecoder, parse_copy
 from pg_mimic.errors import UNDEFINED_TABLE
 from pg_mimic.testing import serve_in_thread
@@ -548,18 +547,13 @@ async def test_asyncpg_copy_from_query(copy_apg_conn, copy_session):
 
 
 def _psql(session, command):
-    server = PgServer(session_factory=lambda: session)
-    thread = ServerThread(server)
-    port = thread.start()
-    try:
+    with serve_in_thread(lambda: session) as server:
         return subprocess.run(
-            ["psql", f"host=127.0.0.1 port={port} user=test dbname=test", "-c", command],
+            ["psql", server.dsn(user="test", dbname="test"), "-c", command],
             capture_output=True,
             text=True,
             timeout=20,
         )
-    finally:
-        thread.stop()
 
 
 @psql_required

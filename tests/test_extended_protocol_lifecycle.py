@@ -6,7 +6,6 @@ rarely calls this on demand), and Describe(Statement) before any Bind
 
 from __future__ import annotations
 
-from conftest import ServerThread
 from wire import (
     TARGET_PORTAL,
     TARGET_STATEMENT,
@@ -20,18 +19,16 @@ from wire import (
     read_message,
 )
 
-from pg_mimic import PgServer, ResultColumn
+from pg_mimic import ResultColumn
+from pg_mimic.testing import serve_in_thread
 from pg_mimic.types import unpack_int16, unpack_int32
 
 
 async def test_close_statement_and_portal(mock_session):
     mock_session.columns = [ResultColumn.for_type("x", int)]
     mock_session.rows = [(1,)]
-    server = PgServer(session_factory=mock_session.spawn)
-    thread = ServerThread(server)
-    port = thread.start()
-    try:
-        reader, writer, _pid, _secret = await connect_and_get_backend_key(port)
+    with serve_in_thread(mock_session.spawn) as server:
+        reader, writer, _pid, _secret = await connect_and_get_backend_key(server.port)
 
         writer.write(make_parse("SELECT x FROM t", statement_name="s1"))
         writer.write(make_bind(statement_name="s1", portal_name="p1"))
@@ -57,18 +54,13 @@ async def test_close_statement_and_portal(mock_session):
         writer.close()
 
         await writer.wait_closed()
-    finally:
-        thread.stop()
 
 
 async def test_describe_statement_before_bind(mock_session):
     mock_session.columns = [ResultColumn.for_type("x", int)]
     mock_session.rows = [(1,)]
-    server = PgServer(session_factory=mock_session.spawn)
-    thread = ServerThread(server)
-    port = thread.start()
-    try:
-        reader, writer, _pid, _secret = await connect_and_get_backend_key(port)
+    with serve_in_thread(mock_session.spawn) as server:
+        reader, writer, _pid, _secret = await connect_and_get_backend_key(server.port)
 
         writer.write(make_parse("SELECT x FROM t", statement_name="s1"))
         await writer.drain()
@@ -101,5 +93,3 @@ async def test_describe_statement_before_bind(mock_session):
         writer.close()
 
         await writer.wait_closed()
-    finally:
-        thread.stop()

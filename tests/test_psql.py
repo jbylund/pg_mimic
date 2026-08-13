@@ -16,9 +16,9 @@ import shutil
 import subprocess
 
 import pytest
-from conftest import ServerThread
 
-from pg_mimic import PgServer, ResultColumn, Session
+from pg_mimic import ResultColumn, Session
+from pg_mimic.testing import serve_in_thread
 
 psql_required = pytest.mark.skipif(shutil.which("psql") is None, reason="psql is not installed")
 
@@ -40,19 +40,13 @@ class SchemaSession(Session):
 
 
 def _psql(command):
-    server = PgServer(session_factory=SchemaSession)
-    thread = ServerThread(server)
-    port = thread.start()
-    try:
-        result = subprocess.run(
-            ["psql", f"host=127.0.0.1 port={port} user=test dbname=test", "-c", command],
+    with serve_in_thread(SchemaSession) as server:
+        return subprocess.run(
+            ["psql", server.dsn(user="test", dbname="test"), "-c", command],
             capture_output=True,
             text=True,
             timeout=20,
         )
-    finally:
-        thread.stop()
-    return result
 
 
 @psql_required

@@ -15,10 +15,11 @@ from decimal import Decimal
 
 import psycopg
 import pytest
-from conftest import MockSession, ServerThread
+from conftest import MockSession
 
-from pg_mimic import PgServer, ResultColumn
+from pg_mimic import ResultColumn
 from pg_mimic.results import encode_row, format_code_for
+from pg_mimic.testing import serve_in_thread
 from pg_mimic.types import (
     INTERVAL,
     JSON,
@@ -38,9 +39,7 @@ def _serve(columns, rows):
     session = MockSession()
     session.columns = columns
     session.rows = rows
-    server = PgServer(session_factory=lambda: session)
-    thread = ServerThread(server)
-    return thread, thread.start()
+    return serve_in_thread(lambda: session)
 
 
 _roundtrip_testcases = {
@@ -65,14 +64,11 @@ _roundtrip_testcases = {
     ids=sorted(_roundtrip_testcases),
 )
 def test_binary_results_round_trip(py_type, value):
-    thread, port = _serve([ResultColumn.for_type("c", py_type)], [(value,)])
-    try:
-        with psycopg.Connection.connect(f"host=127.0.0.1 port={port} user=u dbname=d") as conn:
+    with _serve([ResultColumn.for_type("c", py_type)], [(value,)]) as server:
+        with psycopg.Connection.connect(server.dsn(user="u", dbname="d")) as conn:
             with conn.cursor(binary=True) as cur:
                 cur.execute("select c")
                 (got,) = cur.fetchone()
-    finally:
-        thread.stop()
     assert got == value
     assert type(got) is type(value)
 
@@ -81,31 +77,24 @@ def test_binary_and_text_agree():
     """The same row read in either format must produce identical Python values."""
     row = (True, -7, 2.5, "x", b"\xff", date(2001, 1, 1), datetime(2001, 1, 1, 2, 3, 4))
     columns = [ResultColumn.for_type(f"c{i}", type(v)) for i, v in enumerate(row)]
-    thread, port = _serve(columns, [row])
-    try:
-        dsn = f"host=127.0.0.1 port={port} user=u dbname=d"
-        with psycopg.Connection.connect(dsn) as conn:
+    with _serve(columns, [row]) as server:
+        with psycopg.Connection.connect(server.dsn(user="u", dbname="d")) as conn:
             with conn.cursor(binary=True) as cur:
                 cur.execute("select c0, c1, c2, c3, c4, c5, c6")
                 binary_row = cur.fetchone()
             with conn.cursor(binary=False) as cur:
                 cur.execute("select c0, c1, c2, c3, c4, c5, c6")
                 text_row = cur.fetchone()
-    finally:
-        thread.stop()
     assert binary_row == text_row == row
 
 
 def test_null_is_null_in_binary():
     """NULL is a -1 length in DataRow, so it has no representation in either format."""
-    thread, port = _serve([ResultColumn.for_type("c", int)], [(None,), (1,)])
-    try:
-        with psycopg.Connection.connect(f"host=127.0.0.1 port={port} user=u dbname=d") as conn:
+    with _serve([ResultColumn.for_type("c", int)], [(None,), (1,)]) as server:
+        with psycopg.Connection.connect(server.dsn(user="u", dbname="d")) as conn:
             with conn.cursor(binary=True) as cur:
                 cur.execute("select c")
                 assert cur.fetchall() == [(None,), (1,)]
-    finally:
-        thread.stop()
 
 
 def test_unsupported_type_in_binary_is_refused_not_guessed():
@@ -114,27 +103,21 @@ def test_unsupported_type_in_binary_is_refused_not_guessed():
     MONEY stands in for "a type with no binary encoding" -- it has to be one that
     genuinely lacks one, so this test tightens rather than rots as coverage grows.
     """
-    thread, port = _serve([ResultColumn("c", MONEY)], [("$1.25",)])
-    try:
-        with psycopg.Connection.connect(f"host=127.0.0.1 port={port} user=u dbname=d") as conn:
+    with _serve([ResultColumn("c", MONEY)], [("$1.25",)]) as server:
+        with psycopg.Connection.connect(server.dsn(user="u", dbname="d")) as conn:
             with conn.cursor(binary=True) as cur:
                 with pytest.raises(psycopg.errors.FeatureNotSupported) as excinfo:
                     cur.execute("select c")
         assert str(MONEY) in str(excinfo.value)
-    finally:
-        thread.stop()
 
 
 def test_unsupported_type_still_works_in_text():
     """Refusing binary must not narrow what text format can carry."""
-    thread, port = _serve([ResultColumn("c", MONEY)], [("$1.25",)])
-    try:
-        with psycopg.Connection.connect(f"host=127.0.0.1 port={port} user=u dbname=d") as conn:
+    with _serve([ResultColumn("c", MONEY)], [("$1.25",)]) as server:
+        with psycopg.Connection.connect(server.dsn(user="u", dbname="d")) as conn:
             with conn.cursor(binary=False) as cur:
                 cur.execute("select c")
                 assert cur.fetchone() == ("$1.25",)
-    finally:
-        thread.stop()
 
 
 def test_encode_value_binary_rejects_unknown_oid():
@@ -181,17 +164,13 @@ def test_statement_describe_always_declares_text():
 
 
 def _read_both_formats(columns, rows, sql="select c"):
-    thread, port = _serve(columns, rows)
-    try:
-        dsn = f"host=127.0.0.1 port={port} user=u dbname=d"
-        out = []
-        with psycopg.Connection.connect(dsn) as conn:
+    out = []
+    with _serve(columns, rows) as server:
+        with psycopg.Connection.connect(server.dsn(user="u", dbname="d")) as conn:
             for binary in (False, True):
                 with conn.cursor(binary=binary) as cur:
                     cur.execute(sql)
                     out.append(cur.fetchone()[0])
-    finally:
-        thread.stop()
     return out
 
 

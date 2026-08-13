@@ -2,39 +2,35 @@ from __future__ import annotations
 
 import psycopg
 import pytest
-from conftest import MockSession, ServerThread
+from conftest import MockSession
 from scramp import ScramMechanism
 
 from pg_mimic import (
     ClearTextPasswordAuthPlugin,
     Md5PasswordAuthPlugin,
-    PgServer,
     ScramSha256AuthPlugin,
     SimpleIdentityProvider,
     TrustAuthPlugin,
 )
 from pg_mimic.auth import _derive_scram_credentials, _set_client_first
+from pg_mimic.testing import serve_in_thread
 
 
-def _start(auth_plugin_factory, identity_provider=None):
+def _serving(auth_plugin_factory, identity_provider=None):
+    """A server whose only interesting property is how it authenticates -- these
+    tests never get as far as running a query, so the session is a placeholder."""
     session = MockSession()
-    server = PgServer(
-        session_factory=lambda: session,
+    return serve_in_thread(
+        lambda: session,
         auth_plugin_factory=auth_plugin_factory,
         identity_provider=identity_provider,
     )
-    thread = ServerThread(server)
-    port = thread.start()
-    return thread, port
 
 
 def test_trust_accepts_any_password():
-    thread, port = _start(lambda username: TrustAuthPlugin())
-    try:
-        with psycopg.Connection.connect(f"host=127.0.0.1 port={port} user=test dbname=test password=whatever-i-want"):
+    with _serving(lambda username: TrustAuthPlugin()) as server:
+        with psycopg.Connection.connect(server.dsn(user="test", dbname="test") + " password=whatever-i-want"):
             pass
-    finally:
-        thread.stop()
 
 
 @pytest.mark.parametrize(
@@ -44,12 +40,9 @@ def test_trust_accepts_any_password():
 )
 def test_password_auth_accepts_correct_password(plugin_cls):
     identity_provider = SimpleIdentityProvider({"alice": "s3cret"})
-    thread, port = _start(lambda username: plugin_cls(), identity_provider)
-    try:
-        with psycopg.Connection.connect(f"host=127.0.0.1 port={port} user=alice dbname=test password=s3cret"):
+    with _serving(lambda username: plugin_cls(), identity_provider) as server:
+        with psycopg.Connection.connect(server.dsn(user="alice", dbname="test") + " password=s3cret"):
             pass
-    finally:
-        thread.stop()
 
 
 @pytest.mark.parametrize(
@@ -59,13 +52,10 @@ def test_password_auth_accepts_correct_password(plugin_cls):
 )
 def test_password_auth_rejects_wrong_password(plugin_cls):
     identity_provider = SimpleIdentityProvider({"alice": "s3cret"})
-    thread, port = _start(lambda username: plugin_cls(), identity_provider)
-    try:
+    with _serving(lambda username: plugin_cls(), identity_provider) as server:
         with pytest.raises(psycopg.OperationalError):
-            with psycopg.Connection.connect(f"host=127.0.0.1 port={port} user=alice dbname=test password=wrong"):
+            with psycopg.Connection.connect(server.dsn(user="alice", dbname="test") + " password=wrong"):
                 pass
-    finally:
-        thread.stop()
 
 
 _client_first_testcases = {

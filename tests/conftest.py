@@ -5,9 +5,13 @@ The server itself comes from `pg_mimic.testing`, the shipped helpers, so this
 suite exercises the same code users get rather than a private copy of it. That
 module's docstring explains why the server runs on its own thread and loop.
 
-`MockSession` and `ServerThread` are re-exported for the tests that import them
-directly: several build their own PgServer (custom auth plugins, a session they
-keep a handle on) and want the thread around it without the context manager.
+`MockSession` is re-exported for the many tests that configure one themselves
+rather than take the fixture. `ServerThread` is re-exported for the one that
+still needs it: `test_server_notify_from_another_thread_via_the_server_loop`
+hops onto the server's event loop, and the loop is exactly what
+`serve_in_thread` does not hand out. (`test_testing.py` drives `ServerThread`
+too, but imports it from `pg_mimic.testing` -- testing the shipped helper is the
+whole point there, so it must not go through a re-export.)
 """
 
 from __future__ import annotations

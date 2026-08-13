@@ -14,11 +14,10 @@ from __future__ import annotations
 
 import psycopg
 import pytest
-from conftest import ServerThread
 from psycopg.pq import TransactionStatus
 from wire import SYNC, connect_and_get_backend_key, make_parse, make_query, read_message
 
-from pg_mimic import PgServer
+from pg_mimic.testing import serve_in_thread
 
 # sql -> the command tag real Postgres completes it with (src/include/tcop/cmdtaglist.h).
 _ANSWERED_OUTSIDE_A_TRANSACTION = {
@@ -145,19 +144,14 @@ def test_discard_all_is_refused_inside_a_transaction(conn, mock_session):
 def test_deallocate_drops_a_prepared_statement(mock_session):
     """Protocol-level prepared statements share Postgres's SQL-level namespace, so
     DEALLOCATE has to reach the ones the Connection is holding."""
-    server = PgServer(session_factory=mock_session.spawn)
-    thread = ServerThread(server)
-    port = thread.start()
-    try:
-        with psycopg.Connection.connect(f"host=127.0.0.1 port={port} user=test dbname=test", autocommit=True) as conn:
+    with serve_in_thread(mock_session.spawn) as server:
+        with psycopg.Connection.connect(server.dsn(user="test", dbname="test"), autocommit=True) as conn:
             with conn.cursor() as cur:
                 cur.execute("DEALLOCATE ALL")
                 assert cur.statusmessage == "DEALLOCATE ALL"
                 with pytest.raises(psycopg.Error) as excinfo:
                     cur.execute("DEALLOCATE nosuchstatement")
                 assert excinfo.value.sqlstate == "26000"
-    finally:
-        thread.stop()
 
 
 def test_custom_gucs_reach_the_session(conn, mock_session):
@@ -312,11 +306,8 @@ def test_application_name_is_reported_even_when_unset(conn):
 async def test_parameter_status_arrives_before_ready_for_query(mock_session):
     """Real Postgres reports changed GUCs at the end of the command, immediately
     before ReadyForQuery -- not spliced into the command's own messages."""
-    server = PgServer(session_factory=mock_session.spawn)
-    thread = ServerThread(server)
-    port = thread.start()
-    try:
-        reader, writer, _pid, _secret = await connect_and_get_backend_key(port)
+    with serve_in_thread(mock_session.spawn) as server:
+        reader, writer, _pid, _secret = await connect_and_get_backend_key(server.port)
         writer.write(make_query("SET client_encoding TO 'LATIN1'"))
         await writer.drain()
 
@@ -331,8 +322,6 @@ async def test_parameter_status_arrives_before_ready_for_query(mock_session):
         assert tags == [b"C", b"S", b"Z"]  # CommandComplete, ParameterStatus, ReadyForQuery
 
         writer.close()
-    finally:
-        thread.stop()
 
 
 # --- SQL-level prepared statements ----------------------------------------------------
@@ -342,8 +331,8 @@ async def test_parameter_status_arrives_before_ready_for_query(mock_session):
 # Every expectation below was checked against a real PostgreSQL 18.
 
 
-def _tables_conn(port):
-    return psycopg.Connection.connect(f"host=127.0.0.1 port={port} user=test dbname=test", autocommit=True)
+def _tables_conn(server):
+    return psycopg.Connection.connect(server.dsn(user="test", dbname="test"), autocommit=True)
 
 
 @pytest.fixture
@@ -397,11 +386,8 @@ async def test_sql_can_deallocate_a_protocol_level_statement(mock_session):
     Driven over the wire so the statement gets a name of our choosing, rather than
     depending on how psycopg happens to name its own.
     """
-    server = PgServer(session_factory=mock_session.spawn)
-    thread = ServerThread(server)
-    port = thread.start()
-    try:
-        reader, writer, _pid, _secret = await connect_and_get_backend_key(port)
+    with serve_in_thread(mock_session.spawn) as server:
+        reader, writer, _pid, _secret = await connect_and_get_backend_key(server.port)
         writer.write(make_parse("SELECT 1", statement_name="mine") + SYNC)
         await writer.drain()
         await _drain_until_ready(reader)
@@ -416,8 +402,6 @@ async def test_sql_can_deallocate_a_protocol_level_statement(mock_session):
         await writer.drain()
         assert b"E" in await _drain_until_ready(reader)
         writer.close()
-    finally:
-        thread.stop()
 
 
 async def _drain_until_ready(reader) -> list[bytes]:
@@ -454,16 +438,11 @@ def test_a_session_can_take_prepare_back(mock_session):
     from pg_mimic import middleware as mw
 
     mock_session.middleware = tuple(link for link in mw.DEFAULT_MIDDLEWARE if link is not mw.prepared_statements)
-    server = PgServer(session_factory=mock_session.spawn)
-    thread = ServerThread(server)
-    port = thread.start()
-    try:
-        with _tables_conn(port) as conn:
+    with serve_in_thread(mock_session.spawn) as server:
+        with _tables_conn(server) as conn:
             with conn.cursor() as cur:
                 cur.execute("PREPARE p AS SELECT 1")
                 cur.execute("EXECUTE p")
-    finally:
-        thread.stop()
     assert [sql for sql, _params in mock_session.queries] == ["PREPARE p AS SELECT 1", "EXECUTE p"]
 
 
