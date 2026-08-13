@@ -318,8 +318,47 @@ class Connection:
             self.server.remove_listener(channel, self)
         self._registered_channels.clear()
 
+    def _claim_session(self) -> bool:
+        """Claim this connection's session, or refuse the connection saying why.
+
+        `PgServer` calls `session_factory()` once per connection, so one session per
+        connection is the design. Nothing stopped a factory returning the same object
+        every time, and the result was not an error but a wrong answer: a session
+        holds `_connection` and `state`, both rebound on every connect, so every
+        connection went on resolving through whichever attached last -- connection A
+        reporting connection B's `current_user`, and reading B's `search_path`.
+
+        That is the failure this project refuses everywhere else, a full answer that
+        is quietly the wrong one, and an identity is the worst thing to be wrong
+        about in a server people use to test authentication. See #84.
+
+        Sequential reuse stays legal: the claim is released on teardown, so a factory
+        may hand the same object to the next connection once this one is done with
+        it. Only an overlap is refused.
+        """
+        held = self.session._connection
+        if held is None or held is self:
+            return True
+        self.stream.write(
+            messages.make_fatal_error(
+                INTERNAL_ERROR,
+                f"this Session is already answering for another connection (pid {held.pid}) and cannot also "
+                f"answer for this one: a session holds per-connection state, so sharing one gives every "
+                f"connection the last one's identity and settings. Pass a factory that builds one session per "
+                f"connection -- session_factory=MySession rather than session_factory=lambda: shared.",
+            )
+        )
+        return False
+
     async def run(self) -> None:
         try:
+            # Before authentication, and before anything is written: a session that
+            # cannot be claimed is a server the client must not believe it reached.
+            # Raising this later still refuses the connection, but only after
+            # ReadyForQuery has gone out -- so the client reports a successful
+            # connect and finds out at its first query.
+            if isinstance(self.session, Session) and not self._claim_session():
+                return
             if not await self._authenticate():
                 return
             await self._send_startup_completion()
@@ -357,6 +396,12 @@ class Connection:
             # stream, and a session whose close() raises must not be what leaves it
             # there.
             self._drop_listeners()
+            # Release the session before close(), and whatever close() does: a
+            # factory handing back the same object for the next connection is fine
+            # once this one is done with it, and must not be refused because a
+            # close() raised on the way out.
+            if isinstance(self.session, Session) and self.session._connection is self:
+                self.session._connection = None
             try:
                 await self.session.close()
             except Exception:

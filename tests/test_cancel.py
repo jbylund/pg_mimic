@@ -24,7 +24,7 @@ from pg_mimic import PgServer, ResultColumn
 
 
 async def test_cancel_request_interrupts_running_query(mock_session):
-    server = PgServer(session_factory=lambda: mock_session)
+    server = PgServer(session_factory=mock_session.spawn)
     thread = ServerThread(server)
     port = thread.start()
     try:
@@ -73,7 +73,7 @@ async def test_cancel_request_interrupts_running_query(mock_session):
 
 
 async def test_cancel_request_with_wrong_secret_is_ignored(mock_session):
-    server = PgServer(session_factory=lambda: mock_session)
+    server = PgServer(session_factory=mock_session.spawn)
     thread = ServerThread(server)
     port = thread.start()
     try:

@@ -27,7 +27,7 @@ from pg_mimic.types import unpack_int16, unpack_int32
 async def test_close_statement_and_portal(mock_session):
     mock_session.columns = [ResultColumn.for_type("x", int)]
     mock_session.rows = [(1,)]
-    server = PgServer(session_factory=lambda: mock_session)
+    server = PgServer(session_factory=mock_session.spawn)
     thread = ServerThread(server)
     port = thread.start()
     try:
@@ -64,7 +64,7 @@ async def test_close_statement_and_portal(mock_session):
 async def test_describe_statement_before_bind(mock_session):
     mock_session.columns = [ResultColumn.for_type("x", int)]
     mock_session.rows = [(1,)]
-    server = PgServer(session_factory=lambda: mock_session)
+    server = PgServer(session_factory=mock_session.spawn)
     thread = ServerThread(server)
     port = thread.start()
     try:
