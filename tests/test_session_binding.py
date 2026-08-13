@@ -70,3 +70,30 @@ def test_each_connection_answers_as_itself():
         finally:
             alice.close()
             bob.close()
+
+
+def test_spawn_keeps_the_subclass_it_was_called_on():
+    """`MockSession.spawn()` named its own class, so a subclass spawned a base
+    session and lost whatever it overrode -- silently, since the base method
+    answers rather than raising. Found while converting the ServerThread call
+    sites (#29): the conversion had to route around it."""
+    from conftest import MockSession
+
+    class Declaring(MockSession):
+        async def prepare(self, sql, param_oids):
+            return "overridden"
+
+    clone = Declaring().spawn()
+    assert isinstance(clone, Declaring)
+    assert type(clone).prepare is Declaring.prepare
+
+
+def test_spawn_reads_configuration_set_after_it_was_spawned():
+    """The reason spawn proxies rather than copies: a test configures the fixture
+    after the server is already up, and every connection has to see it."""
+    from conftest import MockSession
+
+    template = MockSession()
+    clone = template.spawn()
+    template.rows = [("late",)]
+    assert clone.rows == [("late",)]
