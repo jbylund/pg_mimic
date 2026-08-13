@@ -9,10 +9,10 @@ from __future__ import annotations
 
 import psycopg
 import pytest
-from conftest import ServerThread
 
-from pg_mimic import PgServer, ResultColumn, Session, StaticStatement, middleware
+from pg_mimic import ResultColumn, Session, StaticStatement, middleware
 from pg_mimic.state import SessionState
+from pg_mimic.testing import serve_in_thread
 
 
 class ForgetfulSession(Session):
@@ -33,18 +33,13 @@ class ForgetfulSession(Session):
 
 
 def test_middleware_works_even_if_session_init_skips_super():
-    server = PgServer(session_factory=ForgetfulSession)
-    thread = ServerThread(server)
-    port = thread.start()
-    try:
-        with psycopg.Connection.connect(f"host=127.0.0.1 port={port} user=test dbname=test", autocommit=True) as conn:
+    with serve_in_thread(ForgetfulSession) as server:
+        with psycopg.Connection.connect(server.dsn(user="test", dbname="test"), autocommit=True) as conn:
             with conn.cursor() as cur:
                 cur.execute("SELECT current_database()")
                 # the connection's real database, not the session's own query()
                 # echoing the SQL text back -- which is what a dead chain would give
                 assert cur.fetchall() == [("test",)]
-    finally:
-        thread.stop()
 
 
 def test_plain_select_reaches_the_session_by_default(conn, mock_session):
@@ -319,17 +314,12 @@ def test_a_session_reads_the_state_the_middleware_owns():
         async def query(self, sql, params):
             yield (self.state.session_vars.get("search_path", ""),)
 
-    server = PgServer(session_factory=Peeking)
-    thread = ServerThread(server)
-    port = thread.start()
-    try:
-        with psycopg.Connection.connect(f"host=127.0.0.1 port={port} user=test dbname=test", autocommit=True) as conn:
+    with serve_in_thread(Peeking) as server:
+        with psycopg.Connection.connect(server.dsn(user="test", dbname="test"), autocommit=True) as conn:
             with conn.cursor() as cur:
                 cur.execute("SET search_path TO myschema")  # answered by the middleware
                 cur.execute("SELECT whatever")  # reaches the session, which reads it back
                 assert cur.fetchall() == [("myschema",)]
-    finally:
-        thread.stop()
 
 
 def test_state_is_populated_even_if_session_init_skips_super():
@@ -346,11 +336,6 @@ def test_state_is_populated_even_if_session_init_skips_super():
         async def query(self, sql, params):
             yield (f"{self.state.username}/{self.state.database}",)
 
-    server = PgServer(session_factory=Forgetful)
-    thread = ServerThread(server)
-    port = thread.start()
-    try:
-        with psycopg.Connection.connect(f"host=127.0.0.1 port={port} user=alice dbname=shop", autocommit=True) as conn:
+    with serve_in_thread(Forgetful) as server:
+        with psycopg.Connection.connect(server.dsn(user="alice", dbname="shop"), autocommit=True) as conn:
             assert conn.execute("SELECT anything").fetchall() == [("alice/shop",)]
-    finally:
-        thread.stop()

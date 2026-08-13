@@ -17,17 +17,14 @@ from __future__ import annotations
 
 import asyncio
 
-from conftest import ServerThread
 from wire import connect_and_get_backend_key, make_cancel_request, make_query, parse_error_fields, read_message
 
-from pg_mimic import PgServer, ResultColumn
+from pg_mimic import ResultColumn
+from pg_mimic.testing import serve_in_thread
 
 
 async def test_cancel_request_interrupts_running_query(mock_session):
-    server = PgServer(session_factory=mock_session.spawn)
-    thread = ServerThread(server)
-    port = thread.start()
-    try:
+    with serve_in_thread(mock_session.spawn) as server:
         mock_session.columns = [ResultColumn.for_type("x", str)]
         # The session runs on the server's own loop in another thread, so the
         # event has to be set back on this one. asyncio.Event is not thread-safe:
@@ -45,14 +42,14 @@ async def test_cancel_request_interrupts_running_query(mock_session):
 
         mock_session.query = slow_query
 
-        reader, writer, pid, secret = await connect_and_get_backend_key(port)
+        reader, writer, pid, secret = await connect_and_get_backend_key(server.port)
 
         writer.write(make_query("SELECT x FROM slow_table"))
         await writer.drain()
         await asyncio.wait_for(started.wait(), timeout=2)
         await asyncio.sleep(0.1)  # let the server actually be inside the sleep
 
-        _, cancel_writer = await asyncio.open_connection("127.0.0.1", port)
+        _, cancel_writer = await asyncio.open_connection("127.0.0.1", server.port)
         cancel_writer.write(make_cancel_request(pid, secret))
         await cancel_writer.drain()
         cancel_writer.close()
@@ -68,15 +65,10 @@ async def test_cancel_request_interrupts_running_query(mock_session):
         writer.close()
 
         await writer.wait_closed()
-    finally:
-        thread.stop()
 
 
 async def test_cancel_request_with_wrong_secret_is_ignored(mock_session):
-    server = PgServer(session_factory=mock_session.spawn)
-    thread = ServerThread(server)
-    port = thread.start()
-    try:
+    with serve_in_thread(mock_session.spawn) as server:
         mock_session.columns = [ResultColumn.for_type("x", str)]
         # Set back on this loop rather than the server thread's -- see the note in
         # test_cancel_request_interrupts_running_query.
@@ -90,13 +82,13 @@ async def test_cancel_request_with_wrong_secret_is_ignored(mock_session):
 
         mock_session.query = slow_query
 
-        reader, writer, pid, secret = await connect_and_get_backend_key(port)
+        reader, writer, pid, secret = await connect_and_get_backend_key(server.port)
 
         writer.write(make_query("SELECT x FROM slow_table"))
         await writer.drain()
         await asyncio.wait_for(started.wait(), timeout=2)
 
-        _, cancel_writer = await asyncio.open_connection("127.0.0.1", port)
+        _, cancel_writer = await asyncio.open_connection("127.0.0.1", server.port)
         cancel_writer.write(make_cancel_request(pid, secret ^ 1))
         await cancel_writer.drain()
         cancel_writer.close()
@@ -115,5 +107,3 @@ async def test_cancel_request_with_wrong_secret_is_ignored(mock_session):
 
         writer.close()
         await writer.wait_closed()
-    finally:
-        thread.stop()

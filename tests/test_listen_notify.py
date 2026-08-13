@@ -95,11 +95,8 @@ async def test_notify_during_a_query_lands_after_command_complete():
         session.query = query
         return session
 
-    server = PgServer(session_factory=make_session)
-    thread = ServerThread(server)
-    port = thread.start()
-    try:
-        reader, writer, _pid, _secret = await connect_and_get_backend_key(port)
+    with serve_in_thread(make_session) as server:
+        reader, writer, _pid, _secret = await connect_and_get_backend_key(server.port)
         writer.write(make_query("LISTEN chan"))
         await writer.drain()
         assert await read_until(reader, b"Z") == [b"C", b"Z"]
@@ -110,7 +107,7 @@ async def test_notify_during_a_query_lands_after_command_complete():
 
         # Fired from a second connection while the first is demonstrably inside its
         # own command, and awaited to completion so the fanout has certainly run.
-        notifier, notifier_writer, _p, _s = await connect_and_get_backend_key(port)
+        notifier, notifier_writer, _p, _s = await connect_and_get_backend_key(server.port)
         notifier_writer.write(make_query("NOTIFY chan, 'mid-query'"))
         await notifier_writer.drain()
         await read_until(notifier, b"Z")
@@ -121,8 +118,6 @@ async def test_notify_during_a_query_lands_after_command_complete():
 
         writer.close()
         notifier_writer.close()
-    finally:
-        thread.stop()
 
 
 async def test_notify_mid_portal_drain_waits_for_sync():
@@ -136,11 +131,8 @@ async def test_notify_mid_portal_drain_waits_for_sync():
     held past the next Execute's DataRows and delivered at Sync -- `D D s`, then
     `A Z`.
     """
-    server = PgServer(session_factory=rows_session([(i,) for i in range(6)]))
-    thread = ServerThread(server)
-    port = thread.start()
-    try:
-        reader, writer, _pid, _secret = await connect_and_get_backend_key(port)
+    with serve_in_thread(rows_session([(i,) for i in range(6)])) as server:
+        reader, writer, _pid, _secret = await connect_and_get_backend_key(server.port)
         writer.write(make_query("LISTEN chan"))
         await writer.drain()
         await read_until(reader, b"Z")
@@ -152,7 +144,7 @@ async def test_notify_mid_portal_drain_waits_for_sync():
         await writer.drain()
         assert await read_until(reader, b"s") == [b"1", b"2", b"D", b"D", b"s"]
 
-        notifier, notifier_writer, _p, _s = await connect_and_get_backend_key(port)
+        notifier, notifier_writer, _p, _s = await connect_and_get_backend_key(server.port)
         notifier_writer.write(make_query("NOTIFY chan, 'mid-portal'"))
         await notifier_writer.drain()
         await read_until(notifier, b"Z")
@@ -172,8 +164,6 @@ async def test_notify_mid_portal_drain_waits_for_sync():
 
         writer.close()
         notifier_writer.close()
-    finally:
-        thread.stop()
 
 
 async def test_notify_while_idle_at_ready_for_query_is_delivered_at_once():
@@ -181,16 +171,13 @@ async def test_notify_while_idle_at_ready_for_query_is_delivered_at_once():
     next command gets the notification immediately, as its own message, rather
     than waiting for something to ask. That is what makes `conn.notifies()` and
     `add_listener` work at all on an otherwise silent connection."""
-    server = PgServer(session_factory=MockSession)
-    thread = ServerThread(server)
-    port = thread.start()
-    try:
-        reader, writer, _pid, _secret = await connect_and_get_backend_key(port)
+    with serve_in_thread(MockSession) as server:
+        reader, writer, _pid, _secret = await connect_and_get_backend_key(server.port)
         writer.write(make_query("LISTEN chan"))
         await writer.drain()
         assert await read_until(reader, b"Z") == [b"C", b"Z"]
 
-        notifier, notifier_writer, notifier_pid, _s = await connect_and_get_backend_key(port)
+        notifier, notifier_writer, notifier_pid, _s = await connect_and_get_backend_key(server.port)
         notifier_writer.write(make_query("NOTIFY chan, 'while idle'"))
         await notifier_writer.drain()
         await read_until(notifier, b"Z")
@@ -201,8 +188,6 @@ async def test_notify_while_idle_at_ready_for_query_is_delivered_at_once():
 
         writer.close()
         notifier_writer.close()
-    finally:
-        thread.stop()
 
 
 class NoticeSession(Session):
@@ -224,11 +209,8 @@ async def test_notice_attaches_to_its_query_in_the_extended_protocol():
     asyncpg actually use, and it places the notice exactly as Postgres does: after
     the RowDescription, among the rows it belongs to, before CommandComplete.
     """
-    server = PgServer(session_factory=NoticeSession)
-    thread = ServerThread(server)
-    port = thread.start()
-    try:
-        reader, writer, _pid, _secret = await connect_and_get_backend_key(port)
+    with serve_in_thread(NoticeSession) as server:
+        reader, writer, _pid, _secret = await connect_and_get_backend_key(server.port)
         writer.write(make_parse("SELECT x FROM t"))
         writer.write(make_bind())
         writer.write(make_describe(TARGET_PORTAL))
@@ -251,8 +233,6 @@ async def test_notice_attaches_to_its_query_in_the_extended_protocol():
         assert fields["M"] == "halfway there"
         assert fields["D"] == "some detail"
         writer.close()
-    finally:
-        thread.stop()
 
 
 async def test_notice_precedes_the_row_description_in_the_simple_protocol():
@@ -265,30 +245,22 @@ async def test_notice_precedes_the_row_description_in_the_simple_protocol():
     out of band, which is exactly why both drivers report it either way. Asserted
     rather than glossed over, so a future change to that path is a deliberate one.
     """
-    server = PgServer(session_factory=NoticeSession)
-    thread = ServerThread(server)
-    port = thread.start()
-    try:
-        reader, writer, _pid, _secret = await connect_and_get_backend_key(port)
+    with serve_in_thread(NoticeSession) as server:
+        reader, writer, _pid, _secret = await connect_and_get_backend_key(server.port)
         writer.write(make_query("SELECT x FROM t"))
         await writer.drain()
         assert await read_until(reader, b"Z") == [b"N", b"T", b"D", b"D", b"C", b"Z"]
         writer.close()
-    finally:
-        thread.stop()
 
 
 async def test_notification_carries_the_notifying_pid():
-    server = PgServer(session_factory=MockSession)
-    thread = ServerThread(server)
-    port = thread.start()
-    try:
-        reader, writer, _pid, _secret = await connect_and_get_backend_key(port)
+    with serve_in_thread(MockSession) as server:
+        reader, writer, _pid, _secret = await connect_and_get_backend_key(server.port)
         writer.write(make_query("LISTEN chan"))
         await writer.drain()
         await read_until(reader, b"Z")
 
-        notifier, notifier_writer, notifier_pid, _s = await connect_and_get_backend_key(port)
+        notifier, notifier_writer, notifier_pid, _s = await connect_and_get_backend_key(server.port)
         notifier_writer.write(make_query("NOTIFY chan, 'payload'"))
         await notifier_writer.drain()
         await read_until(notifier, b"Z")
@@ -298,8 +270,6 @@ async def test_notification_carries_the_notifying_pid():
         assert parse_notification(payload) == (notifier_pid, "chan", "payload")
         writer.close()
         notifier_writer.close()
-    finally:
-        thread.stop()
 
 
 # --- psycopg ------------------------------------------------------------------------
@@ -709,11 +679,13 @@ def test_server_notify_from_another_thread_via_the_server_loop():
     transports and asyncio transports are not thread-safe. This is the documented
     incantation, so it gets a test rather than only a docstring.
     """
+    # The one test here that cannot use `serve_in_thread`: it needs the thread's
+    # loop, which the context manager deliberately does not hand out.
     server = PgServer(session_factory=MockSession)
     thread = ServerThread(server)
-    port = thread.start()
+    thread.start()
     try:
-        with psycopg.connect(f"host=127.0.0.1 port={port} user=test dbname=test", autocommit=True) as listener:
+        with psycopg.connect(server.dsn(user="test", dbname="test"), autocommit=True) as listener:
             listener.execute("LISTEN external")
             thread.loop.call_soon_threadsafe(server.notify, "external", "from the embedding process")
             got = [(n.channel, n.payload) for n in listener.notifies(timeout=5, stop_after=1)]

@@ -13,10 +13,11 @@ from datetime import date
 
 import psycopg
 import pytest
-from conftest import MockSession, ServerThread
+from conftest import MockSession
 
-from pg_mimic import ARRAY_OID, INT8, TEXT, PgServer, ResultColumn, Session
+from pg_mimic import ARRAY_OID, INT8, TEXT, ResultColumn, Session
 from pg_mimic.arrays import format_array_literal, parse_array_literal
+from pg_mimic.testing import serve_in_thread
 from pg_mimic.types import decode_binary_param, encode_value_binary, oid_for_type
 
 
@@ -24,18 +25,13 @@ def _read_both_formats(columns, rows, sql="select c"):
     session = MockSession()
     session.columns = columns
     session.rows = rows
-    server = PgServer(session_factory=lambda: session)
-    thread = ServerThread(server)
-    port = thread.start()
-    try:
-        out = []
-        with psycopg.Connection.connect(f"host=127.0.0.1 port={port} user=u dbname=d") as conn:
+    out = []
+    with serve_in_thread(lambda: session) as server:
+        with psycopg.Connection.connect(server.dsn(user="u", dbname="d")) as conn:
             for binary in (False, True):
                 with conn.cursor(binary=binary) as cur:
                     cur.execute(sql)
                     out.append(cur.fetchone()[0])
-    finally:
-        thread.stop()
     return out
 
 
@@ -168,16 +164,11 @@ def _send_param(value, binary=False, session=None):
     session = session or MockSession()
     session.columns = [ResultColumn.for_type("x", str)]
     session.rows = [("ok",)]
-    server = PgServer(session_factory=lambda: session)
-    thread = ServerThread(server)
-    port = thread.start()
-    try:
-        with psycopg.Connection.connect(f"host=127.0.0.1 port={port} user=u dbname=d") as conn:
+    with serve_in_thread(lambda: session) as server:
+        with psycopg.Connection.connect(server.dsn(user="u", dbname="d")) as conn:
             with conn.cursor(binary=binary) as cur:
                 cur.execute("select x from t where a = %s", (value,))
                 cur.fetchall()
-    finally:
-        thread.stop()
     return session.queries[-1][1]
 
 
@@ -233,16 +224,11 @@ class _EchoSession(Session):
 
 def _echo(value, oid, binary=False):
     session = _EchoSession(oid)
-    server = PgServer(session_factory=lambda: session)
-    thread = ServerThread(server)
-    port = thread.start()
-    try:
-        with psycopg.Connection.connect(f"host=127.0.0.1 port={port} user=u dbname=d") as conn:
+    with serve_in_thread(lambda: session) as server:
+        with psycopg.Connection.connect(server.dsn(user="u", dbname="d")) as conn:
             with conn.cursor(binary=binary) as cur:
                 cur.execute("select %s", (value,))
                 return cur.fetchone()[0], session.seen
-    finally:
-        thread.stop()
 
 
 _echo_testcases = {
