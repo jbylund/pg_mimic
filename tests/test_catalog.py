@@ -553,3 +553,51 @@ def test_every_declared_catalog_column_has_a_value_in_every_row():
             for position, row in enumerate(tables[namespace].get(table, [])):
                 missing = sorted(set(columns) - set(row))
                 assert not missing, f"{table} row {position} declares but does not carry {missing}"
+
+
+# --- column shape comes from the declared schema, not from row one (#101) -------------
+
+
+def test_a_column_whose_first_row_is_null_still_describes_as_its_real_type(conn, mock_session):
+    """`statement_from_rows` types each column from the first row -- the only place a
+    session yielding bare rows can look. The catalog is not that: it builds the
+    schema before it builds the rows, and used to drop it here.
+
+    `character_octet_length` is NULL for an integer column and 1073741824 for a text
+    one, so with the integer column first this described as text and sent the number
+    out as the string '1073741824'."""
+    from pg_mimic.types import INT4
+
+    async def schema():
+        return {"users": {"id": "integer", "name": "text"}}
+
+    mock_session.schema = schema
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT column_name, character_octet_length FROM information_schema.columns "
+            "WHERE table_name = 'users' ORDER BY ordinal_position"
+        )
+        rows = cur.fetchall()
+        assert cur.description[1].type_code == INT4, "typed from row one, which is NULL here"
+        assert rows == [("id", None), ("name", 1073741824)], "and the value arrives as a number"
+
+
+def test_a_session_that_declares_no_schema_can_still_be_introspected(conn, mock_session):
+    """`Session.schema()` returns None by default, and the `or {}` meant to guard that
+    bound to the wrong branch -- so any session not overriding it crashed every
+    catalog query with `'NoneType' object has no attribute 'items'`.
+
+    Nothing caught it because every session in this suite either declares a schema or
+    is TableSession, which always does."""
+
+    async def schema():
+        return None
+
+    mock_session.schema = schema
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT table_name FROM information_schema.tables")
+        assert cur.fetchall() == []
+        cur.execute("SELECT relname FROM pg_catalog.pg_class")
+        assert cur.fetchall() == []

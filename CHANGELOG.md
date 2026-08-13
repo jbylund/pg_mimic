@@ -157,6 +157,15 @@ what shipped rather than what was written down at the time.
   connection. (#32, #76)
 
 ### Fixed
+- Catalog queries describe their columns from the declared catalog schema rather
+  than from the first row. A column whose first value was NULL described as `text`,
+  so later values in it went out as strings — `character_octet_length` on
+  `information_schema.columns` returned `'1073741824'` rather than `1073741824`.
+  A session that yields bare rows still types from row one, which is the only place
+  it can look. (#101)
+- A `Session` that does not override `schema()` no longer crashes every catalog
+  query with `'NoneType' object has no attribute 'items'`. The guard against the
+  default `None` bound to the wrong branch of a conditional. (#101)
 
 - A column declared as an array (`text[]`) or as `character` is catalogued as
   that type instead of falling back to `text`, so `pg_attribute.atttypid` points
