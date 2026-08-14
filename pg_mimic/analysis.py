@@ -43,9 +43,16 @@ def _cached(method):
 
     @wraps(method)
     def memoized(self):
-        if key not in self.__dict__:
-            self.__dict__[key] = method(self)
-        return self.__dict__[key]
+        try:
+            return self.__dict__[key]
+        except KeyError:
+            pass
+        # Outside the handler on purpose. Called within it, anything `method` raises
+        # is chained onto the miss -- and qualify() raising is a normal path here,
+        # so every unresolvable column would report a KeyError on the cache key
+        # first and the real error second.
+        self.__dict__[key] = value = method(self)
+        return value
 
     return memoized
 
