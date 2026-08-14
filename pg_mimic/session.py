@@ -191,7 +191,14 @@ class StaticPortal(Portal):
     async def execute(self, max_rows: int) -> tuple[list[Row], bool]:
         if self._row_source is None:
             if self._on_execute is not None:
-                self._on_execute()
+                # Awaited when there is something to await. A middleware effect is
+                # ordinarily synchronous -- it writes connection state and returns --
+                # but one that has to reach the *session* cannot be, and this is the
+                # only place an effect runs. Same shape as _resolve_row_source, for
+                # the same reason: the caller should not have to know which it got.
+                effect = self._on_execute()
+                if inspect.isawaitable(effect):
+                    await effect
             # After on_execute, so a statement that both writes and reads back --
             # `SELECT set_config('x', 'y', false)` -- reports the value it just set.
             self._row_source = _rows_as_async_iter(self._rows())
