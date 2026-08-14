@@ -27,10 +27,9 @@ from typing import TYPE_CHECKING
 from sqlglot import exp
 from sqlglot.errors import OptimizeError
 from sqlglot.executor import execute as sqlglot_execute
-from sqlglot.optimizer.annotate_types import annotate_types
-from sqlglot.optimizer.qualify import qualify
 
 from . import types as pg_types
+from .analysis import AnalyzedQuery
 from .arrays import ARRAY_OID, is_array_oid
 from .catalog_data import INFORMATION_SCHEMA_SCHEMA, PG_CATALOG_SCHEMA
 from .catalog_rewrite import rewrite_for_executor
@@ -456,8 +455,8 @@ def _declared_columns(expr: exp.Expression, schema: dict) -> list[ResultColumn] 
     refusing a query the executor already answered.
     """
     try:
-        qualified = qualify(expr.copy(), schema=schema, dialect="postgres")
-        return result_columns(annotate_types(qualified, schema=schema, dialect="postgres"), [])
+        analyzed = AnalyzedQuery(expr, schema=schema)
+        return result_columns(analyzed.annotated(), [], names=analyzed.column_names())
     except Exception:
         return None
 

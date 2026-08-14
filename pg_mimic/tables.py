@@ -57,19 +57,17 @@ from sqlglot.executor.env import ENV
 from sqlglot.executor.python import PythonExecutor
 from sqlglot.executor.table import ensure_tables
 from sqlglot.optimizer import optimize
-from sqlglot.optimizer.annotate_types import annotate_types
 from sqlglot.optimizer.normalize_identifiers import normalize_identifiers
-from sqlglot.optimizer.qualify import qualify
 from sqlglot.planner import Plan
 from sqlglot.schema import ensure_schema
-
-from .arrays import element_oid_of, is_array_oid
 
 # The declared-schema half of describe(), shared with any other session that
 # declares one (see pg_mimic.describe, and #88 for the copy that had diverged).
 # _PG_NAME and _pg_type_name are re-exported by being imported here: they read as
 # TableSession's own vocabulary from the outside, and the catalog's round-trip test
 # takes them off this module.
+from .analysis import AnalyzedQuery, annotate
+from .arrays import element_oid_of, is_array_oid
 from .describe import (
     _PG_NAME,
     _SQLGLOT_NAME,
@@ -77,7 +75,6 @@ from .describe import (
     _param_index,
     _pg_type_name,
     result_columns,
-    size_integer_literals,
 )
 from .errors import (
     FEATURE_NOT_SUPPORTED,
@@ -165,6 +162,9 @@ class _Plan:
     """
 
     expression: exp.Query
+    # What Postgres calls each output column, decided on the query as written --
+    # before qualify() rewrote the select list out from under the question (#111).
+    column_names: tuple[str, ...] = ()
     # Select positions to keep the first row of, for DISTINCT ON; empty otherwise.
     distinct_on: tuple[int, ...] = ()
     # (output position, descending, nulls first) per ORDER BY term of a set
@@ -250,7 +250,7 @@ class TableSession(Session):
 
     async def describe(self, sql: str, param_oids: list[int | None]) -> list[ResultColumn] | None:
         plan = self._plan(sql)
-        return result_columns(plan.expression, param_oids)[: plan.visible_columns]
+        return result_columns(plan.expression, param_oids, names=plan.column_names)[: plan.visible_columns]
 
     async def query(self, sql: str, params: list[Any]) -> list[Row]:
         plan = self._plan(sql)
@@ -345,14 +345,14 @@ class TableSession(Session):
             # collide, and the second silently runs the first one's plan --
             # `SELECT .. FROM t WHERE a UNION ALL SELECT .. FROM t WHERE b` answers
             # `a` twice. Distinct aliases per reference are what keep them apart.
-            qualified = qualify(expression, schema=self._sqlglot_schema, dialect="postgres", canonicalize_table_aliases=True)
-            # Before annotate_types, so a DISTINCT ON key this adds to the select
-            # list is typed like any other column rather than left bare.
+            analyzed = AnalyzedQuery(expression, schema=self._sqlglot_schema, canonicalize_table_aliases=True)
+            # qualified() hands back a copy, so this rewrites our tree rather than the
+            # one AnalyzedQuery holds -- and annotate() is then applied to ours, which
+            # is what gets the DISTINCT ON key it adds typed like any other column.
+            # analyzed.annotated() would have annotated the untouched copy instead.
+            qualified = analyzed.qualified()
             distinct_on, visible_columns = _distinct_on_keys(qualified)
-            # Also before it, so that the width the annotator then reads off a wide
-            # literal propagates through whatever the query does with it.
-            size_integer_literals(qualified)
-            annotated = annotate_types(qualified, schema=self._sqlglot_schema, dialect="postgres")
+            annotated = annotate(qualified, schema=self._sqlglot_schema)
         except PgError:
             raise
         except Exception as exc:
@@ -369,6 +369,7 @@ class TableSession(Session):
         _rewrite_null_ordering(annotated)
         return _Plan(
             expression=annotated,
+            column_names=analyzed.column_names(),
             distinct_on=distinct_on,
             sort_keys=sort_keys,
             visible_columns=visible_columns,

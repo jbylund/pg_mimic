@@ -50,8 +50,6 @@ import sqlglot.executor.env as executor_env
 from _args import example_parser, parse_args, serve
 from sqlglot import exp
 from sqlglot.executor import execute as sqlglot_execute
-from sqlglot.optimizer.annotate_types import annotate_types
-from sqlglot.optimizer.qualify import qualify
 
 from pg_mimic import (
     BOOL,
@@ -64,7 +62,8 @@ from pg_mimic import (
     Session,
     oid_for_declared_type,
 )
-from pg_mimic.describe import result_columns, size_integer_literals
+from pg_mimic.analysis import AnalyzedQuery
+from pg_mimic.describe import result_columns
 from pg_mimic.errors import FEATURE_NOT_SUPPORTED, PgError
 
 # --- patterns --------------------------------------------------------------------
@@ -571,7 +570,7 @@ class GitSession(Session):
             # away. No `$n`, nothing to infer.
             return declared
         try:
-            expr = qualify(sqlglot.parse_one(sql, dialect="postgres"), schema=SCHEMA, dialect="postgres")
+            expr = AnalyzedQuery(sqlglot.parse_one(sql, dialect="postgres"), schema=SCHEMA).qualified()
         except Exception:
             return declared  # unparseable, or not about our tables -- leave it alone
         aliases = _alias_map(expr)
@@ -590,12 +589,10 @@ class GitSession(Session):
         that crashes asyncpg's binary decoder, and result_columns is what calls an
         unaliased output column `?column?` the way Postgres does.
         """
-        expr = self._analyze(sql, params=None)
-        if not isinstance(expr, exp.Select):
+        analyzed = self._analyzed(sql)
+        if analyzed is None:
             return None
-        size_integer_literals(expr)
-        expr = annotate_types(expr, schema=SCHEMA, dialect="postgres")
-        return result_columns(expr, param_oids)
+        return result_columns(analyzed.annotated(), param_oids, names=analyzed.column_names())
 
     async def query(self, sql, params):
         expr = self._analyze(sql, params)
@@ -608,17 +605,26 @@ class GitSession(Session):
         for row in result.rows:
             yield tuple(row)
 
+    def _analyzed(self, sql: str) -> AnalyzedQuery | None:
+        """The query in the forms describe() and query() each need, or None if it is
+        not a SELECT -- see pg_mimic.analysis."""
+        expr = sqlglot.parse_one(sql, dialect="postgres")
+        if not isinstance(expr, exp.Select):
+            return None
+        return AnalyzedQuery(expr, schema=SCHEMA)
+
     def _analyze(self, sql: str, params: list | None) -> exp.Expression:
-        """Parse, qualify every column to a table, then substitute bound parameters.
+        """Qualify every column to a table, then substitute bound parameters.
 
         Qualifying first is what lets _substitute_params see which column each `$1` is
         measured against, which is the only type information available for it.
         """
         expr = sqlglot.parse_one(sql, dialect="postgres")
-        if isinstance(expr, exp.Select):
-            expr = qualify(expr, schema=SCHEMA, dialect="postgres")
-            _substitute_params(expr, params)
-        return expr
+        if not isinstance(expr, exp.Select):
+            return expr
+        qualified = AnalyzedQuery(expr, schema=SCHEMA).qualified()
+        _substitute_params(qualified, params)
+        return qualified
 
     def _execute(self, expr: exp.Select):
         tables = self._tables(expr)  # a PgError from git or an unknown table stands as-is
