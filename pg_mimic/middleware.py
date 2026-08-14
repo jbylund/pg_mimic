@@ -37,7 +37,7 @@ from sqlglot import exp
 from sqlglot.executor import execute as sqlglot_execute
 from sqlglot.tokens import TokenType
 
-from . import settings_catalog
+from . import settings_catalog, settings_values
 from .catalog import information_schema_statement, pg_catalog_statement
 from .copy import copy_statement
 from .describe import oid_for_declared_type
@@ -1241,6 +1241,11 @@ def _apply_set_config(connection: Connection, key: str, value: str | None, local
     in the same wall (#77).
     """
     _check_settable(key)
+    if value is not None:
+        # After _check_settable, in Postgres's order: a parameter no session may
+        # change is refused for that before its value is looked at. RESET has no
+        # value to check (#105).
+        settings_values.check(key, value)
     connection.state.known_settings.add(key)
     for target in (connection.state.session_vars, connection.state.committed_vars):
         if value is None:

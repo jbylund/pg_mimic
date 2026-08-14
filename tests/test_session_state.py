@@ -602,6 +602,98 @@ def test_resetting_a_parameter_a_session_cannot_change_is_refused_too(conn, mock
     assert mock_session.queries == []
 
 
+# Every message and HINT below was read off a PostgreSQL 18.4 socket. Each of the
+# five vartypes fails differently, and the wording is what a client matches on (#105).
+_REFUSED_BY_VALUE = {
+    "an integer that is not a number": {
+        "sql": "SET work_mem = 'banana'",
+        "message": 'invalid value for parameter "work_mem": "banana"',
+        "hint": None,
+    },
+    "a bare integer is in the parameter's own unit": {
+        "sql": "SET work_mem = 32",
+        "message": '32 kB is outside the valid range for parameter "work_mem" (64 kB .. 2147483647 kB)',
+        "hint": None,
+    },
+    "an integer past int32 overflows rather than exceeding max_val": {
+        "sql": "SET work_mem = 99999999999",
+        "message": 'invalid value for parameter "work_mem": "99999999999"',
+        "hint": "Value exceeds integer range.",
+    },
+    "a unit from the wrong family": {
+        "sql": "SET work_mem = '5s'",
+        "message": 'invalid value for parameter "work_mem": "5s"',
+        "hint": 'Valid units for this parameter are "B", "kB", "MB", "GB", and "TB".',
+    },
+    "a real below min_val": {
+        "sql": "SET random_page_cost = -1",
+        "message": '-1 is outside the valid range for parameter "random_page_cost" (0 .. 1.79769e+308)',
+        "hint": None,
+    },
+    "an enum lists what it would have taken": {
+        "sql": "SET default_transaction_isolation = 'sideways'",
+        "message": 'invalid value for parameter "default_transaction_isolation": "sideways"',
+        "hint": "Available values: serializable, repeatable read, read committed, read uncommitted.",
+    },
+    "a bool has its own wording": {
+        "sql": "SET row_security = 'maybe'",
+        "message": 'parameter "row_security" requires a Boolean value',
+        "hint": None,
+    },
+    "set_config goes through the same check": {
+        "sql": "SELECT set_config('work_mem', 'banana', false)",
+        "message": 'invalid value for parameter "work_mem": "banana"',
+        "hint": None,
+    },
+}
+
+
+@pytest.mark.parametrize(
+    argnames=sorted(next(iter(_REFUSED_BY_VALUE.values()))),
+    argvalues=[[v for k, v in sorted(_REFUSED_BY_VALUE[name].items())] for name in sorted(_REFUSED_BY_VALUE)],
+    ids=sorted(_REFUSED_BY_VALUE),
+)
+def test_a_value_the_parameter_does_not_accept_is_refused(conn, mock_session, sql, message, hint):
+    with conn.cursor() as cur:
+        with pytest.raises(psycopg.errors.InvalidParameterValue) as excinfo:
+            cur.execute(sql)
+        assert excinfo.value.sqlstate == "22023"
+        assert excinfo.value.diag.message_primary == message
+        assert excinfo.value.diag.message_hint == hint
+    assert mock_session.queries == []
+
+
+# Accepted, and each for a reason the check could get wrong.
+_ACCEPTED_BY_VALUE = {
+    "a unit scales into the parameter's own": "SET work_mem = '32MB'",
+    "a bool takes any unambiguous prefix": "SET row_security = 'tr'",
+    "a time unit on a ms parameter": "SET statement_timeout = '5s'",
+    "an enum matches case-insensitively": "SET default_transaction_isolation = 'SERIALIZABLE'",
+    "a string parameter takes anything": "SET search_path = 'anything at all'",
+    "a custom GUC takes anything": "SET app.tenant = 'acme'",
+    "RESET has no value to check": "RESET work_mem",
+}
+
+
+@pytest.mark.parametrize(
+    argnames=["sql"],
+    argvalues=[[_ACCEPTED_BY_VALUE[name]] for name in sorted(_ACCEPTED_BY_VALUE)],
+    ids=sorted(_ACCEPTED_BY_VALUE),
+)
+def test_a_value_the_parameter_accepts_is_not_refused(conn, sql):
+    with conn.cursor() as cur:
+        cur.execute(sql)
+
+
+def test_a_value_is_only_checked_once_the_parameter_may_be_changed(conn, mock_session):
+    """Order matters: 55P02 outranks 22023, so a parameter no session may change is
+    refused for that rather than for the value being wrong as well."""
+    with conn.cursor() as cur:
+        with pytest.raises(psycopg.errors.CantChangeRuntimeParam) as excinfo:
+            cur.execute("SET shared_buffers = 'banana'")
+        assert excinfo.value.sqlstate == "55P02"
+
+
 def test_setting_a_name_that_is_not_a_parameter_is_refused(conn, mock_session):
     """The half of #77 that costs the most: every undotted name used to be settable,
     which made `SET` unable to tell a typo from a parameter. 18.4 refuses it at
