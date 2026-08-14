@@ -67,6 +67,30 @@ def test_reset_arrives_as_a_none_value(recorded):
     assert sessions[0].told == [("work_mem", "32MB", 32768), ("work_mem", None, None)]
 
 
+# One operation with four spellings. `RESET x` *is* `SET x TO DEFAULT` in Postgres
+# -- same statement, same code in guc.c -- and _set_value maps DEFAULT and LOCAL to
+# None before anything downstream sees them. Two of these say SET, which is why a
+# separate reset_parameter() hook would have nowhere sensible to put them (#35).
+_MEANS_RESET = {
+    "RESET": {"expected": ("work_mem", None, None), "sql": "RESET work_mem"},
+    "SET .. TO DEFAULT": {"expected": ("work_mem", None, None), "sql": "SET work_mem TO DEFAULT"},
+    "SET TIME ZONE LOCAL": {"expected": ("timezone", None, None), "sql": "SET TIME ZONE LOCAL"},
+    "set_config with NULL": {"expected": ("work_mem", None, None), "sql": "SELECT set_config('work_mem', NULL, false)"},
+}
+
+
+@pytest.mark.parametrize(
+    argnames=sorted(next(iter(_MEANS_RESET.values()))),
+    argvalues=[[v for k, v in sorted(_MEANS_RESET[name].items())] for name in sorted(_MEANS_RESET)],
+    ids=sorted(_MEANS_RESET),
+)
+def test_every_spelling_of_going_back_to_the_default_reaches_the_hook(recorded, expected, sql):
+    connection, sessions = recorded
+    with connection.cursor() as cur:
+        cur.execute(sql)
+    assert sessions[0].told == [expected]
+
+
 def test_set_config_goes_through_the_same_funnel(recorded):
     """The reason the funnel exists: refusing `SET x` while allowing
     `set_config('x', ...)` would be a hole in the same wall (#77)."""
