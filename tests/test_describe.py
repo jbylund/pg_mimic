@@ -161,3 +161,11 @@ _cast_names = {
 def test_a_cast_is_named_after_its_operand_then_its_type(expected, sql):
     session = TableSession({"users": [{"id": 1}]})
     assert [name for name, _ in _described(session, sql)] == expected
+
+
+def test_qualifys_label_for_an_unnameable_column_is_not_passed_on():
+    """`*` over a derived table expands to a reference *named* `_col_0` when the inner
+    column had no name of its own. That label is qualify's bookkeeping; Postgres calls
+    it `?column?`, measured on 18.4."""
+    session = TableSession({"users": [{"id": 1}]})
+    assert [name for name, _ in _described(session, "SELECT * FROM (SELECT 1 + 1 FROM users) x")] == ["?column?"]

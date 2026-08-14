@@ -265,7 +265,14 @@ def resolve_column_names(qualified: exp.Query, written: dict[int, str]) -> list[
     Pairing by identity rather than by position is what makes `SELECT *, 1` work,
     where the two select lists are different lengths.
     """
-    return [written.get(id(select.unalias()), _qualified_name(select)) for select in qualified.selects]
+    # Not `written.get(id(...), _qualified_name(select))`: a dict default is evaluated
+    # whether or not it is needed, so the fallback would run for every column and be
+    # thrown away for all but the few it is for.
+    names = []
+    for select in qualified.selects:
+        name = written.get(id(select.unalias()))
+        names.append(_qualified_name(select) if name is None else name)
+    return names
 
 
 def _written_name(select: exp.Expression) -> str:
@@ -300,12 +307,19 @@ def _implicit_name(node: exp.Expression) -> str:
 
 
 def _qualified_name(select: exp.Expression) -> str:
-    """A column qualify() produced rather than the query. Its own name is already what
-    Postgres calls it, apart from the `_col_N` qualify() labels the unnameable with."""
+    """A column qualify() produced rather than the query -- one that `*` expanded into.
+
+    Its own name is already what Postgres calls it, apart from the `_col_N` qualify()
+    labels the unnameable with. `SELECT * FROM (SELECT 1 + 1 FROM t) x` expands to a
+    column reference *named* `_col_0`, and that label is qualify's bookkeeping rather
+    than a name to pass on to a client -- Postgres calls it `?column?`.
+    """
     name = select.alias_or_name
     if name and not name.startswith("_col_"):
         return name
-    return _implicit_name(select.unalias())
+    inner = select.unalias()
+    # Only a reference to one of those labels; anything else still names itself.
+    return _UNNAMED if isinstance(inner, exp.Column) else _implicit_name(inner)
 
 
 def _column_oid(select: exp.Expression, param_oids: list[int | None]) -> int:
