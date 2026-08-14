@@ -302,6 +302,29 @@ class Session(BaseSession):
     async def query(self, sql: str, params: list[str | None]) -> RowSource:
         raise NotImplementedError
 
+    async def set_parameter(self, name: str, value: str | None) -> None:
+        """Told about every SET, RESET and set_config() the middleware handled.
+
+        `value` is the text the client wrote, or None for a RESET -- the raw
+        spelling rather than the parsed value, because a session forwarding this to
+        a real backend wants to send what was asked for. What pg_mimic itself keeps
+        is in `self.state.session_vars`, already parsed (see pg_mimic.state).
+
+        `name` is lowercased. Dotted custom GUCs (`app.tenant_id`) arrive here too,
+        which is the point: the alternative was re-parsing raw SQL out of `query()`
+        to discover it was connection boilerplate at all.
+
+        The connection has already recorded the change and will send any
+        ParameterStatus it owes. Raising `PgError` rejects the setting and undoes
+        that record, so a session may refuse one it cannot honour::
+
+            async def set_parameter(self, name, value):
+                if name == "app.tenant_id" and not self.may_use(value):
+                    raise PgError(INVALID_PARAMETER_VALUE, f"no such tenant: {value}")
+
+        Does nothing by default.
+        """
+
     async def schema(self) -> dict | None:
         """Optional: describe your tables for information_schema/pg_catalog
         emulation. See pg_mimic.catalog."""
