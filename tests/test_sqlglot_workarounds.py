@@ -349,7 +349,9 @@ def test_full_outer_join_preserves_unmatched_rows():
 
 # Everything below was found by tools/fuzz. See the module docstring.
 
-_DUPLICATES = ({"t": [{"a": 1}, {"a": 1}, {"a": 2}]}, {"t": {"a": "INT"}})
+# A NULL in here on purpose: without one, count(DISTINCT a) and count(*) are the
+# same number, and the test cannot tell which of the two the executor answered.
+_DUPLICATES = ({"t": [{"a": 1}, {"a": 1}, {"a": 2}, {"a": None}]}, {"t": {"a": "INT"}})
 _MIXED = ({"m": [{"n": Decimal("2.5"), "v": 2.0}]}, {"m": {"n": "DECIMAL", "v": "DOUBLE"}})
 
 
@@ -385,15 +387,29 @@ def test_star_expands_columns_that_share_a_name():
 
 
 @pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
-def test_count_distinct_counts_distinct_values():
+def test_distinct_inside_an_aggregate_is_honored():
     """https://github.com/jbylund/pg_mimic/issues/58
 
-    DISTINCT inside an aggregate is ignored outright -- `count(DISTINCT a)` is
-    `count(a)`. A plausible number, never flagged, and wrong whenever the column
-    has duplicates, which is the only reason anyone writes it.
+    Every `agg(DISTINCT x)` is broken, not just `count`, and the cause is one line
+    of codegen: the Python generator renders `exp.Distinct` as `set()`, discarding
+    the expression inside it, so the aggregate is handed an empty set literal
+    instead of the column. `COUNT(DISTINCT a)` compiles to `COUNT(set())`.
+
+    `count` then answers `count(*)` -- 4 here, so both the DISTINCT *and* the
+    NULL-skipping that plain `count(a)` gets right are lost -- while `sum` and
+    `avg` raise on the empty set. `avg(DISTINCT a)` is 1.5 in Postgres and is left
+    out of the assertions only to keep them integer-exact.
+
+    The parser is fine: the `Distinct` node survives in the AST, in every dialect.
+    And the executor is wrong in every dialect, not only `postgres`, while
+    single-argument `count(DISTINCT x)` is SQL-92 and agrees exactly across
+    PostgreSQL 18.4, SQLite 3.51 and MySQL 8.0.46 -- so a fix upstream is not
+    dialect-gated and cannot break a dialect that wanted the old behaviour.
     """
+    assert _rows("SELECT COUNT(a) FROM t", *_DUPLICATES) == [(3,)]  # correct today; the contrast
     assert _rows("SELECT COUNT(DISTINCT a) FROM t", *_DUPLICATES) == [(2,)]
     assert _rows("SELECT COUNT(DISTINCT 1) FROM t", *_DUPLICATES) == [(1,)]
+    assert _rows("SELECT SUM(DISTINCT a) FROM t", *_DUPLICATES) == [(3,)]
 
 
 @pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
