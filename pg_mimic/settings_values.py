@@ -48,10 +48,52 @@ _TIME_UNITS = {"us": 1, "ms": 1000, "s": 1000**2, "min": 60 * 1000**2, "h": 3600
 #: characters, since `o` cannot say which it meant.
 _BOOLS = ((("true", "yes"), 1, True), (("false", "no"), 1, False), (("on",), 2, True), (("off",), 2, False))
 
+#: The same spellings written out, which is all a boolean-ish enum accepts.
+_BOOL_WORDS = {"1": True, "0": False, "true": True, "false": False, "yes": True, "no": False, "on": True, "off": False}
+
 
 def check(name: str, value: str) -> None:
     """Raise unless `value` is one parameter `name` accepts."""
     parse(name, value)
+
+
+def render(name: str, value: bool | int | float | str) -> str:
+    """The text Postgres reports for `value` -- what SHOW, current_setting() and
+    ParameterStatus all carry.
+
+    The inverse of `parse`, and the reason a setting is stored as a value rather
+    than as the text a client happened to type: `SET row_security = 'tr'` reads
+    back `on`, and `SET work_mem = '32768kB'` reads back `32MB` (#115).
+    """
+    entry = settings_catalog.SETTINGS.get(name.lower())
+    if entry is None:
+        return str(value)
+    vartype = entry["vartype"]
+    if vartype == "bool":
+        return "on" if value else "off"
+    if vartype in ("integer", "real"):
+        return _render_number(int(value) if vartype == "integer" else float(value), entry)
+    return str(value)
+
+
+def _render_number(value: int | float, entry: dict) -> str:
+    """In the largest unit of the parameter's family that divides it exactly.
+
+    Postgres reports 1024 kB of work_mem as `1MB` and 1023 kB as `1023kB`, which is
+    one rule rather than two once the value is taken as an absolute quantity: a
+    parameter measured in `8kB` reports 100 of them as `800kB`, in the family's unit
+    rather than its own. Zero carries no unit at all.
+    """
+    family = _family(entry.get("unit"))
+    if family is None or value == 0:
+        return str(value) if isinstance(value, int) else f"{value:g}"
+    multiple, base = _split_multiple(entry["unit"])
+    absolute = value * multiple * family[base]
+    for unit, size in sorted(family.items(), key=lambda item: -item[1]):
+        if absolute % size == 0:
+            return f"{int(absolute // size)}{unit}"
+    # Only a real can miss: 2.5 kB is 2560 B, but 0.5 us is nothing smaller.
+    return f"{value:g}{entry['unit']}"
 
 
 def parse(name: str, value: str) -> bool | int | float | str:
@@ -92,10 +134,16 @@ def _parse_bool(name: str, value: str) -> bool:
 
 def _parse_enum(name: str, value: str, entry: dict) -> str:
     text = value.strip().lower()
-    for allowed in entry.get("enumvals", ()):
-        if text == allowed.lower():
-            return allowed
-    raise _invalid(name, value, hint=f"Available values: {', '.join(entry.get('enumvals', ()))}.")
+    allowed = entry.get("enumvals", ())
+    for candidate in allowed:
+        if text == candidate.lower():
+            return candidate
+    # An enum offering on and off also answers to the words for them -- `1` and
+    # `true` are `on` for debug_parallel_query -- but only spelled in full, where a
+    # bool parameter would have taken `tr`.
+    if {"on", "off"} <= set(allowed) and text in _BOOL_WORDS:
+        return "on" if _BOOL_WORDS[text] else "off"
+    raise _invalid(name, value, hint=f"Available values: {', '.join(allowed)}.")
 
 
 def _parse_number(name: str, value: str, entry: dict, *, integral: bool) -> int | float:

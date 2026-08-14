@@ -253,8 +253,17 @@ class Session(BaseSession):
     #: The connection's session state -- settings, prepared statements, portals,
     #: savepoints, and who is connected. Assigned by the framework before init()
     #: runs, so an override may use it without calling super(). Read what the
-    #: middleware decided (`self.state.session_vars["search_path"]`), or manage it
-    #: yourself if you set `middleware = ()`. See pg_mimic.state.
+    #: middleware decided, or manage it yourself if you set `middleware = ()`.
+    #: See pg_mimic.state.
+    #:
+    #: `session_vars` holds *values*, not the text a client typed, so a setting
+    #: comes back ready to use::
+    #:
+    #:     self.state.session_vars["row_security"]      # True, not "on" or "tr"
+    #:     self.state.session_vars["statement_timeout"] # 5000, not "5s"
+    #:
+    #: An overridden setting only -- one nobody has SET is absent rather than at
+    #: its default.
     state: SessionState = None  # type: ignore[assignment]
 
     async def init(self, connection: Any) -> None:

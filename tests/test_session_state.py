@@ -17,7 +17,8 @@ import pytest
 from psycopg.pq import TransactionStatus
 from wire import SYNC, connect_and_get_backend_key, make_parse, make_query, read_message
 
-from pg_mimic import middleware, settings_catalog
+from pg_mimic import Session, middleware, settings_catalog
+from pg_mimic.state import SessionState
 from pg_mimic.testing import serve_in_thread
 
 # sql -> the command tag real Postgres completes it with (src/include/tcop/cmdtaglist.h).
@@ -683,6 +684,98 @@ _ACCEPTED_BY_VALUE = {
 def test_a_value_the_parameter_accepts_is_not_refused(conn, sql):
     with conn.cursor() as cur:
         cur.execute(sql)
+
+
+# What PostgreSQL 18.4 answers SHOW with after each SET. The point of storing the
+# value rather than the client's text: `tr` and `1` are the same setting as `on`,
+# and the server says so (#115).
+_CANONICAL = {
+    "a bool prefix reads back as on": {"sql": "SET row_security = 'tr'", "name": "row_security", "shown": "on"},
+    "so does the number 1": {"sql": "SET row_security = '1'", "name": "row_security", "shown": "on"},
+    "an enum reads back in the catalogue's casing": {
+        "sql": "SET default_transaction_isolation = 'SERIALIZABLE'",
+        "name": "default_transaction_isolation",
+        "shown": "serializable",
+    },
+    "an enum offering on/off also takes the word": {
+        "sql": "SET synchronous_commit = '1'",
+        "name": "synchronous_commit",
+        "shown": "on",
+    },
+    "an integer reads back in the largest unit that divides it": {
+        "sql": "SET work_mem = '32768kB'",
+        "name": "work_mem",
+        "shown": "32MB",
+    },
+    "and in its own unit when nothing larger does": {"sql": "SET work_mem = '1023'", "name": "work_mem", "shown": "1023kB"},
+    "a bare integer is in the parameter's unit": {"sql": "SET work_mem = '1048576'", "name": "work_mem", "shown": "1GB"},
+    "a time unit likewise": {"sql": "SET statement_timeout = '5000'", "name": "statement_timeout", "shown": "5s"},
+    "zero carries no unit": {"sql": "SET statement_timeout = '0'", "name": "statement_timeout", "shown": "0"},
+    "a parameter whose unit has a multiplier renders in the family's": {
+        "sql": "SET temp_buffers = '100'",
+        "name": "temp_buffers",
+        "shown": "800kB",
+    },
+    "a real drops a trailing zero": {"sql": "SET random_page_cost = '4.0'", "name": "random_page_cost", "shown": "4"},
+    "a real with a unit gets one too": {"sql": "SET vacuum_cost_delay = '2.5'", "name": "vacuum_cost_delay", "shown": "2500us"},
+    "a string is left alone": {"sql": "SET application_name = 'MiXeD'", "name": "application_name", "shown": "MiXeD"},
+}
+
+
+@pytest.mark.parametrize(
+    argnames=sorted(next(iter(_CANONICAL.values()))),
+    argvalues=[[v for k, v in sorted(_CANONICAL[name].items())] for name in sorted(_CANONICAL)],
+    ids=sorted(_CANONICAL),
+)
+def test_show_reports_the_value_not_the_text_that_was_typed(conn, name, shown, sql):
+    with conn.cursor() as cur:
+        cur.execute(sql)
+        cur.execute(f"SHOW {name}")
+        assert cur.fetchone()[0] == shown
+
+
+def test_current_setting_reads_the_same_rendering(conn):
+    """SHOW, current_setting() and ParameterStatus all read the stored value, so one
+    rendering serves all three."""
+    with conn.cursor() as cur:
+        cur.execute("SET row_security = 'tr'")
+        cur.execute("SELECT current_setting('row_security')")
+        assert cur.fetchone()[0] == "on"
+
+
+class _StateCapturingSession(Session):
+    """Answers nothing, but hands back the state the middleware wrote into."""
+
+    seen: SessionState | None = None
+
+    async def query(self, sql, params):
+        type(self).seen = self.state
+        return
+        yield  # pragma: no cover -- makes this an async generator
+
+
+def _settings_after(*statements: str) -> dict:
+    _StateCapturingSession.seen = None
+    with serve_in_thread(_StateCapturingSession) as server:
+        with psycopg.connect(server.dsn(), autocommit=True) as connection, connection.cursor() as cur:
+            for statement in statements:
+                cur.execute(statement)
+            cur.execute("SELECT 1")
+    return dict(_StateCapturingSession.seen.session_vars)
+
+
+def test_a_session_reads_a_setting_as_a_value():
+    """The reason for storing it: a session gets something it can use rather than
+    text it has to parse (#115)."""
+    stored = _settings_after("SET row_security = 'tr'", "SET statement_timeout = '5s'", "SET work_mem = '32MB'")
+    assert stored["row_security"] is True
+    assert stored["statement_timeout"] == 5000
+    assert stored["work_mem"] == 32768
+
+
+def test_a_custom_guc_has_no_type_to_be():
+    stored = _settings_after("SELECT set_config('app.tenant', 'acme', false)")
+    assert stored["app.tenant"] == "acme"
 
 
 def test_a_value_is_only_checked_once_the_parameter_may_be_changed(conn, mock_session):
