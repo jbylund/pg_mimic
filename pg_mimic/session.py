@@ -342,6 +342,27 @@ class Session(BaseSession):
         Does nothing by default.
         """
 
+    async def discard(self, kind: str) -> None:
+        """Told about `DISCARD ALL | PLANS | SEQUENCES | TEMP`.
+
+        `kind` is upper-case and `TEMPORARY` arrives as `TEMP`, the two being one
+        thing in Postgres.
+
+        All four reach here, including the three the connection itself does nothing
+        for: pg_mimic has no plan cache, no sequences and no temp tables, but a
+        session may have all three, and finding out is the point. `DISCARD ALL` also
+        arrives as one `set_parameter(name, None, None)` per setting still held.
+
+        Called *before* the connection clears what it owns -- session vars, prepared
+        statements, portals, savepoints, listeners -- so raising `PgError` refuses
+        the statement and leaves everything as it was. That is the other way round
+        from `set_parameter`, which records first and undoes on refusal; here the
+        undo would mean snapshotting the whole connection, and telling first buys
+        the same atomicity for nothing.
+
+        Does nothing by default.
+        """
+
     async def schema(self) -> dict | None:
         """Optional: describe your tables for information_schema/pg_catalog
         emulation. See pg_mimic.catalog."""

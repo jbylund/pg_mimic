@@ -296,7 +296,8 @@ async def session_reset(ctx: MiddlewareContext) -> Statement | None:
     """
     match = _DISCARD_RE.match(ctx.sql)
     if match:
-        return _discard_statement(ctx.connection, ctx.sql, match.group(1).upper())
+        kind = match.group(1).upper()
+        return _discard_statement(ctx.connection, ctx.sql, "TEMP" if kind == "TEMPORARY" else kind)
     match = _DEALLOCATE_RE.match(ctx.sql)
     if match:
         return _deallocate_statement(ctx.connection, ctx.sql, match.group(1))
@@ -717,12 +718,18 @@ def _savepoint_statement(connection: Connection, sql: str, kind: str, name: str)
 
 def _discard_statement(connection: Connection, sql: str, kind: str) -> Statement:
     async def on_execute() -> None:
-        if kind != "ALL":
-            return  # PLANS/SEQUENCES/TEMP: a mimic has none of those to throw away
-        # Real Postgres refuses DISCARD ALL inside a transaction block (25001);
-        # the narrower forms are allowed there, hence the check being in here.
-        if connection.tx_status != b"I":
+        # Real Postgres refuses DISCARD ALL inside a transaction block (25001); the
+        # narrower forms are allowed there, hence the check being on the kind.
+        if kind == "ALL" and connection.tx_status != b"I":
             raise PgError(ACTIVE_SQL_TRANSACTION, "DISCARD ALL cannot run inside a transaction block")
+        # Before anything is cleared, so a session that refuses leaves the connection
+        # as it was -- see Session.discard for why this is the opposite order from
+        # set_parameter (#35).
+        await _tell_session_discard(connection, kind)
+        if kind != "ALL":
+            # PLANS/SEQUENCES/TEMP: a mimic has none of those to throw away, and the
+            # session has now had its chance to.
+            return
         # _reset_all first, because it does what reset() cannot: it reports each
         # changed setting back to the client. reset() then clears the rest of the
         # DISCARD ALL surface (and the settings again, by then already empty).
@@ -1306,6 +1313,13 @@ def _record_setting(connection: Connection, key: str, stored: Any, *, drop: bool
             connection.state.known_settings.discard(key)
 
     return undo
+
+
+async def _tell_session_discard(connection: Connection, kind: str) -> None:
+    """Hand a DISCARD to the session, if there is one that takes it."""
+    session = getattr(connection, "session", None)
+    if isinstance(session, Session):
+        await session.discard(kind)
 
 
 async def _tell_session(connection: Connection, key: str, raw: str | None, parsed: Any) -> None:
