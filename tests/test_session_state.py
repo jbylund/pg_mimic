@@ -235,14 +235,34 @@ def test_set_role_and_session_authorization_pass_through(conn, mock_session):
 # --- ParameterStatus ----------------------------------------------------------------
 
 
-def test_client_observes_a_client_encoding_change(conn, mock_session):
-    """psycopg reads its connection encoding out of the cached ParameterStatus, so
-    without one it goes on using the value from the startup burst forever."""
-    assert conn.info.parameter_status("client_encoding") == "UTF8"
+def test_client_observes_a_reported_setting_change(conn, mock_session):
+    """A client caches the startup burst and reads settings out of it -- psycopg's
+    conn.info.encoding is just the cached client_encoding -- so without a
+    ParameterStatus it goes on using the value it was born with forever.
+
+    DateStyle rather than client_encoding as the vehicle: that one may only ever be
+    UTF8 here, so it cannot change and would prove nothing (#116)."""
+    assert conn.info.parameter_status("DateStyle") == "ISO, MDY"
 
     with conn.cursor() as cur:
-        cur.execute("SET client_encoding TO 'LATIN1'")
-    assert conn.info.parameter_status("client_encoding") == "LATIN1"
+        cur.execute("SET DateStyle TO 'ISO, DMY'")
+    assert conn.info.parameter_status("DateStyle") == "ISO, DMY"
+
+
+def test_client_encoding_may_only_be_utf8(conn):
+    """Every string this server writes goes out as UTF-8, and client_encoding is a
+    promise about exactly that. Postgres takes LATIN1 and converts; taking it here
+    left `café` arriving as `cafÃ©`, silently. A name that is not an encoding at all
+    kills psycopg outright, which looks it up as a Python codec."""
+    with conn.cursor() as cur:
+        cur.execute("SET client_encoding TO 'UTF8'")
+        cur.execute("SET client_encoding TO 'utf8'")  # Postgres takes the name case-insensitively
+        for value in ("LATIN1", "SQL_ASCII", "on"):
+            with pytest.raises(psycopg.errors.InvalidParameterValue) as excinfo:
+                cur.execute(f"SET client_encoding TO '{value}'")
+            assert excinfo.value.sqlstate == "22023"
+            assert excinfo.value.diag.message_primary == f'invalid value for parameter "client_encoding": "{value}"'
+            assert excinfo.value.diag.message_hint == "Available values: UTF8."
 
 
 def test_reported_settings_are_reported_again_when_reset(conn, mock_session):
@@ -317,7 +337,7 @@ async def test_parameter_status_arrives_before_ready_for_query(mock_session):
     before ReadyForQuery -- not spliced into the command's own messages."""
     with serve_in_thread(mock_session.spawn) as server:
         reader, writer, _pid, _secret = await connect_and_get_backend_key(server.port)
-        writer.write(make_query("SET client_encoding TO 'LATIN1'"))
+        writer.write(make_query("SET DateStyle TO 'ISO, DMY'"))
         await writer.drain()
 
         tags = []
@@ -325,7 +345,7 @@ async def test_parameter_status_arrives_before_ready_for_query(mock_session):
             tag, payload = await read_message(reader)
             tags.append(tag)
             if tag == b"S":
-                assert payload == b"client_encoding\x00LATIN1\x00"
+                assert payload == b"DateStyle\x00ISO, DMY\x00"
             if tag == b"Z":
                 break
         assert tags == [b"C", b"S", b"Z"]  # CommandComplete, ParameterStatus, ReadyForQuery

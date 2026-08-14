@@ -341,16 +341,19 @@ def test_a_rolled_back_set_leaves_the_setting_known_but_blank(guc_conn):
 
 
 def test_a_rolled_back_setting_is_reported_to_the_client(dsn, mock_session):
-    """A reported GUC that reverts owes the client a ParameterStatus just as one
-    that changes does -- otherwise psycopg goes on decoding with the value the
-    rolled-back transaction set."""
+    """A reported GUC that reverts owes the client a ParameterStatus just as one that
+    changes does -- otherwise the client goes on acting on the value the rolled-back
+    transaction set.
+
+    DateStyle rather than client_encoding as the vehicle: that one may only ever be
+    UTF8 here, so it cannot change and would prove nothing (#116)."""
     with psycopg.Connection.connect(dsn, autocommit=True, prepare_threshold=1) as conn:
-        assert conn.info.parameter_status("client_encoding") == "UTF8"
+        assert conn.info.parameter_status("DateStyle") == "ISO, MDY"
         conn.execute("BEGIN")
-        conn.execute("SET client_encoding TO 'LATIN1'")
-        assert conn.info.parameter_status("client_encoding") == "LATIN1"
+        conn.execute("SET DateStyle TO 'ISO, DMY'")
+        assert conn.info.parameter_status("DateStyle") == "ISO, DMY"
         conn.execute("ROLLBACK")
-        assert conn.info.parameter_status("client_encoding") == "UTF8"
+        assert conn.info.parameter_status("DateStyle") == "ISO, MDY"
 
 
 def test_prepared_statements_are_not_transactional(guc_conn):
