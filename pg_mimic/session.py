@@ -26,7 +26,7 @@ from abc import ABC, abstractmethod
 from typing import Any, AsyncIterable, AsyncIterator, Awaitable, Callable, Iterable, Sequence
 
 from .results import ResultColumn
-from .state import SessionState
+from .state import SessionState, SettingValue
 from .types import TEXT
 
 Row = tuple
@@ -302,22 +302,30 @@ class Session(BaseSession):
     async def query(self, sql: str, params: list[str | None]) -> RowSource:
         raise NotImplementedError
 
-    async def set_parameter(self, name: str, value: str | None) -> None:
+    async def set_parameter(self, name: str, raw_value: str | None, parsed_value: SettingValue | None) -> None:
         """Told about every SET, RESET and set_config() the middleware handled.
 
-        Both spellings of the change are available here, which is why this takes the
-        raw one. `value` is the text the client wrote, or None for a RESET, because
-        a session forwarding this to a real backend wants to send what was asked
-        for. The parsed value is already in `self.state.session_vars`: the
-        connection records the change *before* calling this, so::
+        Both spellings, because a session wants different ones for different jobs:
+        `raw_value` is the text the client wrote, which is what to forward to a real
+        backend, and `parsed_value` is what it means, which is what to act on::
 
-            SET work_mem = '32MB'  ->  value='32MB'  session_vars['work_mem']=32768
-            SET row_security='tr'  ->  value='tr'    session_vars['row_security']=True
-            RESET work_mem         ->  value=None    absent from session_vars
+            SET work_mem = '32MB'      raw='32MB'  parsed=32768   (its own unit, kB)
+            SET row_security = 'tr'    raw='tr'    parsed=True
+            SET client_encoding='utf8' raw='utf8'  parsed='UTF8'
+            SET app.tenant = 'acme'    raw='acme'  parsed='acme'  (a custom GUC has
+                                                                   no type to parse)
+            RESET work_mem             raw=None    parsed=None
+
+        Both are None for a RESET, which is the only thing None means here -- no
+        parameter parses to it.
+
+        Handed over rather than read off `self.state.session_vars`, which holds the
+        same parsed value by the time this runs. Depending on that would make the
+        order the connection happens to do things in part of this contract.
 
         `pg_mimic.settings_values.parse` and `.render` are the same pair the
-        middleware uses, for a session that needs to read a value this did not come
-        from -- one a real backend reported back, say.
+        middleware used to produce it, for a session that needs to read a value this
+        did not hand it -- one a real backend reported back, say.
 
         `name` is lowercased. Dotted custom GUCs (`app.tenant_id`) arrive here too,
         which is the point: the alternative was re-parsing raw SQL out of `query()`
@@ -327,9 +335,9 @@ class Session(BaseSession):
         ParameterStatus it owes. Raising `PgError` rejects the setting and undoes
         that record, so a session may refuse one it cannot honour::
 
-            async def set_parameter(self, name, value):
-                if name == "app.tenant_id" and not self.may_use(value):
-                    raise PgError(INVALID_PARAMETER_VALUE, f"no such tenant: {value}")
+            async def set_parameter(self, name, raw_value, parsed_value):
+                if name == "app.tenant_id" and not self.may_use(raw_value):
+                    raise PgError(INVALID_PARAMETER_VALUE, f"no such tenant: {raw_value}")
 
         Does nothing by default.
         """

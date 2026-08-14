@@ -1266,7 +1266,7 @@ async def _apply_set_config(connection: Connection, key: str, value: str | None,
     undo = _record_setting(connection, key, stored, drop=value is None, local=local)
     _report_setting(connection, key)
     try:
-        await _tell_session(connection, key, value)
+        await _tell_session(connection, key, value, stored)
     except Exception:
         # The session refused it. Put back what was there and say so again, so a
         # client's ParameterStatus cache does not keep a value this connection no
@@ -1308,14 +1308,17 @@ def _record_setting(connection: Connection, key: str, stored: Any, *, drop: bool
     return undo
 
 
-async def _tell_session(connection: Connection, key: str, value: str | None) -> None:
+async def _tell_session(connection: Connection, key: str, raw: str | None, parsed: Any) -> None:
     """Hand the change to the session, if there is one that takes it.
+
+    Both spellings go over, so a session need not know that this happens to record
+    before it tells -- see Session.set_parameter.
 
     A bare BaseSession bypasses the middleware chain entirely and has no hook; a
     Session has one that does nothing until it is overridden."""
     session = getattr(connection, "session", None)
     if isinstance(session, Session):
-        await session.set_parameter(key, value)
+        await session.set_parameter(key, raw, parsed)
 
 
 def _evaluate_select(

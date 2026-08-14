@@ -23,19 +23,19 @@ from pg_mimic.testing import serve_in_thread
 class _Recording(TableSession):
     def __init__(self):
         super().__init__({"t": [{"a": 1}]})
-        self.told: list[tuple[str, str | None]] = []
+        self.told: list[tuple] = []
 
-    async def set_parameter(self, name, value):
-        self.told.append((name, value))
+    async def set_parameter(self, name, raw_value, parsed_value):
+        self.told.append((name, raw_value, parsed_value))
 
 
 class _Refusing(TableSession):
     def __init__(self):
         super().__init__({"t": [{"a": 1}]})
 
-    async def set_parameter(self, name, value):
-        if value == "nope":
-            raise PgError(INVALID_PARAMETER_VALUE, f"no such tenant: {value}")
+    async def set_parameter(self, name, raw_value, parsed_value):
+        if raw_value == "nope":
+            raise PgError(INVALID_PARAMETER_VALUE, f"no such tenant: {raw_value}")
 
 
 @pytest.fixture
@@ -56,7 +56,7 @@ def test_set_reaches_the_session(recorded):
     connection, sessions = recorded
     with connection.cursor() as cur:
         cur.execute("SET work_mem = '32MB'")
-    assert sessions[0].told == [("work_mem", "32MB")]
+    assert sessions[0].told == [("work_mem", "32MB", 32768)]
 
 
 def test_reset_arrives_as_a_none_value(recorded):
@@ -64,7 +64,7 @@ def test_reset_arrives_as_a_none_value(recorded):
     with connection.cursor() as cur:
         cur.execute("SET work_mem = '32MB'")
         cur.execute("RESET work_mem")
-    assert sessions[0].told == [("work_mem", "32MB"), ("work_mem", None)]
+    assert sessions[0].told == [("work_mem", "32MB", 32768), ("work_mem", None, None)]
 
 
 def test_set_config_goes_through_the_same_funnel(recorded):
@@ -73,7 +73,7 @@ def test_set_config_goes_through_the_same_funnel(recorded):
     connection, sessions = recorded
     with connection.cursor() as cur:
         cur.execute("SELECT set_config('statement_timeout', '5s', false)")
-    assert sessions[0].told == [("statement_timeout", "5s")]
+    assert sessions[0].told == [("statement_timeout", "5s", 5000)]
 
 
 def test_reset_all_is_told_one_name_at_a_time(recorded):
@@ -82,17 +82,21 @@ def test_reset_all_is_told_one_name_at_a_time(recorded):
         cur.execute("SET work_mem = '32MB'")
         cur.execute("SET statement_timeout = '5s'")
         cur.execute("RESET ALL")
-    assert sorted(sessions[0].told[2:]) == [("statement_timeout", None), ("work_mem", None)]
+    assert sorted(sessions[0].told[2:]) == [("statement_timeout", None, None), ("work_mem", None, None)]
 
 
-def test_the_value_is_the_text_that_was_written(recorded):
-    """Not the parsed value: a session forwarding this to a real backend wants to
-    send what was asked for. What pg_mimic keeps is parsed, in session_vars."""
+def test_both_spellings_arrive(recorded):
+    """The text to forward to a real backend, the value to act on."""
     connection, sessions = recorded
     with connection.cursor() as cur:
         cur.execute("SET row_security = 'tr'")
-    assert sessions[0].told == [("row_security", "tr")]
-    assert sessions[0].state.session_vars["row_security"] is True
+        cur.execute("SET client_encoding = 'utf8'")
+        cur.execute("SELECT set_config('app.tenant', 'acme', false)")
+    assert sessions[0].told == [
+        ("row_security", "tr", True),
+        ("client_encoding", "utf8", "UTF8"),
+        ("app.tenant", "acme", "acme"),  # a custom GUC has no type to parse
+    ]
 
 
 def test_a_session_may_refuse_a_setting():
@@ -136,23 +140,23 @@ def test_the_hook_is_a_no_op_on_the_base_class():
     assert Session.set_parameter.__doc__ is not None
 
 
-def test_the_hook_sees_the_parsed_value_as_well_as_the_text():
-    """The connection records before it tells, which is what makes both spellings
-    available -- the text for forwarding, the value for acting on."""
+def test_the_hook_does_not_depend_on_the_order_the_connection_writes_in():
+    """session_vars holds the same parsed value by the time this runs, but reading it
+    from there would make the connection's internal ordering part of the contract."""
     seen = []
 
     class Both(TableSession):
         def __init__(self):
             super().__init__({"t": [{"a": 1}]})
 
-        async def set_parameter(self, name, value):
-            seen.append((value, self.state.session_vars.get(name, "<absent>")))
+        async def set_parameter(self, name, raw_value, parsed_value):
+            seen.append((raw_value, parsed_value, self.state.session_vars.get(name, "<absent>")))
 
     with serve_in_thread(Both) as server:
         with psycopg.connect(server.dsn(), autocommit=True) as connection, connection.cursor() as cur:
             cur.execute("SET row_security = 'tr'")
             cur.execute("RESET row_security")
-    assert seen == [("tr", True), (None, "<absent>")]
+    assert seen == [("tr", True, True), (None, None, "<absent>")]
 
 
 def test_the_parser_the_middleware_uses_is_public():

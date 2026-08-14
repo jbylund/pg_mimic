@@ -39,6 +39,7 @@ from .errors import PgError
 from .results import ResultColumn
 from .server import PgServer
 from .session import BaseSession, Portal, Session, Statement, StaticStatement
+from .state import SettingValue
 
 # TableSession is headline public API, not a niche extension point: "serve these
 # tables" is the entry point most users want before they ever write a Session.
@@ -91,6 +92,7 @@ __all__ = [
     "StaticStatement",
     "Portal",
     "ResultColumn",
+    "SettingValue",
     "ARRAY_OID",
     "BOOL",
     "BYTEA",
