@@ -57,29 +57,24 @@ from sqlglot.executor.env import ENV
 from sqlglot.executor.python import PythonExecutor
 from sqlglot.executor.table import ensure_tables
 from sqlglot.optimizer import optimize
-from sqlglot.optimizer.annotate_types import annotate_types
 from sqlglot.optimizer.normalize_identifiers import normalize_identifiers
-from sqlglot.optimizer.qualify import qualify
 from sqlglot.planner import Plan
 from sqlglot.schema import ensure_schema
-
-from .arrays import element_oid_of, is_array_oid
 
 # The declared-schema half of describe(), shared with any other session that
 # declares one (see pg_mimic.describe, and #88 for the copy that had diverged).
 # _PG_NAME and _pg_type_name are re-exported by being imported here: they read as
 # TableSession's own vocabulary from the outside, and the catalog's round-trip test
 # takes them off this module.
+from .analysis import AnalyzedQuery
+from .arrays import element_oid_of, is_array_oid
 from .describe import (
     _PG_NAME,
     _SQLGLOT_NAME,
     _oid_for_sqlglot_type,
     _param_index,
     _pg_type_name,
-    resolve_column_names,
     result_columns,
-    size_integer_literals,
-    written_column_names,
 )
 from .errors import (
     FEATURE_NOT_SUPPORTED,
@@ -350,19 +345,12 @@ class TableSession(Session):
             # collide, and the second silently runs the first one's plan --
             # `SELECT .. FROM t WHERE a UNION ALL SELECT .. FROM t WHERE b` answers
             # `a` twice. Distinct aliases per reference are what keep them apart.
-            # Before qualify(), which is the last moment the query's own names are
-            # still on the tree; resolved immediately after, because the passes below
-            # replace the very nodes it keys on.
-            written = written_column_names(expression)
-            qualified = qualify(expression, schema=self._sqlglot_schema, dialect="postgres", canonicalize_table_aliases=True)
-            column_names = resolve_column_names(qualified, written)
-            # Before annotate_types, so a DISTINCT ON key this adds to the select
-            # list is typed like any other column rather than left bare.
-            distinct_on, visible_columns = _distinct_on_keys(qualified)
-            # Also before it, so that the width the annotator then reads off a wide
-            # literal propagates through whatever the query does with it.
-            size_integer_literals(qualified)
-            annotated = annotate_types(qualified, schema=self._sqlglot_schema, dialect="postgres")
+            analyzed = AnalyzedQuery(expression, schema=self._sqlglot_schema, canonicalize_table_aliases=True)
+            # Between qualified() and annotated(), because a DISTINCT ON key this adds
+            # to the select list has to be typed like any other column rather than
+            # left bare -- and sizing, which annotated() does, has to see it too.
+            distinct_on, visible_columns = _distinct_on_keys(analyzed.qualified())
+            annotated = analyzed.annotated()
         except PgError:
             raise
         except Exception as exc:
@@ -379,7 +367,7 @@ class TableSession(Session):
         _rewrite_null_ordering(annotated)
         return _Plan(
             expression=annotated,
-            column_names=tuple(column_names),
+            column_names=tuple(analyzed.column_names()),
             distinct_on=distinct_on,
             sort_keys=sort_keys,
             visible_columns=visible_columns,
