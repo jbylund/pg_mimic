@@ -134,3 +134,31 @@ def test_a_session_that_does_not_override_it_is_unaffected():
 
 def test_the_hook_is_a_no_op_on_the_base_class():
     assert Session.set_parameter.__doc__ is not None
+
+
+def test_the_hook_sees_the_parsed_value_as_well_as_the_text():
+    """The connection records before it tells, which is what makes both spellings
+    available -- the text for forwarding, the value for acting on."""
+    seen = []
+
+    class Both(TableSession):
+        def __init__(self):
+            super().__init__({"t": [{"a": 1}]})
+
+        async def set_parameter(self, name, value):
+            seen.append((value, self.state.session_vars.get(name, "<absent>")))
+
+    with serve_in_thread(Both) as server:
+        with psycopg.connect(server.dsn(), autocommit=True) as connection, connection.cursor() as cur:
+            cur.execute("SET row_security = 'tr'")
+            cur.execute("RESET row_security")
+    assert seen == [("tr", True), (None, "<absent>")]
+
+
+def test_the_parser_the_middleware_uses_is_public():
+    """A session may need to read a value this did not hand it -- one a real backend
+    reported back -- so the pair is exported rather than reached for privately."""
+    from pg_mimic import settings_values
+
+    assert settings_values.parse("work_mem", "32MB") == 32768
+    assert settings_values.render("work_mem", 32768) == "32MB"

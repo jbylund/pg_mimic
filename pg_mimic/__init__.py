@@ -17,7 +17,7 @@ from importlib.metadata import version as _installed_version
 # describe is the machinery behind "column shape from a declared schema, without
 # executing" -- what TableSession answers Describe with, and what any session
 # declaring its own schema() should reach for rather than reimplement (#88).
-from . import catalog, describe, errors, middleware
+from . import catalog, describe, errors, middleware, settings_values
 from .arrays import ARRAY_OID
 from .auth import (
     AuthPlugin,
@@ -83,6 +83,7 @@ __all__ = [
     "describe",
     "errors",
     "middleware",
+    "settings_values",
     "BaseSession",
     "Session",
     "TableSession",

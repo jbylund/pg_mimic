@@ -305,10 +305,19 @@ class Session(BaseSession):
     async def set_parameter(self, name: str, value: str | None) -> None:
         """Told about every SET, RESET and set_config() the middleware handled.
 
-        `value` is the text the client wrote, or None for a RESET -- the raw
-        spelling rather than the parsed value, because a session forwarding this to
-        a real backend wants to send what was asked for. What pg_mimic itself keeps
-        is in `self.state.session_vars`, already parsed (see pg_mimic.state).
+        Both spellings of the change are available here, which is why this takes the
+        raw one. `value` is the text the client wrote, or None for a RESET, because
+        a session forwarding this to a real backend wants to send what was asked
+        for. The parsed value is already in `self.state.session_vars`: the
+        connection records the change *before* calling this, so::
+
+            SET work_mem = '32MB'  ->  value='32MB'  session_vars['work_mem']=32768
+            SET row_security='tr'  ->  value='tr'    session_vars['row_security']=True
+            RESET work_mem         ->  value=None    absent from session_vars
+
+        `pg_mimic.settings_values.parse` and `.render` are the same pair the
+        middleware uses, for a session that needs to read a value this did not come
+        from -- one a real backend reported back, say.
 
         `name` is lowercased. Dotted custom GUCs (`app.tenant_id`) arrive here too,
         which is the point: the alternative was re-parsing raw SQL out of `query()`
