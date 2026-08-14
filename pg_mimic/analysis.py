@@ -17,11 +17,37 @@ the package can all depend on it without a cycle.
 
 from __future__ import annotations
 
+from functools import wraps
+
 from sqlglot import exp
 from sqlglot.optimizer.annotate_types import annotate_types
 from sqlglot.optimizer.qualify import qualify
 
 from .describe import resolve_column_names, size_integer_literals, written_column_names
+
+
+def _cached(method):
+    """Memoize a no-argument method on the instance it was called on.
+
+    Callers keep method syntax, which is the point: `analyzed.annotated()` reads
+    as work being done, where a property of the same name would hide a qualify()
+    and a full type annotation behind an attribute access. The class keeps no
+    `self._x = None` bookkeeping either -- the value lives under a private key in
+    the instance's own `__dict__`.
+
+    Not `functools.cache`, which keys on `self` in a cache belonging to the
+    *function*: an AnalyzedQuery is built per describe() and per query(), so every
+    query a server ever answered would be held for the life of the process.
+    """
+    key = f"_cached_{method.__name__}"
+
+    @wraps(method)
+    def memoized(self):
+        if key not in self.__dict__:
+            self.__dict__[key] = method(self)
+        return self.__dict__[key]
+
+    return memoized
 
 
 class AnalyzedQuery:
@@ -56,9 +82,6 @@ class AnalyzedQuery:
         self._schema = schema
         self._dialect = dialect
         self._canonicalize_table_aliases = canonicalize_table_aliases
-        self._qualified: exp.Expression | None = None
-        self._annotated: exp.Expression | None = None
-        self._column_names: list[str] | None = None
 
     def raw(self) -> exp.Expression:
         """The query as written, after parsing and nothing else."""
@@ -66,36 +89,34 @@ class AnalyzedQuery:
 
     def qualified(self) -> exp.Expression:
         """Names resolved, `*` expanded, every column attributed to a table."""
-        if self._qualified is None:
-            # The copy is what gets rewritten, so raw() survives. Names are read off
-            # it first, because qualify() is where the query's own naming stops being
-            # recoverable, and matched back up straight after, because the passes in
-            # annotated() replace the very nodes that matching keys on.
-            working = self._raw.copy()
-            written = written_column_names(working)
-            self._qualified = qualify(
-                working,
-                schema=self._schema,
-                dialect=self._dialect,
-                canonicalize_table_aliases=self._canonicalize_table_aliases,
-            )
-            self._column_names = resolve_column_names(self._qualified, written)
-        return self._qualified
+        return self._qualify()[0]
 
     def column_names(self) -> list[str]:
         """What Postgres calls each output column, decided on `raw()` rather than on
         any later form -- see `describe.written_column_names` for why that matters."""
-        if self._column_names is None:
-            self.qualified()
-        assert self._column_names is not None
-        return self._column_names
+        return self._qualify()[1]
 
+    @_cached
+    def _qualify(self) -> tuple[exp.Expression, list[str]]:
+        """Qualifying and naming are one step because naming is only answerable
+        across it: the names are read off the copy before qualify() rewrites it, and
+        matched back up straight after, because the passes in annotated() replace the
+        very nodes that matching keys on."""
+        working = self._raw.copy()
+        written = written_column_names(working)
+        qualified = qualify(
+            working,
+            schema=self._schema,
+            dialect=self._dialect,
+            canonicalize_table_aliases=self._canonicalize_table_aliases,
+        )
+        return qualified, resolve_column_names(qualified, written)
+
+    @_cached
     def annotated(self) -> exp.Expression:
         """Qualified, with integer literals widened as Postgres widens them and a
         type on every node. Sizing runs first so the annotator reads the width back
         off the widened literal rather than typing every constant INT."""
-        if self._annotated is None:
-            qualified = self.qualified()
-            size_integer_literals(qualified)
-            self._annotated = annotate_types(qualified, schema=self._schema, dialect=self._dialect)
-        return self._annotated
+        qualified = self.qualified()
+        size_integer_literals(qualified)
+        return annotate_types(qualified, schema=self._schema, dialect=self._dialect)
