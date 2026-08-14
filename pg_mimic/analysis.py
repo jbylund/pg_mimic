@@ -117,6 +117,8 @@ class AnalyzedQuery:
 
     def raw(self) -> exp.Expression:
         """The query as written, after parsing and nothing else."""
+        # No caller in the library today. Removing it would not save the copy in
+        # qualified(), which is there to spare the caller's own expression.
         return self._raw.copy()
 
     def qualified(self) -> exp.Expression:
