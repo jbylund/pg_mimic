@@ -27,6 +27,7 @@ session-function SELECTs and the information_schema lookups in pg_mimic.catalog.
 
 from __future__ import annotations
 
+import inspect
 import logging
 import re
 from functools import partial
@@ -52,7 +53,7 @@ from .errors import (
     PgError,
 )
 from .results import ResultColumn
-from .session import Statement, StaticStatement, statement_from_rows
+from .session import Session, Statement, StaticStatement, statement_from_rows
 from .typeinfo import is_typeinfo_query, typeinfo_statement
 from .types import TEXT
 
@@ -715,7 +716,7 @@ def _savepoint_statement(connection: Connection, sql: str, kind: str, name: str)
 
 
 def _discard_statement(connection: Connection, sql: str, kind: str) -> Statement:
-    def on_execute() -> None:
+    async def on_execute() -> None:
         if kind != "ALL":
             return  # PLANS/SEQUENCES/TEMP: a mimic has none of those to throw away
         # Real Postgres refuses DISCARD ALL inside a transaction block (25001);
@@ -725,7 +726,7 @@ def _discard_statement(connection: Connection, sql: str, kind: str) -> Statement
         # _reset_all first, because it does what reset() cannot: it reports each
         # changed setting back to the client. reset() then clears the rest of the
         # DISCARD ALL surface (and the settings again, by then already empty).
-        _reset_all(connection)
+        await _reset_all(connection)
         connection.state.reset()
         # `DISCARD ALL` includes `UNLISTEN *` -- reset() cleared the set, and this
         # is what makes the server stop delivering to us.
@@ -841,7 +842,7 @@ def _assignment_statement(
     assignments: Sequence[tuple[str, str | None]],
     local: bool = False,
 ) -> Statement:
-    def on_execute() -> None:
+    async def on_execute() -> None:
         outside_a_transaction = local and connection.tx_status == b"I"
         if outside_a_transaction:
             # Real Postgres does nothing and warns while doing it -- the exact
@@ -860,26 +861,29 @@ def _assignment_statement(
         if outside_a_transaction:
             return
         for name, value in assignments:
-            _apply_set_config(connection, name, value, local=local)
+            await _apply_set_config(connection, name, value, local=local)
 
     return StaticStatement(sql, None, [], on_execute)
 
 
 def _reset_all_statement(connection: Connection, sql: str) -> Statement:
-    def on_execute() -> None:
-        _reset_all(connection)
+    async def on_execute() -> None:
+        await _reset_all(connection)
 
     return StaticStatement(sql, None, [], on_execute)
 
 
-def _reset_all(connection: Connection) -> None:
-    """Drop every SET this connection has made. Reported settings are reported
-    again on the way out, at whatever value they revert to."""
-    names = list(connection.state.session_vars)
-    connection.state.session_vars.clear()
-    connection.state.committed_vars.clear()
-    for name in names:
-        _report_setting(connection, name)
+async def _reset_all(connection: Connection) -> None:
+    """Drop every SET this connection has made. Reported settings are reported again
+    on the way out, at whatever value they revert to.
+
+    One `_apply_set_config` per name rather than clearing the dicts, so a session
+    hears each reset as it would hear `RESET x` written out (#35). A session that
+    refuses one leaves the rest reset, which is what Postgres does with a failure
+    partway through -- there is no transaction around a RESET ALL.
+    """
+    for name in list(connection.state.session_vars):
+        await _apply_set_config(connection, name, None)
 
 
 # The GUC_REPORT settings: real Postgres sends a ParameterStatus whenever one of
@@ -1212,15 +1216,24 @@ def _substitute_session_functions(
     return expr, substitutions, _run_all(effects) if effects else None
 
 
-def _run_all(effects: list[Callable[[], None]]) -> Callable[[], None]:
-    def run() -> None:
+def _run_all(effects: list[Callable[[], Any]]) -> Callable[[], Awaitable[None]]:
+    """One effect out of many, awaiting the ones that need it.
+
+    A query may carry several -- `SELECT set_config('a','1',false), pg_notify(...)`
+    -- and they run in the order they were found. Portal.execute awaits what this
+    returns, so an effect reaching the session is no different here from one that
+    only writes connection state (#35)."""
+
+    async def run() -> None:
         for effect in effects:
-            effect()
+            result = effect()
+            if inspect.isawaitable(result):
+                await result
 
     return run
 
 
-def _apply_set_config(connection: Connection, key: str, value: str | None, local: bool = False) -> None:
+async def _apply_set_config(connection: Connection, key: str, value: str | None, local: bool = False) -> None:
     """Apply one setting change, from SET/RESET or from set_config(). None means
     "back to the built-in default", i.e. forget the override.
 
@@ -1250,15 +1263,62 @@ def _apply_set_config(connection: Connection, key: str, value: str | None, local
     # reads back `on` -- see _setting_value, which renders it again (#115). RESET
     # has no value to parse.
     stored = None if value is None else settings_values.parse(key, value)
+    undo = _record_setting(connection, key, stored, drop=value is None, local=local)
+    _report_setting(connection, key)
+    try:
+        await _tell_session(connection, key, value, stored)
+    except Exception:
+        # The session refused it. Put back what was there and say so again, so a
+        # client's ParameterStatus cache does not keep a value this connection no
+        # longer holds (#35).
+        undo()
+        _report_setting(connection, key)
+        raise
+
+
+def _record_setting(connection: Connection, key: str, stored: Any, *, drop: bool, local: bool) -> Callable[[], None]:
+    """Write one setting, and hand back what would put things as they were.
+
+    `SET LOCAL` writes only session_vars, which is what makes it local. The undo is
+    built before the write rather than reconstructed after, because only here knows
+    which dicts were touched.
+    """
+    targets = [connection.state.session_vars]
+    if not local:
+        targets.append(connection.state.committed_vars)
+    previous = [(target, key in target, target.get(key)) for target in targets]
+    was_known = key in connection.state.known_settings
+
     connection.state.known_settings.add(key)
-    for target in (connection.state.session_vars, connection.state.committed_vars):
-        if value is None:
+    for target in targets:
+        if drop:
             target.pop(key, None)
         else:
             target[key] = stored
-        if local:
-            break  # session_vars only
-    _report_setting(connection, key)
+
+    def undo() -> None:
+        for target, had, value in previous:
+            if had:
+                target[key] = value
+            else:
+                target.pop(key, None)
+        if not was_known:
+            connection.state.known_settings.discard(key)
+
+    return undo
+
+
+async def _tell_session(connection: Connection, key: str, raw: str | None, parsed: Any) -> None:
+    """Hand the change to the session, if there is one that takes it.
+
+    Both spellings go over, so a session need not know that this happens to record
+    before it tells -- see Session.set_parameter.
+
+    A bare BaseSession bypasses the middleware chain entirely and has no hook; a
+    Session has one that does nothing until it is overridden."""
+    session = getattr(connection, "session", None)
+    if isinstance(session, Session):
+        await session.set_parameter(key, raw, parsed)
 
 
 def _evaluate_select(

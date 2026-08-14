@@ -26,7 +26,7 @@ from abc import ABC, abstractmethod
 from typing import Any, AsyncIterable, AsyncIterator, Awaitable, Callable, Iterable, Sequence
 
 from .results import ResultColumn
-from .state import SessionState
+from .state import SessionState, SettingValue
 from .types import TEXT
 
 Row = tuple
@@ -301,6 +301,46 @@ class Session(BaseSession):
 
     async def query(self, sql: str, params: list[str | None]) -> RowSource:
         raise NotImplementedError
+
+    async def set_parameter(self, name: str, raw_value: str | None, parsed_value: SettingValue | None) -> None:
+        """Told about every SET, RESET and set_config() the middleware handled.
+
+        Both spellings, because a session wants different ones for different jobs:
+        `raw_value` is the text the client wrote, which is what to forward to a real
+        backend, and `parsed_value` is what it means, which is what to act on::
+
+            SET work_mem = '32MB'      raw='32MB'  parsed=32768   (its own unit, kB)
+            SET row_security = 'tr'    raw='tr'    parsed=True
+            SET client_encoding='utf8' raw='utf8'  parsed='UTF8'
+            SET app.tenant = 'acme'    raw='acme'  parsed='acme'  (a custom GUC has
+                                                                   no type to parse)
+            RESET work_mem             raw=None    parsed=None
+
+        Both are None for a RESET, which is the only thing None means here -- no
+        parameter parses to it.
+
+        Handed over rather than read off `self.state.session_vars`, which holds the
+        same parsed value by the time this runs. Depending on that would make the
+        order the connection happens to do things in part of this contract.
+
+        `pg_mimic.settings_values.parse` and `.render` are the same pair the
+        middleware used to produce it, for a session that needs to read a value this
+        did not hand it -- one a real backend reported back, say.
+
+        `name` is lowercased. Dotted custom GUCs (`app.tenant_id`) arrive here too,
+        which is the point: the alternative was re-parsing raw SQL out of `query()`
+        to discover it was connection boilerplate at all.
+
+        The connection has already recorded the change and will send any
+        ParameterStatus it owes. Raising `PgError` rejects the setting and undoes
+        that record, so a session may refuse one it cannot honour::
+
+            async def set_parameter(self, name, raw_value, parsed_value):
+                if name == "app.tenant_id" and not self.may_use(raw_value):
+                    raise PgError(INVALID_PARAMETER_VALUE, f"no such tenant: {raw_value}")
+
+        Does nothing by default.
+        """
 
     async def schema(self) -> dict | None:
         """Optional: describe your tables for information_schema/pg_catalog

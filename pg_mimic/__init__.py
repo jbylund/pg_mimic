@@ -17,7 +17,7 @@ from importlib.metadata import version as _installed_version
 # describe is the machinery behind "column shape from a declared schema, without
 # executing" -- what TableSession answers Describe with, and what any session
 # declaring its own schema() should reach for rather than reimplement (#88).
-from . import catalog, describe, errors, middleware
+from . import catalog, describe, errors, middleware, settings_values
 from .arrays import ARRAY_OID
 from .auth import (
     AuthPlugin,
@@ -39,6 +39,7 @@ from .errors import PgError
 from .results import ResultColumn
 from .server import PgServer
 from .session import BaseSession, Portal, Session, Statement, StaticStatement
+from .state import SettingValue
 
 # TableSession is headline public API, not a niche extension point: "serve these
 # tables" is the entry point most users want before they ever write a Session.
@@ -83,6 +84,7 @@ __all__ = [
     "describe",
     "errors",
     "middleware",
+    "settings_values",
     "BaseSession",
     "Session",
     "TableSession",
@@ -90,6 +92,7 @@ __all__ = [
     "StaticStatement",
     "Portal",
     "ResultColumn",
+    "SettingValue",
     "ARRAY_OID",
     "BOOL",
     "BYTEA",
