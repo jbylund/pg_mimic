@@ -345,3 +345,45 @@ def test_state_is_populated_even_if_session_init_skips_super():
     with serve_in_thread(Forgetful) as server:
         with psycopg.Connection.connect(server.dsn(user="alice", dbname="shop"), autocommit=True) as conn:
             assert conn.execute("SELECT anything").fetchall() == [("alice/shop",)]
+
+
+@pytest.mark.asyncio
+async def test_an_on_execute_effect_may_be_async():
+    """A middleware effect is ordinarily synchronous -- it writes connection state
+    and returns -- but one that has to reach the *session* cannot be, and Portal.execute
+    is the only place an effect runs. Awaiting when there is something to await is what
+    lets a hook live behind one (#35)."""
+    ran = []
+
+    async def effect():
+        ran.append("async")
+
+    portal = StaticStatement("SET x = 1", None, [], effect).bind([])
+    assert await portal.execute(0) == ([], False)
+    assert ran == ["async"]
+
+
+@pytest.mark.asyncio
+async def test_a_synchronous_on_execute_effect_still_works():
+    """Every effect in the middleware is this shape today, and none of them should
+    have to become a coroutine to stay working."""
+    ran = []
+
+    portal = StaticStatement("SET x = 1", None, [], lambda: ran.append("sync")).bind([])
+    assert await portal.execute(0) == ([], False)
+    assert ran == ["sync"]
+
+
+@pytest.mark.asyncio
+async def test_an_async_effect_runs_before_the_rows_are_read():
+    """`SELECT set_config('x', 'y', false)` reports the value it just set, so the
+    effect has to land before the rows are produced -- which stays true when the
+    effect is awaited rather than called."""
+    settings = {}
+
+    async def effect():
+        settings["x"] = "y"
+
+    statement = StaticStatement("s", [ResultColumn.for_type("v", str)], lambda: [(settings.get("x", "unset"),)], effect)
+    rows, _ = await statement.bind([]).execute(0)
+    assert rows == [("y",)]
