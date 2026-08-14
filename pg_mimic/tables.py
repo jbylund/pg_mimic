@@ -66,7 +66,7 @@ from sqlglot.schema import ensure_schema
 # _PG_NAME and _pg_type_name are re-exported by being imported here: they read as
 # TableSession's own vocabulary from the outside, and the catalog's round-trip test
 # takes them off this module.
-from .analysis import AnalyzedQuery
+from .analysis import AnalyzedQuery, annotate
 from .arrays import element_oid_of, is_array_oid
 from .describe import (
     _PG_NAME,
@@ -346,11 +346,13 @@ class TableSession(Session):
             # `SELECT .. FROM t WHERE a UNION ALL SELECT .. FROM t WHERE b` answers
             # `a` twice. Distinct aliases per reference are what keep them apart.
             analyzed = AnalyzedQuery(expression, schema=self._sqlglot_schema, canonicalize_table_aliases=True)
-            # Between qualified() and annotated(), because a DISTINCT ON key this adds
-            # to the select list has to be typed like any other column rather than
-            # left bare -- and sizing, which annotated() does, has to see it too.
-            distinct_on, visible_columns = _distinct_on_keys(analyzed.qualified())
-            annotated = analyzed.annotated()
+            # qualified() hands back a copy, so this rewrites our tree rather than the
+            # one AnalyzedQuery holds -- and annotate() is then applied to ours, which
+            # is what gets the DISTINCT ON key it adds typed like any other column.
+            # analyzed.annotated() would have annotated the untouched copy instead.
+            qualified = analyzed.qualified()
+            distinct_on, visible_columns = _distinct_on_keys(qualified)
+            annotated = annotate(qualified, schema=self._sqlglot_schema)
         except PgError:
             raise
         except Exception as exc:
@@ -367,7 +369,7 @@ class TableSession(Session):
         _rewrite_null_ordering(annotated)
         return _Plan(
             expression=annotated,
-            column_names=tuple(analyzed.column_names()),
+            column_names=analyzed.column_names(),
             distinct_on=distinct_on,
             sort_keys=sort_keys,
             visible_columns=visible_columns,

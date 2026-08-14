@@ -47,11 +47,48 @@ def test_qualifying_does_not_rewrite_the_raw_tree():
     assert "*" not in _sql(analyzed.qualified())
 
 
-def test_each_form_is_derived_once_and_kept():
+def test_each_form_is_derived_once_however_often_it_is_asked_for(monkeypatch):
+    """Copying on the way out must not mean qualifying on the way out."""
+    import pg_mimic.analysis as analysis
+
+    calls = []
+    real = analysis.qualify
+    monkeypatch.setattr(analysis, "qualify", lambda *a, **k: (calls.append(1), real(*a, **k))[1])
+
     analyzed = _analyzed("SELECT a FROM t")
-    assert analyzed.qualified() is analyzed.qualified()
-    assert analyzed.annotated() is analyzed.annotated()
-    assert analyzed.column_names() is analyzed.column_names()
+    analyzed.annotated()
+    analyzed.qualified()
+    analyzed.column_names()
+    analyzed.annotated()
+    assert len(calls) == 1
+
+
+def test_what_is_handed_out_is_never_what_is_held():
+    """Every caller of this class goes on to rewrite what it was given, so nothing
+    handed out may be the cached object itself."""
+    analyzed = _analyzed("SELECT a FROM t")
+    assert analyzed.raw() is not analyzed.raw()
+    assert analyzed.qualified() is not analyzed.qualified()
+    assert analyzed.annotated() is not analyzed.annotated()
+
+
+def test_wrecking_what_was_handed_out_does_not_reach_the_next_caller():
+    analyzed = _analyzed("SELECT a FROM t")
+    before = _sql(analyzed.qualified())
+    analyzed.qualified().set("limit", sqlglot.exp.Limit(expression=sqlglot.exp.Literal.number(5)))
+    assert _sql(analyzed.qualified()) == before
+
+    annotated_before = _sql(analyzed.annotated())
+    analyzed.annotated().set("limit", sqlglot.exp.Limit(expression=sqlglot.exp.Literal.number(5)))
+    assert _sql(analyzed.annotated()) == annotated_before
+
+    raw_before = _sql(analyzed.raw())
+    analyzed.raw().set("limit", sqlglot.exp.Limit(expression=sqlglot.exp.Literal.number(5)))
+    assert _sql(analyzed.raw()) == raw_before
+
+
+def test_column_names_is_immutable():
+    assert isinstance(_analyzed("SELECT a FROM t").column_names(), tuple)
 
 
 def test_names_come_from_the_query_as_written_whichever_form_is_asked_for_first():
@@ -61,7 +98,7 @@ def test_names_come_from_the_query_as_written_whichever_form_is_asked_for_first(
     direct.column_names()
     through_annotated = _analyzed("SELECT 'a' AS a, 1")
     through_annotated.annotated()
-    assert direct.column_names() == ["a", "?column?"]
+    assert direct.column_names() == ("a", "?column?")
     assert through_annotated.column_names() == direct.column_names()
 
 
