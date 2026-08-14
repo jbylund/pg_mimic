@@ -32,12 +32,17 @@ if TYPE_CHECKING:
     from .session import Statement
 
 
+#: What a configuration parameter holds. `settings_values.parse` decides which,
+#: from the catalogue's `vartype`; a dotted custom GUC is always a str.
+SettingValue = bool | int | float | str
+
+
 @dataclass
 class _Scope:
     """One fork point's snapshot of everything that rolls back with it."""
 
-    session_vars: dict[str, str]
-    committed_vars: dict[str, str]
+    session_vars: dict[str, SettingValue]
+    committed_vars: dict[str, SettingValue]
     listening: set[str]
     pending_notifies: list[tuple[str, str]]
 
@@ -53,9 +58,16 @@ class SessionState:
     database: str = ""
     application_name: str = ""
 
-    # What SHOW returns: the current value of every overridden setting, whichever
-    # statement last wrote it. Keyed by the folded setting name.
-    session_vars: dict[str, str] = field(default_factory=dict)
+    # The current value of every overridden setting, whichever statement last wrote
+    # it. Keyed by the folded setting name.
+    #
+    # A *value*, not the text a client typed: `SET row_security = 'tr'` stores True,
+    # and middleware._setting_value renders it back to `on` for SHOW,
+    # current_setting() and ParameterStatus. Postgres models it the same way --
+    # guc.c keeps a bool/int/double/char* and formats it at the boundary -- and it
+    # is why a session reading one gets something it can use rather than text it
+    # has to parse (#115). A dotted custom GUC stays a str, having no type to be.
+    session_vars: dict[str, SettingValue] = field(default_factory=dict)
 
     # What a COMMIT leaves behind. `SET` and `RESET` write both dicts; `SET LOCAL`
     # writes only the one above, which is what makes it local -- see
@@ -63,7 +75,7 @@ class SessionState:
     # checked against PostgreSQL 18, `SET LOCAL x` followed by `SET x` in the same
     # transaction reads back the *session* value, so the visible value is simply
     # the last write and the two dicts differ by lifetime rather than by scope.
-    committed_vars: dict[str, str] = field(default_factory=dict)
+    committed_vars: dict[str, SettingValue] = field(default_factory=dict)
 
     # Every setting name this connection has ever written, whether or not the
     # write survived. Postgres knows its built-in GUCs from birth and learns a

@@ -1026,7 +1026,10 @@ def _setting_value(connection: Connection, key: str) -> str | None:
     reads back empty. Only a name with no default falls through to the blank.
     """
     if key in connection.state.session_vars:
-        return connection.state.session_vars[key]
+        # The one place a stored value is read, and so the one place it is rendered.
+        # Everything below is already text: pg_mimic's own answers and the catalogue
+        # defaults are both spelled the way Postgres reports them (#115).
+        return settings_values.render(key, connection.state.session_vars[key])
     if key in _DEFAULT_SETTINGS:
         return _DEFAULT_SETTINGS[key](connection)
     catalogued = settings_catalog.default(key)
@@ -1241,17 +1244,18 @@ def _apply_set_config(connection: Connection, key: str, value: str | None, local
     in the same wall (#77).
     """
     _check_settable(key)
-    if value is not None:
-        # After _check_settable, in Postgres's order: a parameter no session may
-        # change is refused for that before its value is looked at. RESET has no
-        # value to check (#105).
-        settings_values.check(key, value)
+    # After _check_settable, in Postgres's order: a parameter no session may change
+    # is refused for that before its value is looked at (#105). What lands in the
+    # dicts is the *value*, not the text a client typed, so `SET row_security = 'tr'`
+    # reads back `on` -- see _setting_value, which renders it again (#115). RESET
+    # has no value to parse.
+    stored = None if value is None else settings_values.parse(key, value)
     connection.state.known_settings.add(key)
     for target in (connection.state.session_vars, connection.state.committed_vars):
         if value is None:
             target.pop(key, None)
         else:
-            target[key] = value
+            target[key] = stored
         if local:
             break  # session_vars only
     _report_setting(connection, key)
