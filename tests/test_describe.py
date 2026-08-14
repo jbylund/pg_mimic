@@ -96,3 +96,46 @@ def test_both_sessions_describe_a_bare_expression_as_postgres_does(measured, sql
     assert not rest
     reported = {"name": name, "type": type_name}
     assert {key: reported[key] for key in measured} == measured
+
+
+# Every `expected` below is what PostgreSQL 18.4 puts in RowDescription for that
+# query, read through psycopg rather than psql's display (#94).
+_literal_names = {
+    "an integer literal is not named after itself": {"expected": ["?column?"], "sql": "SELECT 1"},
+    "a literal past int4 is not either": {"expected": ["?column?"], "sql": "SELECT 3000000000"},
+    "a string literal does not leak its contents": {"expected": ["?column?"], "sql": "SELECT 'abc'"},
+    "a float literal": {"expected": ["?column?"], "sql": "SELECT 2.5"},
+    "an exponent literal": {"expected": ["?column?"], "sql": "SELECT 1e5"},
+    "parentheses do not name a literal either": {"expected": ["?column?"], "sql": "SELECT (1)"},
+    "NULL was already right": {"expected": ["?column?"], "sql": "SELECT NULL"},
+    "TRUE was already right": {"expected": ["?column?"], "sql": "SELECT TRUE"},
+    "a negative literal was already right": {"expected": ["?column?"], "sql": "SELECT -1"},
+    "an expression over literals was already right": {"expected": ["?column?"], "sql": "SELECT 1 + 1"},
+    "unaliased columns repeat rather than uniquify": {"expected": ["?column?"] * 3, "sql": "SELECT 1, 2, 3"},
+    "an alias survives beside unaliased literals": {"expected": ["a", "?column?"], "sql": "SELECT 1 AS a, 2"},
+    "an alias unlike the literal's text is kept": {"expected": ["total"], "sql": "SELECT 1 AS total"},
+    "duplicate aliases are not uniquified either": {"expected": ["dup", "dup"], "sql": "SELECT 1 AS dup, 2 AS dup"},
+}
+
+
+@pytest.mark.parametrize(
+    argnames=sorted(next(iter(_literal_names.values()))),
+    argvalues=[[value for _, value in sorted(_literal_names[name].items())] for name in sorted(_literal_names)],
+    ids=sorted(_literal_names),
+)
+def test_an_unaliased_literal_is_named_column_not_after_itself(expected, sql):
+    session = TableSession({"users": [{"id": 1}]})
+    assert [name for name, _ in _described(session, sql)] == expected
+
+
+@pytest.mark.xfail(strict=True, reason="known divergence, see _is_unaliased_literal (#94)")
+def test_an_alias_that_matches_the_literals_own_text_is_kept():
+    """The one case `_is_unaliased_literal` cannot tell apart.
+
+    qualify() names an unaliased literal after its own text, so by the time
+    `result_columns` sees it, `SELECT 'a'` and `SELECT 'a' AS a` are the same tree.
+    Postgres calls the second one `a`. Separating them needs the tree from before
+    qualify(), which `result_columns` is not given.
+    """
+    session = TableSession({"users": [{"id": 1}]})
+    assert [name for name, _ in _described(session, "SELECT 'a' AS a")] == ["a"]
