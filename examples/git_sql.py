@@ -592,7 +592,7 @@ class GitSession(Session):
         analyzed = self._analyzed(sql)
         if analyzed is None:
             return None
-        return result_columns(analyzed.annotated(), param_oids, analyzed.column_names())
+        return result_columns(analyzed.annotated(), param_oids, names=analyzed.column_names())
 
     async def query(self, sql, params):
         expr = self._analyze(sql, params)

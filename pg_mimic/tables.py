@@ -250,7 +250,7 @@ class TableSession(Session):
 
     async def describe(self, sql: str, param_oids: list[int | None]) -> list[ResultColumn] | None:
         plan = self._plan(sql)
-        return result_columns(plan.expression, param_oids, list(plan.column_names))[: plan.visible_columns]
+        return result_columns(plan.expression, param_oids, names=plan.column_names)[: plan.visible_columns]
 
     async def query(self, sql: str, params: list[Any]) -> list[Row]:
         plan = self._plan(sql)

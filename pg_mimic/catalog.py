@@ -456,7 +456,7 @@ def _declared_columns(expr: exp.Expression, schema: dict) -> list[ResultColumn] 
     """
     try:
         analyzed = AnalyzedQuery(expr, schema=schema)
-        return result_columns(analyzed.annotated(), [], analyzed.column_names())
+        return result_columns(analyzed.annotated(), [], names=analyzed.column_names())
     except Exception:
         return None
 

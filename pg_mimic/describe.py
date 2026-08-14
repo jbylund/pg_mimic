@@ -14,15 +14,18 @@ describing `select 3000000000` as int4, the bug that crashes asyncpg's binary
 decoder (#40), long after the library copy had learned to size an integer
 literal by its value. This module is the one copy (#88).
 
-The recipe, and the order matters::
+The recipe used to be written out here, and each caller reassembled it. It is
+`pg_mimic.analysis.AnalyzedQuery` now, which owns the order::
 
-    size_integer_literals(qualified)                    # *before* the annotator
-    annotated = annotate_types(qualified, schema=..., dialect="postgres")
-    columns = result_columns(annotated, param_oids)
+    analyzed = AnalyzedQuery(parsed, schema=...)
+    columns = result_columns(analyzed.annotated(), param_oids, names=analyzed.column_names())
 
-Sizing has to run before annotation or the width never reaches the columns
+Two orderings that module keeps, and that anything reaching past it would have to
+keep too. Sizing runs before annotation or the width never reaches the columns
 derived from it -- and it widens the literal rather than the OID afterwards, so
-that `3000000000 + 0` is a bigint sum rather than an int4 one.
+that `3000000000 + 0` is a bigint sum rather than an int4 one. Names are read off
+the query as written, before qualify() rewrites the select list out from under
+the question (see `written_column_names`).
 
 `oid_for_declared_type` runs the other direction of the same round trip: the
 `schema()` type name a column was declared as, back to the OID it means.
@@ -35,6 +38,8 @@ on it without a cycle, and so can a session written outside the package.
 """
 
 from __future__ import annotations
+
+from collections.abc import Sequence
 
 from sqlglot import exp
 
@@ -212,20 +217,26 @@ def size_integer_literals(expression: exp.Expression) -> None:
 # --- the annotated query's output columns ----------------------------------------------
 
 
-def result_columns(expression: exp.Query, param_oids: list[int | None], names: list[str] | None = None) -> list[ResultColumn]:
+def result_columns(expression: exp.Query, param_oids: list[int | None], *, names: Sequence[str]) -> list[ResultColumn]:
     """The columns a type-annotated query projects, named and typed as Postgres does.
 
     `param_oids` is what Parse declared, which is the only type a bare `$1` in the
     select list can have -- the annotator cannot reach it.
 
-    `names` is what `written_column_names` decided from the query as written, which
-    is where Postgres decides them too. Without it the names are read back off this
-    tree, which is right for every column but one the query wrote a literal for --
-    see `written_column_names` for why that case cannot be recovered here.
+    `names` is `AnalyzedQuery.column_names()`, decided on the query as written,
+    which is where Postgres decides them too. Required rather than defaulted:
+    reading them back off this tree instead is wrong for any column the query wrote
+    a literal for, and wrong quietly -- it answers `3000000000` where Postgres
+    answers `?column?`. A caller that has no names has the wrong tree, not a
+    naming problem.
+
+    It names the *leading* columns and may be shorter than the select list, which
+    is why the zip truncates on purpose. A DISTINCT ON key the query did not select
+    is appended to the select list so the rows carry something to deduplicate on,
+    after these names were decided and for the executor rather than the client --
+    see `tables._Plan.visible_columns`, which trims the same columns off the rows.
     """
-    if names is None:
-        names = [_qualified_name(select) for select in expression.selects]
-    return [ResultColumn(name, _column_oid(select, param_oids)) for name, select in zip(names, expression.selects)]
+    return [ResultColumn(name, _column_oid(select, param_oids)) for name, select in zip(names, expression.selects, strict=False)]
 
 
 def written_column_names(expression: exp.Query) -> dict[int, str]:
