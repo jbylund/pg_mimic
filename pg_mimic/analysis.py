@@ -64,12 +64,14 @@ class AnalyzedQuery:
     before, so asking for `annotated()` qualifies on the way and asking for
     `qualified()` afterwards costs nothing.
 
-    `raw()` is never mutated. Everything past it works on a copy, because
-    sqlglot's passes rewrite in place: `qualified()` hands `qualify()` a copy of
-    the raw tree, and `annotated()` sizes and annotates that same copy. Keeping
-    the raw tree whole is the point -- it is the only record of what the query
-    said, which is where Postgres decides column names, and every later form has
-    destroyed some part of that.
+    Every form owns its own tree, because sqlglot's passes rewrite in place and a
+    shared one would make an accessor's answer depend on what had been called
+    before it. So `qualified()` hands `qualify()` a copy of the raw tree, and
+    `annotated()` sizes and annotates a copy of that.
+
+    Keeping `raw()` whole is what the rest of it is for: it is the only record of
+    what the query said, which is where Postgres decides column names, and every
+    later form has destroyed some part of that.
 
     Errors stay with the caller. `qualify()` raises differently depending on
     whether a name is unresolvable or the query is simply beyond us, and each
@@ -123,7 +125,14 @@ class AnalyzedQuery:
     def annotated(self) -> exp.Expression:
         """Qualified, with integer literals widened as Postgres widens them and a
         type on every node. Sizing runs first so the annotator reads the width back
-        off the widened literal rather than typing every constant INT."""
-        qualified = self.qualified()
-        size_integer_literals(qualified)
-        return annotate_types(qualified, schema=self._schema, dialect=self._dialect)
+        off the widened literal rather than typing every constant INT.
+
+        Works on its own copy, because both passes rewrite in place. Sharing the
+        tree would make `qualified()` mean different things before and after this
+        was called -- it would answer `SELECT 3000000000` first and
+        `SELECT CAST(3000000000 AS BIGINT)` afterwards -- and a container whose
+        accessors depend on call order is worse than no container.
+        """
+        working = self.qualified().copy()
+        size_integer_literals(working)
+        return annotate_types(working, schema=self._schema, dialect=self._dialect)
