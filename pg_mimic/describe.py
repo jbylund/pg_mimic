@@ -119,6 +119,10 @@ _OID_FOR_SQLGLOT_TYPE.update(
 _INT4_RANGE = (-(2**31), 2**31 - 1)
 _INT8_RANGE = (-(2**63), 2**63 - 1)
 
+# `meta` key marking a Cast this module added to widen a literal, rather than one
+# the query wrote. Naming reads it back in `_is_unaliased_literal`.
+_SIZED_BY_US = "pg_mimic_sized_literal"
+
 
 # --- declared type names ---------------------------------------------------------------
 
@@ -198,7 +202,13 @@ def size_integer_literals(expression: exp.Expression) -> None:
         if _INT4_RANGE[0] <= value <= _INT4_RANGE[1]:
             continue
         wider = "BIGINT" if _INT8_RANGE[0] <= value <= _INT8_RANGE[1] else "DECIMAL"
-        node.replace(exp.Cast(this=node.copy(), to=exp.DataType.build(wider)))
+        sized = exp.Cast(this=node.copy(), to=exp.DataType.build(wider))
+        # Marked because naming has to see through it: this cast is ours, not the
+        # query's, and `SELECT 3000000000` is still an unaliased literal to Postgres
+        # (#94). `meta` rather than an arg, so it neither reaches sql() nor the
+        # annotator, and it survives the copy() that qualify() and friends make.
+        sized.meta[_SIZED_BY_US] = True
+        node.replace(sized)
 
 
 # --- the annotated query's output columns ----------------------------------------------
@@ -217,6 +227,8 @@ def _column_name(select: exp.Expression) -> str:
     """The output column's name. qualify() has already resolved the easy ones and
     labelled anything unnameable `_col_N`; name those after their function, as
     Postgres does, and fall back to Postgres's own `?column?`."""
+    if _is_unaliased_literal(select):
+        return "?column?"
     name = select.alias_or_name
     if name and not name.startswith("_col_"):
         return name
@@ -226,6 +238,27 @@ def _column_name(select: exp.Expression) -> str:
     if isinstance(inner, exp.Func):
         return inner.sql_name().lower()
     return "?column?"
+
+
+def _is_unaliased_literal(select: exp.Expression) -> bool:
+    """Whether this projection is a literal the query did not name (#94).
+
+    Postgres calls every unaliased expression `?column?` and never uniquifies, so
+    `SELECT 1, 2, 3` is `?column?` three times. qualify() instead names a literal
+    after its own text, which leaks `3000000000` -- and, for a string, the literal's
+    *contents* -- into the column name. That synthesized alias is exactly the text
+    the literal names itself by, which is what distinguishes it from one the query
+    actually wrote: `SELECT 1 AS a` keeps `a`.
+
+    The one case that cannot be told apart is `SELECT 1 AS "1"`, where the alias the
+    query wrote and the one qualify() would synthesize are the same string; Postgres
+    calls it `1` and this calls it `?column?`. Telling them apart needs the tree from
+    before qualify(), which `result_columns` is not given.
+    """
+    inner = select.unalias()
+    while isinstance(inner, exp.Paren) or (isinstance(inner, exp.Cast) and inner.meta.get(_SIZED_BY_US)):
+        inner = inner.this
+    return isinstance(inner, exp.Literal) and select.alias_or_name == inner.alias_or_name
 
 
 def _column_oid(select: exp.Expression, param_oids: list[int | None]) -> int:
