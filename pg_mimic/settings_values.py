@@ -52,6 +52,19 @@ _BOOLS = ((("true", "yes"), 1, True), (("false", "no"), 1, False), (("on",), 2, 
 _BOOL_WORDS = {"1": True, "0": False, "true": True, "false": False, "yes": True, "no": False, "on": True, "off": False}
 
 
+#: Where pg_mimic is narrower than Postgres, said in the catalogue's own vocabulary
+#: so the ordinary rules apply and the error comes out in the ordinary shape.
+#:
+#: client_encoding is a promise about bytes this server has already decided: every
+#: string it writes goes out as UTF-8 (see pg_mimic.messages). Postgres takes LATIN1
+#: happily and converts; taking it here would leave `café` arriving as `cafÃ©`,
+#: silently, with the connection carrying on -- and a name that is not an encoding at
+#: all kills psycopg outright, which looks it up as a Python codec. So it is an enum
+#: of one, and the refusal names the only value there is.
+#: `middleware._reject_placeholder_value` guards the same hazard through another door.
+_NARROWER_THAN_POSTGRES = {"client_encoding": {"vartype": "enum", "enumvals": ["UTF8"]}}
+
+
 def check(name: str, value: str) -> None:
     """Raise unless `value` is one parameter `name` accepts."""
     parse(name, value)
@@ -106,6 +119,7 @@ def parse(name: str, value: str) -> bool | int | float | str:
     entry = settings_catalog.SETTINGS.get(name.lower())
     if entry is None:
         return value
+    entry = {**entry, **_NARROWER_THAN_POSTGRES.get(name.lower(), {})}
     vartype = entry["vartype"]
     if vartype == "bool":
         return _parse_bool(name, value)
