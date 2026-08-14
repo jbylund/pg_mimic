@@ -34,7 +34,7 @@ from . import types as pg_types
 from .arrays import ARRAY_OID, is_array_oid
 from .catalog_data import INFORMATION_SCHEMA_SCHEMA, PG_CATALOG_SCHEMA
 from .catalog_rewrite import rewrite_for_executor
-from .describe import oid_for_declared_type, result_columns
+from .describe import oid_for_declared_type, resolve_column_names, result_columns, written_column_names
 from .errors import FEATURE_NOT_SUPPORTED, UNDEFINED_COLUMN, PgError
 from .results import ResultColumn
 from .session import Statement, StaticStatement, statement_from_rows
@@ -456,8 +456,13 @@ def _declared_columns(expr: exp.Expression, schema: dict) -> list[ResultColumn] 
     refusing a query the executor already answered.
     """
     try:
-        qualified = qualify(expr.copy(), schema=schema, dialect="postgres")
-        return result_columns(annotate_types(qualified, schema=schema, dialect="postgres"), [])
+        # The copy is what qualify() rewrites, so names are read off it before that
+        # and paired back up after -- the same order _plan uses, for the same reason (#111).
+        copied = expr.copy()
+        written = written_column_names(copied)
+        qualified = qualify(copied, schema=schema, dialect="postgres")
+        names = resolve_column_names(qualified, written)
+        return result_columns(annotate_types(qualified, schema=schema, dialect="postgres"), [], names)
     except Exception:
         return None
 

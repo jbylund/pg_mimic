@@ -76,8 +76,10 @@ from .describe import (
     _oid_for_sqlglot_type,
     _param_index,
     _pg_type_name,
+    resolve_column_names,
     result_columns,
     size_integer_literals,
+    written_column_names,
 )
 from .errors import (
     FEATURE_NOT_SUPPORTED,
@@ -165,6 +167,9 @@ class _Plan:
     """
 
     expression: exp.Query
+    # What Postgres calls each output column, decided on the query as written --
+    # before qualify() rewrote the select list out from under the question (#111).
+    column_names: tuple[str, ...] = ()
     # Select positions to keep the first row of, for DISTINCT ON; empty otherwise.
     distinct_on: tuple[int, ...] = ()
     # (output position, descending, nulls first) per ORDER BY term of a set
@@ -250,7 +255,7 @@ class TableSession(Session):
 
     async def describe(self, sql: str, param_oids: list[int | None]) -> list[ResultColumn] | None:
         plan = self._plan(sql)
-        return result_columns(plan.expression, param_oids)[: plan.visible_columns]
+        return result_columns(plan.expression, param_oids, list(plan.column_names))[: plan.visible_columns]
 
     async def query(self, sql: str, params: list[Any]) -> list[Row]:
         plan = self._plan(sql)
@@ -345,7 +350,12 @@ class TableSession(Session):
             # collide, and the second silently runs the first one's plan --
             # `SELECT .. FROM t WHERE a UNION ALL SELECT .. FROM t WHERE b` answers
             # `a` twice. Distinct aliases per reference are what keep them apart.
+            # Before qualify(), which is the last moment the query's own names are
+            # still on the tree; resolved immediately after, because the passes below
+            # replace the very nodes it keys on.
+            written = written_column_names(expression)
             qualified = qualify(expression, schema=self._sqlglot_schema, dialect="postgres", canonicalize_table_aliases=True)
+            column_names = resolve_column_names(qualified, written)
             # Before annotate_types, so a DISTINCT ON key this adds to the select
             # list is typed like any other column rather than left bare.
             distinct_on, visible_columns = _distinct_on_keys(qualified)
@@ -369,6 +379,7 @@ class TableSession(Session):
         _rewrite_null_ordering(annotated)
         return _Plan(
             expression=annotated,
+            column_names=tuple(column_names),
             distinct_on=distinct_on,
             sort_keys=sort_keys,
             visible_columns=visible_columns,

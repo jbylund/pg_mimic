@@ -64,7 +64,12 @@ from pg_mimic import (
     Session,
     oid_for_declared_type,
 )
-from pg_mimic.describe import result_columns, size_integer_literals
+from pg_mimic.describe import (
+    resolve_column_names,
+    result_columns,
+    size_integer_literals,
+    written_column_names,
+)
 from pg_mimic.errors import FEATURE_NOT_SUPPORTED, PgError
 
 # --- patterns --------------------------------------------------------------------
@@ -590,15 +595,15 @@ class GitSession(Session):
         that crashes asyncpg's binary decoder, and result_columns is what calls an
         unaliased output column `?column?` the way Postgres does.
         """
-        expr = self._analyze(sql, params=None)
+        expr, names = self._analyze(sql, params=None)
         if not isinstance(expr, exp.Select):
             return None
         size_integer_literals(expr)
         expr = annotate_types(expr, schema=SCHEMA, dialect="postgres")
-        return result_columns(expr, param_oids)
+        return result_columns(expr, param_oids, names)
 
     async def query(self, sql, params):
-        expr = self._analyze(sql, params)
+        expr, _ = self._analyze(sql, params)
         if not isinstance(expr, exp.Select):
             raise PgError(FEATURE_NOT_SUPPORTED, "this example serves SELECT only -- a git repo is read-only")
         # git, the file reads and the executor are all blocking, and pg_mimic runs one
@@ -608,17 +613,23 @@ class GitSession(Session):
         for row in result.rows:
             yield tuple(row)
 
-    def _analyze(self, sql: str, params: list | None) -> exp.Expression:
+    def _analyze(self, sql: str, params: list | None) -> tuple[exp.Expression, list[str]]:
         """Parse, qualify every column to a table, then substitute bound parameters.
 
         Qualifying first is what lets _substitute_params see which column each `$1` is
         measured against, which is the only type information available for it.
+
+        Returns the output column names alongside, because qualify() is where they
+        stop being answerable and this is the only place that calls it (#111).
         """
         expr = sqlglot.parse_one(sql, dialect="postgres")
+        names: list[str] = []
         if isinstance(expr, exp.Select):
+            written = written_column_names(expr)
             expr = qualify(expr, schema=SCHEMA, dialect="postgres")
+            names = resolve_column_names(expr, written)
             _substitute_params(expr, params)
-        return expr
+        return expr, names
 
     def _execute(self, expr: exp.Select):
         tables = self._tables(expr)  # a PgError from git or an unknown table stands as-is

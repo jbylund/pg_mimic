@@ -128,14 +128,36 @@ def test_an_unaliased_literal_is_named_column_not_after_itself(expected, sql):
     assert [name for name, _ in _described(session, sql)] == expected
 
 
-@pytest.mark.xfail(strict=True, reason="known divergence, see _is_unaliased_literal (#94)")
 def test_an_alias_that_matches_the_literals_own_text_is_kept():
-    """The one case `_is_unaliased_literal` cannot tell apart.
-
-    qualify() names an unaliased literal after its own text, so by the time
-    `result_columns` sees it, `SELECT 'a'` and `SELECT 'a' AS a` are the same tree.
-    Postgres calls the second one `a`. Separating them needs the tree from before
-    qualify(), which `result_columns` is not given.
-    """
+    """`SELECT 'a'` and `SELECT 'a' AS a` are the same tree once qualify() has run,
+    and Postgres calls them `?column?` and `a`. Naming reads the query as written,
+    which is the only place they still differ (#111)."""
     session = TableSession({"users": [{"id": 1}]})
     assert [name for name, _ in _described(session, "SELECT 'a' AS a")] == ["a"]
+    assert [name for name, _ in _described(session, "SELECT 'a'")] == ["?column?"]
+
+
+# Postgres names a cast after its operand, and only falls back to the target type
+# when the operand has no name of its own -- using typname, so `1::int` is `int4`
+# rather than `integer`. Measured against PostgreSQL 18.4 (#111).
+_cast_names = {
+    "a cast over a named column keeps the column's name": {"expected": ["id"], "sql": "SELECT CAST(id AS TEXT) FROM users"},
+    "the shorthand does too": {"expected": ["id"], "sql": "SELECT id::text FROM users"},
+    "a cast over a literal falls back to the type": {"expected": ["text"], "sql": "SELECT CAST(1 AS TEXT)"},
+    "over an expression, likewise": {"expected": ["text"], "sql": "SELECT CAST(1 + 1 AS TEXT)"},
+    "over NULL, likewise": {"expected": ["text"], "sql": "SELECT CAST(NULL AS TEXT)"},
+    "the fallback is typname, not the declared spelling": {"expected": ["int4"], "sql": "SELECT 1::int"},
+    "numeric": {"expected": ["numeric"], "sql": "SELECT 1::numeric"},
+    "float8": {"expected": ["float8"], "sql": "SELECT 1::float8"},
+    "a sub-select operand stops short of the type name": {"expected": ["?column?"], "sql": "SELECT (SELECT 1)::text"},
+}
+
+
+@pytest.mark.parametrize(
+    argnames=sorted(next(iter(_cast_names.values()))),
+    argvalues=[[value for _, value in sorted(_cast_names[name].items())] for name in sorted(_cast_names)],
+    ids=sorted(_cast_names),
+)
+def test_a_cast_is_named_after_its_operand_then_its_type(expected, sql):
+    session = TableSession({"users": [{"id": 1}]})
+    assert [name for name, _ in _described(session, sql)] == expected
