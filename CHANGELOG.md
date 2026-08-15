@@ -227,6 +227,15 @@ what shipped rather than what was written down at the time.
 
 ### Internal
 
+- `tools/fuzz` generates random `SELECT`s and compares sqlglot's executor against a
+  real PostgreSQL, minimising every divergence to the smallest query that still
+  shows it. The tripwires above were written by hand from bugs that happened to be
+  noticed; this looks for the ones nobody tripped over, and found fourteen on its
+  first run — six of them wrong answers rather than refusals, including
+  `count(DISTINCT x)` ignoring the DISTINCT and an outer join's NULL-padded row
+  surviving a `WHERE` that tests the padded column. Not part of any CI job: it needs
+  a live server, and a suite that fails on a new random seed is one people delete.
+  (#122)
 - `SessionState` is extracted and shared by the middleware and the session, so
   there is one place where per-connection state lives. (#61)
 - Strict-xfail tripwires assert what real Postgres answers for each sqlglot bug
