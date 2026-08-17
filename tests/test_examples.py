@@ -10,10 +10,18 @@ protocol in the rest of the suite).
 `--open-port` is how they are started here, which is also what makes the test
 possible: a fixed port would collide with whatever is on 5432 on the developer's
 machine, and with a parallel run of this same test.
+
+The two git_sql set-operation tests at the bottom are the exception to "shallow".
+They run over the wire because that is the only place the bug they cover shows:
+a `UNION` with an `ORDER BY` comes back from the executor with its columns
+stripped, which is not a wrong value but a `D` message that contradicts the
+`RowDescription` already sent. In-process the rows merely look odd; on a socket
+psycopg drops the connection.
 """
 
 from __future__ import annotations
 
+import contextlib
 import pathlib
 import subprocess
 import sys
@@ -49,9 +57,9 @@ def _listening_port(process: subprocess.Popen) -> int:
     raise AssertionError("the example never reported a listening port")
 
 
-@_SUBPROCESS_TIMEOUT
-@pytest.mark.parametrize(argnames=["example"], argvalues=[[name] for name in _example_files()], ids=_example_files())
-def test_an_example_starts_on_an_open_port_and_reports_it(example):
+@contextlib.contextmanager
+def _serving(example: str):
+    """The example running on a free port, yielding a connection to it."""
     process = subprocess.Popen(
         [sys.executable, str(EXAMPLES / example), "--open-port"],
         stdout=subprocess.PIPE,
@@ -62,15 +70,59 @@ def test_an_example_starts_on_an_open_port_and_reports_it(example):
     try:
         port = _listening_port(process)
         assert port != 0, "0 is the request, not the port anything can connect to"
-
         user, dbname = _CONNECT_AS.get(example, ("test", "test"))
-        # Connecting at all is the assertion: it completes startup, which means the
-        # example built its Session and is speaking the protocol on the port it named.
-        with psycopg.connect(f"host=127.0.0.1 port={port} user={user} dbname={dbname}", connect_timeout=10):
-            pass
+        with psycopg.connect(f"host=127.0.0.1 port={port} user={user} dbname={dbname}", connect_timeout=10) as conn:
+            yield conn
     finally:
         process.kill()
         process.wait(timeout=10)
+
+
+@_SUBPROCESS_TIMEOUT
+@pytest.mark.parametrize(argnames=["example"], argvalues=[[name] for name in _example_files()], ids=_example_files())
+def test_an_example_starts_on_an_open_port_and_reports_it(example):
+    # Connecting at all is the assertion: it completes startup, which means the
+    # example built its Session and is speaking the protocol on the port it named.
+    with _serving(example):
+        pass
+
+
+@_SUBPROCESS_TIMEOUT
+def test_git_sql_serves_a_set_operation():
+    """A UNION, EXCEPT or INTERSECT is as read-only as a SELECT.
+
+    All three were refused as writes, because the guard tested for exp.Select and
+    a set operation is an exp.SetOperation -- so psql's own `\\d` footer query,
+    three SELECTs joined by UNION, came back as "a git repo is read-only".
+
+    `files` is the working tree rather than anything from the log, so it has rows
+    in any checkout -- a CI clone has no local branches and can have one commit.
+    """
+    with _serving("git_sql.py") as conn, conn.cursor() as cur:
+        cur.execute("SELECT path FROM files")
+        paths = {row[0] for row in cur.fetchall()}
+        assert paths, "a working tree always has files, and an empty set makes the rest vacuous"
+
+        for operator, expected in (("UNION", paths), ("INTERSECT", paths), ("EXCEPT", set())):
+            cur.execute(f"SELECT path FROM files {operator} SELECT path FROM files")
+            assert {row[0] for row in cur.fetchall()} == expected, operator
+
+
+@_SUBPROCESS_TIMEOUT
+def test_git_sql_refuses_an_order_by_over_a_set_operation():
+    """0A000 rather than a protocol violation -- see the module docstring.
+
+    Delete this and _reject_stripped_columns together when sqlglot keeps the
+    columns: https://github.com/jbylund/sqlglot/pull/34.
+    """
+    with _serving("git_sql.py") as conn, conn.cursor() as cur:
+        with pytest.raises(psycopg.errors.FeatureNotSupported, match="columns stripped"):
+            cur.execute("SELECT path FROM files UNION SELECT path FROM files ORDER BY 1")
+        conn.rollback()
+        # The connection survives it, which is the difference between an error and
+        # the `D` message that used to reach psycopg here.
+        cur.execute("SELECT path FROM files LIMIT 1")
+        assert len(cur.fetchall()) == 1
 
 
 @pytest.mark.parametrize(
