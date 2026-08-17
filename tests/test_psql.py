@@ -17,7 +17,7 @@ import subprocess
 
 import pytest
 
-from pg_mimic import ResultColumn, Session
+from pg_mimic import ResultColumn, Schema, Session, Table
 from pg_mimic.testing import serve_in_thread
 
 psql_required = pytest.mark.skipif(shutil.which("psql") is None, reason="psql is not installed")
@@ -39,8 +39,8 @@ class SchemaSession(Session):
         yield ("row",)
 
 
-def _psql(command):
-    with serve_in_thread(SchemaSession) as server:
+def _psql(command, session=None):
+    with serve_in_thread(session or SchemaSession) as server:
         return subprocess.run(
             ["psql", server.dsn(user="test", dbname="test"), "-c", command],
             capture_output=True,
@@ -137,3 +137,72 @@ def test_format_type_reads_the_right_column_for_its_argument(conn, mock_session)
             "SELECT pg_catalog.format_type(a.atttypid, a.atttypmod) FROM pg_catalog.pg_attribute AS a WHERE a.attname = 'id'"
         )
         assert cur.fetchall() == [("integer",)]
+
+
+# --- a declared primary key ----------------------------------------------------------
+
+_PK_SCHEMA = Schema(
+    [
+        Table("commits", {"sha": "text", "author": "text"}, primary_key="sha"),
+        Table("commit_files", {"sha": "text", "path": "text"}, primary_key=("sha", "path")),
+        Table("files", {"path": "text"}),
+        Table("odd", {"userId": "integer"}, primary_key="userId"),
+    ]
+)
+
+
+class PrimaryKeySession(SchemaSession):
+    async def schema(self):
+        return _PK_SCHEMA
+
+
+@psql_required
+@pytest.mark.parametrize(
+    argnames=["table_name", "footer"],
+    argvalues=[
+        ["commits", '"commits_pkey" PRIMARY KEY, btree (sha)'],
+        ["commit_files", '"commit_files_pkey" PRIMARY KEY, btree (sha, path)'],
+        ["odd", '"odd_pkey" PRIMARY KEY, btree ("userId")'],
+    ],
+    ids=["one column", "composite", "a name that needs quoting"],
+)
+def test_describe_table_shows_a_declared_primary_key(table_name, footer):
+    """Byte-for-byte what PostgreSQL 18 prints for the same declaration, which is the
+    assertion that matters: psql composes this footer from four columns across three
+    catalog tables, and any one of them missing renders it wrong or not at all."""
+    result = _psql(f"\\d {table_name}", PrimaryKeySession)
+    assert result.stderr.strip() == "", result.stderr
+    assert "Indexes:" in result.stdout
+    assert footer in result.stdout
+
+
+@psql_required
+def test_a_table_with_no_primary_key_has_no_indexes_footer():
+    result = _psql("\\d files", PrimaryKeySession)
+    assert result.stderr.strip() == "", result.stderr
+    assert "path" in result.stdout
+    assert "Indexes:" not in result.stdout
+
+
+@psql_required
+def test_a_primary_keys_columns_are_reported_not_null():
+    result = _psql("\\d commits", PrimaryKeySession)
+    assert result.stderr.strip() == "", result.stderr
+    assert "not null" in result.stdout
+
+
+@psql_required
+def test_list_indexes_shows_the_key_index():
+    result = _psql("\\di", PrimaryKeySession)
+    assert result.stderr.strip() == "", result.stderr
+    assert "commits_pkey" in result.stdout and "index" in result.stdout
+
+
+@psql_required
+def test_listing_tables_does_not_list_the_key_index():
+    """`\\dt` filters on relkind, and an index is a relation -- so the pg_class row an
+    index needs for its name must not leak into the table list."""
+    result = _psql("\\dt", PrimaryKeySession)
+    assert result.stderr.strip() == "", result.stderr
+    assert "commits" in result.stdout
+    assert "pkey" not in result.stdout

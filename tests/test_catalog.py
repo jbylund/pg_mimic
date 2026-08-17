@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import pytest
 
+from pg_mimic import Schema, Table
+
 
 def test_information_schema_tables(conn, mock_session):
     async def schema():
@@ -626,3 +628,19 @@ def test_a_session_that_declares_no_schema_can_still_be_introspected(conn, mock_
         assert cur.fetchall() == []
         cur.execute("SELECT relname FROM pg_catalog.pg_class")
         assert cur.fetchall() == []
+
+
+async def test_a_primary_keys_columns_are_reported_not_nullable(conn, mock_session):
+    """information_schema.columns.is_nullable and pg_catalog's attnotnull answer one
+    question, so they must not disagree -- a client reads whichever it reads."""
+
+    async def schema():
+        return Schema([Table("commits", {"sha": "text", "author": "text"}, primary_key="sha")])
+
+    mock_session.schema = schema
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT column_name, is_nullable FROM information_schema.columns WHERE table_name = 'commits'")
+        assert cur.fetchall() == [("sha", "NO"), ("author", "YES")]
+        cur.execute("SELECT attname, attnotnull FROM pg_catalog.pg_attribute ORDER BY attnum")
+        assert cur.fetchall() == [("sha", True), ("author", False)]

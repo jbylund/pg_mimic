@@ -59,6 +59,18 @@ class MySession(Session):
         )
 ```
 
+A `Table` can declare a primary key, which is what psql's `\d` reads to print its `Indexes:`
+footer. One column or several, in key order:
+
+```python
+Table("commits", {"sha": "text", "author": "text"}, primary_key="sha")
+Table("commit_files", {"sha": "text", "path": "text"}, primary_key=("sha", "path"))
+```
+
+Its columns are then reported `not null`, as they are in Postgres, by both `attnotnull` and
+`information_schema.columns.is_nullable`. Nothing is enforced — pg_mimic stores no rows of its own,
+so a declared key is what the catalog reports rather than a uniqueness check anything applies.
+
 The nested `{table: {column: type_name}}` dict this returned before is still accepted, so an
 existing session needs no change. A `Schema` is what pg_mimic normalises either into, and it is what
 `TableSession.schema()` hands back.
