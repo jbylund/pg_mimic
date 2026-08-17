@@ -94,15 +94,18 @@ def test_git_sql_serves_a_set_operation():
     All three were refused as writes, because the guard tested for exp.Select and
     a set operation is an exp.SetOperation -- so psql's own `\\d` footer query,
     three SELECTs joined by UNION, came back as "a git repo is read-only".
+
+    `files` is the working tree rather than anything from the log, so it has rows
+    in any checkout -- a CI clone has no local branches and can have one commit.
     """
     with _serving("git_sql.py") as conn, conn.cursor() as cur:
-        cur.execute("SELECT name FROM branches UNION SELECT name FROM branches")
-        union = {row[0] for row in cur.fetchall()}
-        cur.execute("SELECT name FROM branches")
-        assert union == {row[0] for row in cur.fetchall()}
+        cur.execute("SELECT path FROM files")
+        paths = {row[0] for row in cur.fetchall()}
+        assert paths, "a working tree always has files, and an empty set makes the rest vacuous"
 
-        cur.execute("SELECT path FROM files INTERSECT SELECT path FROM commit_files LIMIT 1")
-        assert len(cur.fetchall()) == 1
+        for operator, expected in (("UNION", paths), ("INTERSECT", paths), ("EXCEPT", set())):
+            cur.execute(f"SELECT path FROM files {operator} SELECT path FROM files")
+            assert {row[0] for row in cur.fetchall()} == expected, operator
 
 
 @_SUBPROCESS_TIMEOUT
@@ -114,11 +117,11 @@ def test_git_sql_refuses_an_order_by_over_a_set_operation():
     """
     with _serving("git_sql.py") as conn, conn.cursor() as cur:
         with pytest.raises(psycopg.errors.FeatureNotSupported, match="columns stripped"):
-            cur.execute("SELECT name FROM branches UNION SELECT name FROM branches ORDER BY 1")
+            cur.execute("SELECT path FROM files UNION SELECT path FROM files ORDER BY 1")
         conn.rollback()
         # The connection survives it, which is the difference between an error and
         # the `D` message that used to reach psycopg here.
-        cur.execute("SELECT name FROM branches LIMIT 1")
+        cur.execute("SELECT path FROM files LIMIT 1")
         assert len(cur.fetchall()) == 1
 
 
