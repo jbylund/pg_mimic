@@ -90,6 +90,13 @@ what shipped rather than what was written down at the time.
   actually bound. Port 0 means "any free one", and the port the kernel picks is the
   one thing a client cannot guess — so the log line was useless in exactly the case
   it exists for. It now reports `self.port`. (#106)
+- `examples/git_sql.py` serves `UNION`, `EXCEPT` and `INTERSECT` instead of refusing
+  them as writes. The read-only guard tested for `exp.Select`, and a set operation is
+  an `exp.SetOperation`, so psql's own `\d` — whose publications footer is three
+  `SELECT`s joined by `UNION` — was answered "a git repo is read-only". An `ORDER BY`
+  over a set operation is still refused, with a `0A000` naming why: sqlglot's executor
+  returns those rows with every column stripped, which reaches the client as a `D`
+  message contradicting the `RowDescription` rather than as an answer. (#125)
 
 ### Changed
 - **Breaking.** `SET` checks whether the parameter exists and whether a session may
