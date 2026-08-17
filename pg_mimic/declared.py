@@ -59,11 +59,21 @@ class Table:
     what `pg_constraint.conkey` records and what psql prints. pg_mimic enforces
     nothing: nothing here stores rows, so a declared key is what the catalog reports,
     not a uniqueness check anything applies.
+
+    `unique` is any number of further keys, each spelled the same way::
+
+        Table("commits", {...}, primary_key="sha", unique=["author_email", ("a", "b")])
+
+    A primary key and a unique constraint differ in three ways that matter here: there
+    is at most one primary key and any number of unique ones, only a primary key's
+    columns are implicitly NOT NULL, and they are named and rendered differently
+    (`t_pkey` / `PRIMARY KEY (...)` against `t_a_b_key` / `UNIQUE (...)`).
     """
 
     name: str
     columns: Mapping[str, str]
     primary_key: str | Sequence[str] = ()
+    unique: Sequence[str | Sequence[str]] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.name, str) or not self.name:
@@ -85,6 +95,16 @@ class Table:
             # spellings resolve so validating them stops rejecting them.
         object.__setattr__(self, "columns", MappingProxyType(columns))
         object.__setattr__(self, "primary_key", _key_columns(self.name, "primary key", self.primary_key, columns))
+
+        declared_unique = [self.unique] if isinstance(self.unique, str) else list(self.unique)
+        keys = tuple(_key_columns(self.name, "unique constraint", key, columns) for key in declared_unique)
+        # Two identical unique keys would name two constraints the same thing, which
+        # `\\d` renders as a duplicated line. Postgres tolerates it and disambiguates with
+        # a counter; here it is almost certainly a copy-paste, so it is refused.
+        for key in keys:
+            if keys.count(key) > 1:
+                raise ValueError(f"{self.name!r} declares the same unique constraint twice: {key}")
+        object.__setattr__(self, "unique", keys)
 
 
 def _key_columns(table: str, kind: str, declared: str | Sequence[str], columns: Mapping[str, str]) -> tuple[str, ...]:

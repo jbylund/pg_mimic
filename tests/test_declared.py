@@ -164,3 +164,42 @@ def test_a_primary_key_must_name_the_tables_own_columns():
 def test_a_primary_key_cannot_name_a_column_twice():
     with pytest.raises(ValueError, match="twice in its primary key"):
         Table("t", {"a": "text"}, primary_key=("a", "a"))
+
+
+# --- unique constraints --------------------------------------------------------------
+
+
+def test_unique_keys_are_normalised_the_same_way_a_primary_key_is():
+    table = Table("t", {"a": "text", "b": "integer", "c": "text"}, unique=["a", ("b", "c")])
+    assert table.unique == (("a",), ("b", "c"))
+
+
+def test_a_single_unique_column_may_be_spelled_as_a_bare_string():
+    assert Table("t", {"a": "text"}, unique="a").unique == (("a",),)
+
+
+def test_a_table_declares_no_unique_constraints_by_default():
+    assert Table("t", {"a": "text"}).unique == ()
+
+
+def test_a_unique_constraint_must_name_the_tables_own_columns():
+    with pytest.raises(ValueError, match="not one of its columns"):
+        Table("t", {"a": "text"}, unique="b")
+
+
+def test_a_unique_constraint_cannot_name_a_column_twice():
+    with pytest.raises(ValueError, match="twice in its unique constraint"):
+        Table("t", {"a": "text"}, unique=[("a", "a")])
+
+
+def test_the_same_unique_constraint_cannot_be_declared_twice():
+    """Two identical keys would name two constraints the same thing, which `\\d` renders
+    as a duplicated line. Postgres tolerates it with a counter; here it is a copy-paste."""
+    with pytest.raises(ValueError, match="same unique constraint twice"):
+        Table("t", {"a": "text", "b": "text"}, unique=["a", "a"])
+
+
+def test_a_unique_constraint_may_repeat_the_primary_key():
+    """Redundant, and legal in Postgres too -- the names differ, so nothing collides."""
+    table = Table("t", {"a": "text"}, primary_key="a", unique="a")
+    assert (table.primary_key, table.unique) == (("a",), (("a",),))
