@@ -206,3 +206,54 @@ def test_listing_tables_does_not_list_the_key_index():
     assert result.stderr.strip() == "", result.stderr
     assert "commits" in result.stdout
     assert "pkey" not in result.stdout
+
+
+# --- unique constraints --------------------------------------------------------------
+
+_UNIQUE_SCHEMA = Schema(
+    [
+        Table(
+            "u1",
+            {"id": "integer", "email": "text", "a": "text", "b": "integer", "oddName": "text"},
+            primary_key="id",
+            unique=["email", ("a", "b"), "oddName"],
+        ),
+        Table("only_unique", {"code": "text", "n": "integer"}, unique="code"),
+    ]
+)
+
+
+class UniqueSession(SchemaSession):
+    async def schema(self):
+        return _UNIQUE_SCHEMA
+
+
+@psql_required
+def test_describe_table_shows_declared_unique_constraints():
+    """Every line below is what PostgreSQL 18 prints for the same declaration, in this
+    order -- psql sorts the footer `indisprimary DESC, relname`."""
+    result = _psql("\\d u1", UniqueSession)
+    assert result.stderr.strip() == "", result.stderr
+    for line in (
+        '"u1_pkey" PRIMARY KEY, btree (id)',
+        '"u1_a_b_key" UNIQUE CONSTRAINT, btree (a, b)',
+        '"u1_email_key" UNIQUE CONSTRAINT, btree (email)',
+        '"u1_oddName_key" UNIQUE CONSTRAINT, btree ("oddName")',
+    ):
+        assert line in result.stdout, result.stdout
+
+
+@psql_required
+def test_a_table_with_only_a_unique_constraint_gets_a_footer():
+    result = _psql("\\d only_unique", UniqueSession)
+    assert result.stderr.strip() == "", result.stderr
+    assert '"only_unique_code_key" UNIQUE CONSTRAINT, btree (code)' in result.stdout
+    assert "PRIMARY KEY" not in result.stdout
+
+
+@psql_required
+def test_a_unique_constraint_does_not_make_its_columns_not_null():
+    """Only the primary key column is `not null`, so exactly one row says so."""
+    result = _psql("\\d u1", UniqueSession)
+    assert result.stderr.strip() == "", result.stderr
+    assert result.stdout.count("not null") == 1

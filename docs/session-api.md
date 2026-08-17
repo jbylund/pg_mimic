@@ -68,8 +68,19 @@ Table("commit_files", {"sha": "text", "path": "text"}, primary_key=("sha", "path
 ```
 
 Its columns are then reported `not null`, as they are in Postgres, by both `attnotnull` and
-`information_schema.columns.is_nullable`. Nothing is enforced — pg_mimic stores no rows of its own,
-so a declared key is what the catalog reports rather than a uniqueness check anything applies.
+`information_schema.columns.is_nullable`.
+
+`unique` declares any number of further keys, spelled the same way:
+
+```python
+Table("users", {"id": "integer", "email": "text", "tenant": "text"}, primary_key="id", unique=["email", ("tenant", "email")])
+```
+
+Those appear in the same footer as `UNIQUE CONSTRAINT` lines, and — unlike a primary key — do
+**not** make their columns `not null`.
+
+Nothing is enforced either way: pg_mimic stores no rows of its own, so a declared key is what the
+catalog reports rather than a uniqueness check anything applies.
 
 The nested `{table: {column: type_name}}` dict this returned before is still accepted, so an
 existing session needs no change. A `Schema` is what pg_mimic normalises either into, and it is what

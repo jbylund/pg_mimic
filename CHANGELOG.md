@@ -10,6 +10,13 @@ what shipped rather than what was written down at the time.
 ## Unreleased
 
 ### Added
+- A `Table` can declare **unique constraints** — `unique=["email", ("tenant", "email")]`, any
+  number of them — which psql's `\d` prints as the `UNIQUE CONSTRAINT` lines of the same
+  `Indexes:` footer, named as Postgres names them (`users_email_key`). Unlike a primary
+  key they do not make their columns `not null`. Names longer than Postgres' 63-byte
+  identifier limit are truncated and, if that collides, given a counter, as Postgres
+  does. (#128)
+
 - A `Table` can declare a **primary key** — `Table("commits", {...}, primary_key="sha")`, or a
   tuple for a composite one — and psql's `\d` prints the footer it prints for a real
   table: `"commits_pkey" PRIMARY KEY, btree (sha)`. Its columns are reported `not null`

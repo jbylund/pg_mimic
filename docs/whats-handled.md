@@ -59,9 +59,9 @@ before it ever reaches your `Session`, so real clients/ORMs/`psql` work without 
   `column_default`, `udt_name` or `numeric_precision` answers about the columns that exist instead of
   returning nothing. Plus the slice of `pg_catalog` psql's `\dt`, `\d <table>`, `\di` and `\dn` read —
   all built from your `Session.schema()` declaration — see
-  [the session API](./session-api.md#declaring-a-schema). A declared primary key gets the
-  `Indexes:` footer `\d` prints for one, reports its columns as `not null`, and appears in
-  `pg_index`, `pg_constraint` and `\di`.
+  [the session API](./session-api.md#declaring-a-schema). A declared primary key or unique
+  constraint gets the `Indexes:` footer `\d` prints for one, and appears in `pg_index`,
+  `pg_constraint` and `\di`. A primary key additionally reports its columns as `not null`.
 - Multi-statement simple-query batches (`"BEGIN; INSERT ...; COMMIT;"` sent as one `'Q'` message, e.g. by
   `psql -f script.sql`) are split into individual statements (via sqlglot), each getting its own
   `RowDescription`/`DataRow*`/`CommandComplete` — not silently merged or truncated.

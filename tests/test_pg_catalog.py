@@ -15,7 +15,7 @@ from __future__ import annotations
 import pytest
 import sqlglot
 
-from pg_mimic.catalog import _build_pg_catalog
+from pg_mimic.catalog import _build_pg_catalog, _Key, _key_name
 from pg_mimic.catalog_rewrite import rewrite_for_executor
 from pg_mimic.declared import Schema, Table, resolve
 
@@ -236,3 +236,94 @@ def test_a_primary_keys_columns_are_not_null_and_the_others_are():
 def test_conkey_is_the_key_columns_attnums_in_key_order():
     rows = _run("SELECT conname, conkey FROM pg_catalog.pg_constraint ORDER BY conname", _PK_SCHEMA)
     assert dict(rows) == {"commit_files_pkey": "{1,2}", "commits_pkey": "{1}", "odd_pkey": "{1}"}
+
+
+# --- unique constraints --------------------------------------------------------------
+
+_UNIQUE_SCHEMA = Schema(
+    [
+        Table(
+            "u1",
+            {"id": "integer", "email": "text", "a": "text", "b": "integer", "oddName": "text"},
+            primary_key="id",
+            unique=["email", ("a", "b"), "oddName"],
+        ),
+        Table("only_unique", {"code": "text", "n": "integer"}, unique="code"),
+        Table("plain", {"x": "text"}),
+    ]
+)
+
+
+def _footer_rows(table_name, schema):
+    rows = _run(f"SELECT oid FROM pg_catalog.pg_class WHERE relname = '{table_name}' AND relkind = 'r'", schema)
+    return _run(_INDEX_FOOTER.format(oid=rows[0][0]), schema)
+
+
+def test_psqls_footer_lists_the_primary_key_first_then_unique_by_name():
+    """psql orders it `indisprimary DESC, c2.relname`, so this is the order the lines
+    come out in -- matched against a real PostgreSQL 18 declaring the same table."""
+    rows = _footer_rows("u1", _UNIQUE_SCHEMA)
+    assert [(row[0], row[1], row[7]) for row in rows] == [
+        ("u1_pkey", True, "p"),
+        ("u1_a_b_key", False, "u"),
+        ("u1_email_key", False, "u"),
+        ("u1_oddName_key", False, "u"),
+    ]
+
+
+def test_a_unique_constraint_renders_as_unique_not_primary_key():
+    definitions = {row[0]: (row[5], row[6]) for row in _footer_rows("u1", _UNIQUE_SCHEMA)}
+    assert definitions["u1_a_b_key"][0].endswith(" USING btree (a, b)")
+    assert definitions["u1_a_b_key"][1] == "UNIQUE (a, b)"
+    assert definitions["u1_oddName_key"][1] == 'UNIQUE ("oddName")'
+    assert definitions["u1_pkey"][1] == "PRIMARY KEY (id)"
+
+
+def test_a_unique_index_is_unique_but_not_primary():
+    rows = _footer_rows("only_unique", _UNIQUE_SCHEMA)
+    assert [(row[0], row[1], row[2]) for row in rows] == [("only_unique_code_key", False, True)]
+
+
+def test_a_unique_constraints_columns_are_still_nullable():
+    """The one substantive difference from a primary key: only a primary key's columns
+    are implicitly NOT NULL."""
+    oid = _run("SELECT oid FROM pg_catalog.pg_class WHERE relname = 'u1' AND relkind = 'r'", _UNIQUE_SCHEMA)[0][0]
+    rows = _run(
+        f"SELECT attname, attnotnull FROM pg_catalog.pg_attribute WHERE attrelid = '{oid}' ORDER BY attnum",
+        _UNIQUE_SCHEMA,
+    )
+    assert rows == [("id", True), ("email", False), ("a", False), ("b", False), ("oddName", False)]
+
+
+def test_a_table_with_only_unique_constraints_still_gets_the_footer():
+    """relhasindex gates the whole footer, and a table with no primary key has one."""
+    rows = _run("SELECT relname, relhasindex FROM pg_catalog.pg_class WHERE relkind = 'r'", _UNIQUE_SCHEMA)
+    assert dict(rows) == {"u1": True, "only_unique": True, "plain": False}
+
+
+def test_every_key_gets_its_own_index_and_constraint_oid():
+    indexes = _run("SELECT indexrelid, indrelid FROM pg_catalog.pg_index", _UNIQUE_SCHEMA)
+    constraints = _run("SELECT oid FROM pg_catalog.pg_constraint", _UNIQUE_SCHEMA)
+    tables = _run("SELECT oid FROM pg_catalog.pg_class WHERE relkind = 'r'", _UNIQUE_SCHEMA)
+    index_oids = {oid for oid, _ in indexes}
+    assert len(index_oids) == len(indexes) == 5
+    assert len({oid for (oid,) in constraints}) == 5
+    assert not index_oids & {oid for (oid,) in tables}
+
+
+def test_a_key_name_is_truncated_to_postgres_identifier_length():
+    """63 bytes is NAMEDATALEN - 1, and reachable with an ordinary long table name."""
+    long_table = "t" * 60
+    name = _key_name(_Key(long_table, ("column_one", "column_two"), False), taken=set())
+    assert len(name) == 63
+    assert name.startswith(long_table)
+
+
+def test_two_keys_that_truncate_to_one_name_are_disambiguated():
+    """As Postgres' own ChooseIndexName does. Identical *keys* are refused at
+    declaration, so this only fires for different keys with a shared prefix."""
+    long_table = "t" * 60
+    first = _key_name(_Key(long_table, ("column_one",), False), taken=set())
+    second = _key_name(_Key(long_table, ("column_two",), False), taken={first})
+    assert first != second
+    assert len(second) <= 63

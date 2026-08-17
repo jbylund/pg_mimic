@@ -20,6 +20,7 @@ executing it, and is a separate problem.
 
 from __future__ import annotations
 
+import itertools
 import logging
 import re
 from typing import TYPE_CHECKING, NamedTuple
@@ -325,10 +326,50 @@ def _rendered_identifier(name: str) -> str:
     return name if _PLAIN_IDENTIFIER.match(name) else '"' + name.replace('"', '""') + '"'
 
 
-def _key_positions(table: Table) -> list[int]:
+class _Key(NamedTuple):
+    """A declared key, with the one bit that decides how it is named and rendered."""
+
+    table: str
+    columns: tuple[str, ...]
+    is_primary: bool
+
+
+def _declared_keys(table: Table) -> list[_Key]:
+    """Every key a table declares, primary first.
+
+    Order matters only for OID assignment being stable; psql sorts the footer itself
+    (`ORDER BY i.indisprimary DESC, c2.relname`).
+    """
+    keys = [_Key(table.name, table.primary_key, True)] if table.primary_key else []
+    return keys + [_Key(table.name, columns, False) for columns in table.unique]
+
+
+def _key_name(key: _Key, taken: set[str]) -> str:
+    """The name Postgres would give this key's index: `t_pkey`, or `t_a_b_key`.
+
+    The column names go in unquoted whatever they are -- Postgres builds `u1_oddName_key`
+    from `"oddName"`, then quotes the whole name when it prints it.
+
+    Truncated to 63 bytes, which is Postgres' NAMEDATALEN limit and reachable with an
+    ordinary long table name and two or three columns. A truncation that collides gets a
+    counter, as Postgres' own ChooseIndexName does -- two identical *keys* are refused at
+    declaration, so this only fires when two different keys truncate to one name.
+    """
+    stem = f"{key.table}_pkey" if key.is_primary else "_".join([key.table, *key.columns, "key"])
+    name = stem.encode()[:63].decode(errors="ignore")
+    if name not in taken:
+        return name
+    for counter in itertools.count(1):
+        suffixed = f"{name.encode()[: 63 - len(str(counter))].decode(errors='ignore')}{counter}"
+        if suffixed not in taken:
+            return suffixed
+    raise AssertionError("unreachable: itertools.count does not end")
+
+
+def _key_positions(table: Table, key: _Key) -> list[int]:
     """A key's columns as 1-based attnums, in key order -- Postgres' conkey and indkey."""
     positions = {column: position for position, column in enumerate(table.columns, start=1)}
-    return [positions[column] for column in table.primary_key]
+    return [positions[column] for column in key.columns]
 
 
 def _build_pg_catalog(declared: Schema, database: str = "postgres") -> _CatalogInput:
@@ -337,6 +378,9 @@ def _build_pg_catalog(declared: Schema, database: str = "postgres") -> _CatalogI
     attribute_rows = []
     index_rows: list[dict] = []
     constraint_rows: list[dict] = []
+    # Index names are relation names, so they share one namespace with each other and
+    # have to be unique across the whole schema, not just within a table.
+    key_names: set[str] = set()
     for index, (table_name, table) in enumerate(declared.tables.items()):
         table_oid = _FIRST_USER_OID + index
         class_rows.append(
@@ -349,9 +393,9 @@ def _build_pg_catalog(declared: Schema, database: str = "postgres") -> _CatalogI
                 "relam": _HEAP_AM_OID,
                 "reltuples": -1,  # never analysed
                 "relpages": 0,
-                # psql gates the whole `Indexes:` footer on this, so a declared primary
-                # key that does not set it builds rows nothing ever asks for.
-                "relhasindex": bool(table.primary_key),
+                # psql gates the whole `Indexes:` footer on this, so a declared key that
+                # does not set it builds rows nothing ever asks for.
+                "relhasindex": bool(table.primary_key or table.unique),
                 "relpersistence": "p",
                 "reltablespace": 0,
                 "relispartition": False,
@@ -391,11 +435,13 @@ def _build_pg_catalog(declared: Schema, database: str = "postgres") -> _CatalogI
                 }
             )
 
-        if table.primary_key:
-            index_oid = _FIRST_INDEX_OID + index
-            constraint_oid = _FIRST_CONSTRAINT_OID + index
-            key_name = f"{table_name}_pkey"
-            key_columns = ", ".join(_rendered_identifier(column) for column in table.primary_key)
+        for key in _declared_keys(table):
+            key_name = _key_name(key, taken=key_names)
+            key_names.add(key_name)
+            index_oid = _FIRST_INDEX_OID + len(index_rows)
+            constraint_oid = _FIRST_CONSTRAINT_OID + len(constraint_rows)
+            key_columns = ", ".join(_rendered_identifier(column) for column in key.columns)
+            positions = _key_positions(table, key)
             # An index is a relation, so it needs its own pg_class row: psql reads the
             # index's *name* as c2.relname off a second pg_class in the same query, and
             # without this row the join drops every index it was told about.
@@ -428,24 +474,30 @@ def _build_pg_catalog(declared: Schema, database: str = "postgres") -> _CatalogI
                     # psql echoes everything after " USING " verbatim into the footer,
                     # which is where `btree (sha)` comes from -- so the access method and
                     # the column list have to be in this string, not derived from relam.
-                    "indexdef": f"CREATE UNIQUE INDEX {key_name} ON {_rendered_identifier(table_name)} USING btree ({key_columns})",
+                    "indexdef": (
+                        f"CREATE UNIQUE INDEX {_rendered_identifier(key_name)} "
+                        f"ON {_rendered_identifier(table_name)} USING btree ({key_columns})"
+                    ),
                     "indexrelid": index_oid,
                     "indrelid": table_oid,
-                    "indisprimary": True,
+                    # Both kinds are unique indexes; only one of them is *the* key, and
+                    # psql reads these two flags to choose between "PRIMARY KEY," and
+                    # "UNIQUE CONSTRAINT," in the footer.
+                    "indisprimary": key.is_primary,
                     "indisunique": True,
                     "indisclustered": False,
                     "indisvalid": True,
                     "indisreplident": False,
-                    "indkey": " ".join(str(position) for position in _key_positions(table)),
+                    "indkey": " ".join(str(position) for position in positions),
                 }
             )
             constraint_rows.append(
                 {
-                    "condef": f"PRIMARY KEY ({key_columns})",
+                    "condef": f"{'PRIMARY KEY' if key.is_primary else 'UNIQUE'} ({key_columns})",
                     "oid": constraint_oid,
                     "conname": key_name,
                     "conrelid": table_oid,
-                    "contype": "p",
+                    "contype": "p" if key.is_primary else "u",
                     "conparentid": 0,
                     "conindid": index_oid,
                     "confrelid": 0,
@@ -457,7 +509,7 @@ def _build_pg_catalog(declared: Schema, database: str = "postgres") -> _CatalogI
                     "coninhcount": 0,
                     # Postgres' int2[] of attnums, as its array literal -- the column is
                     # declared TEXT here, and a Python list has no wire encoding.
-                    "conkey": "{" + ",".join(str(position) for position in _key_positions(table)) + "}",
+                    "conkey": "{" + ",".join(str(position) for position in positions) + "}",
                 }
             )
 
