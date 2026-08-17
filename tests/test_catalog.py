@@ -567,10 +567,11 @@ def test_every_declared_catalog_column_has_a_value_in_every_row():
     So declaring a column and populating it are one step, and this is the guard.
     """
     from pg_mimic.catalog import _build_information_schema, _build_pg_catalog
+    from pg_mimic.declared import resolve
 
     for schema, tables in (
-        _build_pg_catalog({"t": {"id": "integer", "name": "text"}}, "testdb"),
-        _build_information_schema({"t": {"id": "integer"}}),
+        _build_pg_catalog(resolve({"t": {"id": "integer", "name": "text"}}), "testdb"),
+        _build_information_schema(resolve({"t": {"id": "integer"}})),
     ):
         namespace = next(iter(schema))
         for table, columns in schema[namespace].items():

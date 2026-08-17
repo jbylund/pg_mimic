@@ -61,13 +61,15 @@ from sqlglot.optimizer.normalize_identifiers import normalize_identifiers
 from sqlglot.planner import Plan
 from sqlglot.schema import ensure_schema
 
+from .analysis import AnalyzedQuery, annotate
+from .arrays import element_oid_of, is_array_oid
+
 # The declared-schema half of describe(), shared with any other session that
 # declares one (see pg_mimic.describe, and #88 for the copy that had diverged).
 # _PG_NAME and _pg_type_name are re-exported by being imported here: they read as
 # TableSession's own vocabulary from the outside, and the catalog's round-trip test
 # takes them off this module.
-from .analysis import AnalyzedQuery, annotate
-from .arrays import element_oid_of, is_array_oid
+from .declared import Schema, Table
 from .describe import (
     _PG_NAME,
     _SQLGLOT_NAME,
@@ -240,7 +242,7 @@ class TableSession(Session):
             raise ValueError(f"columns declares table(s) {unknown} that are not in tables ({sorted(tables)})")
 
         declared = {name: _declare_table(name, rows, declared_columns.get(name)) for name, rows in tables.items()}
-        self._schema = {name: table.pg_types for name, table in declared.items()}
+        self._schema = Schema([Table(name, table.pg_types) for name, table in declared.items()])
         # Quoted, like the column names inside them: sqlglot folds a bare name it is
         # handed, so `{"Users": ...}` would otherwise declare a table called `users`.
         self._rows = {_quoted(name): table.rows for name, table in declared.items()}
@@ -283,7 +285,14 @@ class TableSession(Session):
             rows = [row[: plan.visible_columns] for row in rows]  # drop the added DISTINCT ON keys
         return rows
 
-    async def schema(self) -> dict:
+    async def schema(self) -> Schema:
+        """The declared tables, as a Schema -- see pg_mimic.declared.
+
+        A `Schema` rather than the nested dict this returned until #126. Not a
+        simplification in itself, but pg_mimic's own session should not hand back the
+        legacy shape once `Schema` is the canonical one. A session of your own may
+        still return the dict; `resolve()` accepts it.
+        """
         return self._schema
 
     async def prepare(self, sql: str, param_oids: list[int | None]) -> Statement:
@@ -395,7 +404,7 @@ class TableSession(Session):
             # Against `_schema`, the one view of the declaration still keyed by the
             # names as written -- which, the tree having been folded already, is
             # what `table.name` now is.
-            if table.name not in self._schema and table.name not in cte_names:
+            if table.name not in self._schema.tables and table.name not in cte_names:
                 raise PgError(UNDEFINED_TABLE, f'relation "{table.name}" does not exist')
 
 

@@ -31,6 +31,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, AsyncIterator, Iterator, Sequence
 
+from .declared import Schema, resolve
 from .errors import (
     FEATURE_NOT_SUPPORTED,
     INTERNAL_ERROR,
@@ -788,18 +789,19 @@ class CopyStatement(Statement):
         if self.parsed.columns:
             return list(self.parsed.columns)
         schema_fn = getattr(self._session, "schema", None)
-        schema = (await schema_fn()) if schema_fn is not None and self.parsed.table is not None else None
-        schema = schema or {}
-        # Exact first: a quoted `COPY "People"` names the schema() key as spelled.
+        declared = resolve(await schema_fn()) if schema_fn is not None and self.parsed.table is not None else Schema()
+        # Exact first: a quoted `COPY "People"` names the declared table as spelled.
         # Only an unquoted name -- already folded to lower case by
-        # _unquote_identifier -- falls back to matching a key case-insensitively,
+        # _unquote_identifier -- falls back to matching a name case-insensitively,
         # which is the direction Postgres folds in.
-        columns = schema.get(self.parsed.table)
-        if not columns:
-            folded = {str(name).lower(): value for name, value in schema.items()}
-            columns = folded.get(self.parsed.table or "")
-        if columns:
-            return [str(name) for name in columns]
+        table = declared.tables.get(self.parsed.table or "")
+        if table is None:
+            folded = {name.lower(): value for name, value in declared.tables.items()}
+            table = folded.get(self.parsed.table or "")
+        # A table declared with no columns at all is legal (see pg_mimic.declared) and
+        # still cannot name a header, so it falls through to the refusal below.
+        if table is not None and table.columns:
+            return list(table.columns)
         raise PgError(
             FEATURE_NOT_SUPPORTED,
             "COPY TO STDOUT with HEADER needs the column names: list them in the statement "

@@ -1,0 +1,166 @@
+"""What a session declares about its tables: `Table`, `Schema`, and `resolve()`.
+
+`Session.schema()` used to return `{table_name: {column_name: type_str}}`, which
+describes columns and nothing else -- so there was nowhere to say that `commits.sha`
+is a primary key or that `commit_files.sha` references it, and therefore nowhere for
+`pg_constraint` and `pg_index` to get rows from. These two objects are that
+somewhere. See https://github.com/jbylund/pg_mimic/issues/126.
+
+A leaf on purpose. `catalog`, `copy` and `tables` all import this, so it imports
+nothing from the package in return -- #92 records the one real import cycle
+pg_mimic already has and this is not joining it.
+
+`resolve()` is the only thing that should read `schema()`'s return value, because it
+is the one place that knows every shape a session is allowed to hand back: a
+`Schema`, a sequence of `Table`, the historical nested dict, or None.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from types import MappingProxyType
+
+__all__ = ["Schema", "Table", "resolve"]
+
+
+@dataclass(frozen=True)
+class Table:
+    """One table as the catalog should describe it.
+
+    `columns` maps a column name to the SQL spelling of its type -- `{"sha": "text"}`
+    -- which is exactly what `Session.schema()` has always declared, and what
+    `pg_mimic.describe.oid_for_declared_type` reads.
+
+    **Column order is load-bearing.** It is `information_schema.ordinal_position` and
+    `pg_attribute.attnum`, both taken straight from the order this mapping iterates
+    in, so re-ordering it renumbers the columns of a table the client may already have
+    introspected.
+
+    Frozen because `session_factory` runs once per client: a module-level `Table` is
+    shared by every connection, and mutable metadata there lets one connection alter
+    another's catalog. `frozen=True` alone only blocks rebinding an attribute, not
+    `table.columns["sha"] = "integer"`, so the mapping is copied into a read-only view
+    on the way in.
+
+    Not promised to be hashable -- the generated `__hash__` hashes the field tuple and
+    a mapping is not hashable, so hashing raises. Nothing needs it.
+
+    A table with no columns at all is legal, because Postgres allows
+    `CREATE TABLE footable ()`, permits queries over it, and keeps its row count.
+    """
+
+    name: str
+    columns: Mapping[str, str]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.name, str) or not self.name:
+            raise ValueError(f"a table name must be a non-empty string, not {self.name!r}")
+        # Names are the identifier *as written*, the way a CREATE TABLE reads one:
+        # pg_mimic folds the *query* (see tables.py's normalize_identifiers call) and
+        # matches it against declared names untouched, which is why {"Users": ...}
+        # answers `FROM "Users"` and not `FROM Users`. Everything lives in `public`,
+        # so a name carries no schema qualifier.
+        columns = dict(self.columns)
+        for column, type_name in columns.items():
+            if not isinstance(column, str) or not column:
+                raise ValueError(f"a column name must be a non-empty string, not {column!r} in table {self.name!r}")
+            if not isinstance(type_name, str) or not type_name:
+                raise ValueError(f"{self.name!r}.{column} declares {type_name!r}, which is not a type name")
+            # TODO(#134): the spelling itself is not checked yet, and an unrecognised
+            # one silently resolves to text -- `varchar(255)` and `numeric(10,2)`
+            # included. This is where that check goes, once #134 makes the ordinary
+            # spellings resolve so validating them stops rejecting them.
+        object.__setattr__(self, "columns", MappingProxyType(columns))
+
+
+class Schema:
+    """The tables a session declares.
+
+    Indexed by name for the lookups psql's `\\d` family needs -- its SQL is full of
+    `WHERE c.oid = '16384'` -- built from `Table.name` rather than accepting a mapping,
+    so a name and its key cannot disagree and a duplicate raises instead of quietly
+    winning.
+
+    **Table order is load-bearing**, for the same reason column order is: a table's OID
+    is its position (`_FIRST_USER_OID + index` in `pg_mimic.catalog`). Insertion order
+    is what `tables` iterates in, and sorting it renumbers every table.
+
+    Mutating a `Schema` after it has been served is undefined. Assembly happens once,
+    before serving; `tables` is exposed read-only so that the constraint-declaring
+    methods in https://github.com/jbylund/pg_mimic/issues/130 can be the only way in,
+    which also keeps an explicit immutable snapshot additive if one is ever wanted.
+    """
+
+    __slots__ = ("_tables",)
+
+    def __init__(self, tables: Sequence[Table] = ()):
+        by_name: dict[str, Table] = {}
+        for table in tables:
+            if not isinstance(table, Table):
+                raise TypeError(f"a Schema holds Table objects, not {type(table).__name__}")
+            if table.name in by_name:
+                raise ValueError(f"two tables are both named {table.name!r}")
+            by_name[table.name] = table
+        self._tables = by_name
+
+    @property
+    def tables(self) -> Mapping[str, Table]:
+        return MappingProxyType(self._tables)
+
+    def column_types(self) -> dict[str, dict[str, str]]:
+        """The declared spellings in the historical nested shape.
+
+        For the callers that still want `{table: {column: type}}` -- sqlglot's own
+        `schema=` argument takes that shape, and `examples/git_sql.py` passes it
+        straight through. Deliberately *not* sqlglot's typed view of a schema, which
+        quotes its names and uses sqlglot's spellings and is
+        https://github.com/jbylund/pg_mimic/issues/135.
+        """
+        return {name: dict(table.columns) for name, table in self._tables.items()}
+
+    def __repr__(self) -> str:
+        return f"Schema({list(self._tables)!r})"
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Schema):
+            return NotImplemented
+        # Order-sensitive, because it decides OIDs: two schemas that declare the same
+        # tables in a different order are not interchangeable.
+        return list(self._tables.items()) == list(other._tables.items())
+
+
+Declared = Schema | Sequence[Table] | Mapping[str, Mapping[str, str]] | None
+
+
+def resolve(declared: Declared) -> Schema:
+    """Whatever `Session.schema()` returned, as a `Schema`.
+
+    None becomes an empty one. The base `Session.schema()` no longer returns None --
+    it returns an empty `Schema`, because None and `{}` produced identical catalogs and
+    the branch guarding the difference is what once crashed every catalog query -- but
+    a session's own override may still return it, and one in the suite does.
+
+    A `Mapping[str, Table]` is refused rather than accepted. It is the one shape where
+    the key and `Table.name` could disagree, and picking a winner is worse than saying
+    so.
+    """
+    if declared is None:
+        return Schema()
+    if isinstance(declared, Schema):
+        return declared
+    if isinstance(declared, Mapping):
+        tables = []
+        for name, columns in declared.items():
+            if isinstance(columns, Table):
+                raise TypeError(
+                    "schema() may return a Schema or a sequence of Table, but not a mapping of "
+                    f"name to Table -- {name!r} would have two names. Pass Schema([...]) instead."
+                )
+            tables.append(Table(str(name), columns))
+        return Schema(tables)
+    if isinstance(declared, (str, bytes)):
+        raise TypeError(f"schema() returned {declared!r}, which is not a schema")
+    if isinstance(declared, Sequence):
+        return Schema(declared)
+    raise TypeError(f"schema() returned {type(declared).__name__}, which is not a Schema, a sequence of Table, or a mapping")

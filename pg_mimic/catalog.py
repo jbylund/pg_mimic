@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 from sqlglot import exp
 from sqlglot.errors import OptimizeError
@@ -33,6 +33,7 @@ from .analysis import AnalyzedQuery
 from .arrays import ARRAY_OID, is_array_oid
 from .catalog_data import INFORMATION_SCHEMA_SCHEMA, PG_CATALOG_SCHEMA
 from .catalog_rewrite import rewrite_for_executor
+from .declared import Schema, resolve
 from .describe import oid_for_declared_type, result_columns
 from .errors import FEATURE_NOT_SUPPORTED, UNDEFINED_COLUMN, PgError
 from .results import ResultColumn
@@ -138,8 +139,22 @@ def _information_schema_row(view: str, **derived) -> dict:
     return row
 
 
-def _build_information_schema(user_schema: dict) -> tuple[dict, dict]:
-    """user_schema: {table_name: {col_name: type_str}} (Session.schema()'s shape).
+class _CatalogInput(NamedTuple):
+    """sqlglot's two arguments for a catalog query, which are not a `Schema`.
+
+    `column_types` is the executor's `schema=` -- the column types of the *catalog's
+    own* tables, `{"pg_class": {"oid": "INT", ...}}` -- and `rows` is its `tables=`.
+    Named because "schema" already meant three things in this module: what the session
+    declares, this type map, and a Postgres namespace. `schema, tables = _build_...()`
+    read as though the first contained the second.
+    """
+
+    column_types: dict
+    rows: dict
+
+
+def _build_information_schema(declared: Schema) -> _CatalogInput:
+    """The information_schema views, from what the session declares.
 
     The columns filled in below are the ones a declared schema genuinely settles,
     plus the handful Postgres answers with a constant for any ordinary table --
@@ -151,7 +166,7 @@ def _build_information_schema(user_schema: dict) -> tuple[dict, dict]:
     type_rows = pg_type_by_oid()
     tables_rows = []
     columns_rows = []
-    for table_name, cols in user_schema.items():
+    for table_name, table in declared.tables.items():
         tables_rows.append(
             _information_schema_row(
                 "tables",
@@ -167,7 +182,7 @@ def _build_information_schema(user_schema: dict) -> tuple[dict, dict]:
                 is_typed="NO",
             )
         )
-        for i, (col_name, col_type) in enumerate(cols.items(), start=1):
+        for i, (col_name, col_type) in enumerate(table.columns.items(), start=1):
             oid = oid_for_declared_type(col_type)
             columns_rows.append(
                 _information_schema_row(
@@ -203,8 +218,8 @@ def _build_information_schema(user_schema: dict) -> tuple[dict, dict]:
                 )
             )
 
-    tables = {"information_schema": {"tables": tables_rows, "columns": columns_rows}}
-    return INFORMATION_SCHEMA_SCHEMA, tables
+    rows = {"information_schema": {"tables": tables_rows, "columns": columns_rows}}
+    return _CatalogInput(INFORMATION_SCHEMA_SCHEMA, rows)
 
 
 def _pg_type_rows() -> list[dict]:
@@ -286,11 +301,11 @@ def _typname_for(rows: list[dict], oid: int) -> str:
     return "unknown"
 
 
-def _build_pg_catalog(user_schema: dict, database: str = "postgres") -> tuple[dict, dict]:
-    """The slice of pg_catalog psql's \\d family reads, from Session.schema()."""
+def _build_pg_catalog(declared: Schema, database: str = "postgres") -> _CatalogInput:
+    """The slice of pg_catalog psql's \\d family reads, from what the session declares."""
     class_rows = []
     attribute_rows = []
-    for index, (table_name, cols) in enumerate(user_schema.items()):
+    for index, (table_name, table) in enumerate(declared.tables.items()):
         table_oid = _FIRST_USER_OID + index
         class_rows.append(
             {
@@ -316,7 +331,7 @@ def _build_pg_catalog(user_schema: dict, database: str = "postgres") -> tuple[di
                 "reltoastrelid": 0,
             }
         )
-        for position, (col_name, col_type) in enumerate(cols.items(), start=1):
+        for position, (col_name, col_type) in enumerate(table.columns.items(), start=1):
             attribute_rows.append(
                 {
                     "attrelid": table_oid,
@@ -396,7 +411,7 @@ def _build_pg_catalog(user_schema: dict, database: str = "postgres") -> tuple[di
             ],
         }
     }
-    return PG_CATALOG_SCHEMA, tables
+    return _CatalogInput(PG_CATALOG_SCHEMA, tables)
 
 
 # --- the statements the middleware hands back ----------------------------------------
@@ -461,7 +476,7 @@ def _declared_columns(expr: exp.Expression, schema: dict) -> list[ResultColumn] 
         return None
 
 
-def _as_statement(expr: exp.Expression, schema: dict, tables: dict, *, strict: bool) -> Statement | None:
+def _as_statement(expr: exp.Expression, catalog: _CatalogInput, *, strict: bool) -> Statement | None:
     """Run a catalog query, or decide what its failure means. See #39.
 
     `strict` says whether an executor failure is this connection's problem or the
@@ -469,7 +484,7 @@ def _as_statement(expr: exp.Expression, schema: dict, tables: dict, *, strict: b
     themselves, and False for pg_catalog, which is overwhelmingly psql's own SQL.
     """
     try:
-        result = sqlglot_execute(expr, schema=schema, tables=tables, dialect="postgres")
+        result = sqlglot_execute(expr, schema=catalog.column_types, tables=catalog.rows, dialect="postgres")
     except OptimizeError as error:
         # A column the catalog does not model. On information_schema that is the
         # client's own query and Postgres answers 42703; no rows is the same lie the
@@ -512,30 +527,31 @@ def _as_statement(expr: exp.Expression, schema: dict, tables: dict, *, strict: b
 
     sql = expr.sql(dialect="postgres")
     rows = [tuple(row) for row in result.rows]
-    declared = _declared_columns(expr, schema)
+    declared = _declared_columns(expr, catalog.column_types)
     if declared is not None and len(declared) == len(result.columns):
         return StaticStatement(sql, declared, rows)
     return statement_from_rows(sql, result.columns, rows)
 
 
-async def _user_schema(connection: Connection) -> dict:
-    """What the session declares, or nothing -- never None.
+async def _declared_schema(connection: Connection) -> Schema:
+    """What the session declares, as a Schema -- never None.
 
-    `Session.schema()` returns None by default, and the `or {}` guarding that used
-    to bind to the else branch instead of the whole conditional, so a session that
-    did not override it crashed every catalog query with `'NoneType' object has no
-    attribute 'items'`. Nothing caught it because the sessions in this suite either
-    declare a schema or are TableSession, which always does.
+    The base `Session.schema()` used to return None, and the `or {}` guarding that
+    bound to the else branch instead of the whole conditional, so a session that did
+    not override it crashed every catalog query with `'NoneType' object has no
+    attribute 'items'`. That branch is gone: the default is an empty `Schema` and
+    `resolve()` absorbs every other shape, None included, since a session's own
+    override may still return one.
     """
     schema_fn = getattr(connection.session, "schema", None)
-    return ((await schema_fn()) if schema_fn is not None else {}) or {}
+    return resolve(await schema_fn()) if schema_fn is not None else Schema()
 
 
 async def information_schema_statement(connection: Connection, expr: exp.Select) -> Statement | None:
-    schema, tables = _build_information_schema(await _user_schema(connection))
-    return _as_statement(expr, schema, tables, strict=True)
+    catalog = _build_information_schema(await _declared_schema(connection))
+    return _as_statement(expr, catalog, strict=True)
 
 
 async def pg_catalog_statement(connection: Connection, expr: exp.Select) -> Statement | None:
-    schema, tables = _build_pg_catalog(await _user_schema(connection), connection.state.database)
-    return _as_statement(rewrite_for_executor(connection, expr), schema, tables, strict=False)
+    catalog = _build_pg_catalog(await _declared_schema(connection), connection.state.database)
+    return _as_statement(rewrite_for_executor(connection, expr), catalog, strict=False)

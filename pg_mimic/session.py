@@ -25,6 +25,7 @@ import inspect
 from abc import ABC, abstractmethod
 from typing import Any, AsyncIterable, AsyncIterator, Awaitable, Callable, Iterable, Sequence
 
+from .declared import Declared, Schema
 from .results import ResultColumn
 from .state import SessionState, SettingValue
 from .types import TEXT
@@ -363,10 +364,21 @@ class Session(BaseSession):
         Does nothing by default.
         """
 
-    async def schema(self) -> dict | None:
+    async def schema(self) -> Declared:
         """Optional: describe your tables for information_schema/pg_catalog
-        emulation. See pg_mimic.catalog."""
-        return None
+        emulation. See pg_mimic.catalog and pg_mimic.declared.
+
+        Return a `Schema` of `Table`s, a sequence of `Table`, or the nested
+        `{table: {column: type_name}}` dict this has always accepted.
+
+        An empty `Schema` by default, rather than None: the two produced identical
+        catalogs, and the branch that guarded the difference is what once crashed
+        every catalog query for a session that did not override this. #136 covers
+        whether "I declare no tables" is worth distinguishing from "I make no claim
+        about my tables" -- if it ever is, it wants a named sentinel rather than a
+        resurrected None.
+        """
+        return Schema()
 
     async def copy_in(self, sql: str, rows: AsyncIterator[Row]) -> int | None:
         """Optional: handle `COPY ... FROM STDIN`.

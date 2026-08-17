@@ -641,13 +641,21 @@ def test_the_catalog_reports_the_declared_names(mixed_conn):
 
 
 async def test_schema_is_derived_from_the_tables():
-    assert await _session().schema() == {
+    """A Schema since #126, where this asserted the nested dict it returned before.
+
+    `column_types()` is the same declaration in the old shape, so this stays an
+    assertion about the derived *types* rather than about the container.
+    """
+    schema = await _session().schema()
+    assert schema.column_types() == {
         "users": {"id": "bigint", "name": "text", "joined": "date", "tags": "text[]"},
         "orders": {"id": "bigint", "user_id": "bigint", "total": "numeric"},
         "events": {"id": "bigint", "at": "timestamp"},
         "notes": {"id": "bigint", "body": "text"},
         "docs": {"id": "bigint", "body": "jsonb"},
     }
+    # Order is load-bearing -- it is what decides each table's OID.
+    assert list(schema.tables) == ["users", "orders", "events", "notes", "docs"]
 
 
 # --- what the executor answers wrongly, repaired --------------------------------------
