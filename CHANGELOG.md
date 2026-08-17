@@ -10,6 +10,17 @@ what shipped rather than what was written down at the time.
 ## Unreleased
 
 ### Added
+- `Schema` and `Table`: what a `Session.schema()` declares, as objects rather than a
+  nested dict. `Schema([Table("users", {"id": "integer"})])` says the same thing
+  `{"users": {"id": "integer"}}` did, and the dict is still accepted — but a `Table` has
+  somewhere to put a primary key or a foreign key, which a dict of column types does
+  not, and which is what `pg_constraint` and `pg_index` need before psql's `\d` can
+  report either. Declaring them comes next (#127 onwards); this is the shape they hang
+  off. A `Table` is immutable, because one declared at module scope is shared by every
+  connection, and both the table order and each table's column order are meaningful —
+  they decide table OIDs and `ordinal_position`. A table with no columns is legal, as it
+  is in Postgres. (#126)
+
 - `information_schema.tables` and `information_schema.columns` are served at
   PostgreSQL's full width: 12 columns and 44, up from 4 and 7, in the server's own
   `ordinal_position` order so `SELECT *` lines up positionally. A column pg_mimic
@@ -99,6 +110,14 @@ what shipped rather than what was written down at the time.
   message contradicting the `RowDescription` rather than as an answer. (#125)
 
 ### Changed
+- `TableSession.schema()` returns a `Schema` rather than the nested
+  `{table: {column: type_name}}` dict. `Schema.column_types()` is the same declaration in
+  the old shape for anything that wants it. A session of your own may keep returning the
+  dict — that is accepted and will stay accepted. `Session.schema()` also now defaults to
+  an empty `Schema` instead of `None`: the two produced identical catalogs, and the branch
+  guarding the difference is what once crashed every catalog query for a session that did
+  not override it. (#126)
+
 - **Breaking.** `SET` checks whether the parameter exists and whether a session may
   change it, where before it accepted any name at all. A name that is not a
   parameter is `42704 undefined_object`; a parameter outside a session's reach is

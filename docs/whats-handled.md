@@ -58,7 +58,7 @@ before it ever reaches your `Session`, so real clients/ORMs/`psql` work without 
   columns and all 44, in the server's own order, so `SELECT *` lines up positionally and a query for
   `column_default`, `udt_name` or `numeric_precision` answers about the columns that exist instead of
   returning nothing. Plus the slice of `pg_catalog` psql's `\dt`, `\d <table>` and `\dn` read — all
-  built from your `Session.schema()`.
+  built from your `Session.schema()` declaration — see [the session API](./session-api.md#declaring-a-schema).
 - Multi-statement simple-query batches (`"BEGIN; INSERT ...; COMMIT;"` sent as one `'Q'` message, e.g. by
   `psql -f script.sql`) are split into individual statements (via sqlglot), each getting its own
   `RowDescription`/`DataRow*`/`CommandComplete` — not silently merged or truncated.

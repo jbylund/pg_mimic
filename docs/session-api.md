@@ -42,11 +42,34 @@ silently reshaped, since Postgres has no wire representation for one.
 
 ## Declaring a schema
 
-`schema()` returns `{table: {column: type_name}}`, where each type name is a SQL spelling Postgres
-itself uses — `"integer"`, `"character varying"`, `"text[]"`. `information_schema` and the
-`pg_catalog` slice psql's `\d` reads are built out of it (see
-[What's handled automatically](./whats-handled.md)), and so is `TableSession`'s answer to
-every `Describe`.
+`schema()` returns a `Schema` of `Table`s. Each `Table` maps a column name to a SQL spelling
+Postgres itself uses — `"integer"`, `"character varying"`, `"text[]"`:
+
+```python
+from pg_mimic import Schema, Session, Table
+
+
+class MySession(Session):
+    async def schema(self):
+        return Schema(
+            [
+                Table("users", {"id": "integer", "name": "text"}),
+                Table("orders", {"id": "integer", "user_id": "integer", "total": "numeric"}),
+            ]
+        )
+```
+
+The nested `{table: {column: type_name}}` dict this returned before is still accepted, so an
+existing session needs no change. A `Schema` is what pg_mimic normalises either into, and it is what
+`TableSession.schema()` hands back.
+
+Two properties are worth knowing because nothing else will tell you: **the order of the tables and
+of each table's columns is meaningful** — it decides table OIDs and `ordinal_position` — and a
+`Table` is immutable, since one declared at module scope is shared by every connection.
+
+`information_schema` and the `pg_catalog` slice psql's `\d` reads are built out of the declaration
+(see [What's handled automatically](./whats-handled.md)), and so is `TableSession`'s answer to
+every `Describe`. A table with no columns is legal, as it is in Postgres.
 
 `oid_for_declared_type()` is how one of those names becomes an OID, and the reason a session that
 declares a schema needs no type table of its own. Its neighbour `oid_for_type()` answers the same

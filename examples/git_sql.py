@@ -22,7 +22,7 @@ anywhere below.
 Two parts are worth reading for their own sake.
 
 describe() never runs the query. Column shape comes from sqlglot's type
-annotator against SCHEMA and is exact even through aggregates and arithmetic
+annotator against the declared SCHEMA and is exact even through aggregates and arithmetic
 -- count(*) is int8, insertions / 2.0 is float8 -- so Parse/Describe is
 answered without touching git. examples/dbapi_proxy.py has to execute a SELECT
 to learn its own column types; a declared schema buys the difference. The
@@ -59,7 +59,9 @@ from pg_mimic import (
     INT8,
     NUMERIC,
     TIMESTAMP,
+    Schema,
     Session,
+    Table,
     oid_for_declared_type,
 )
 from pg_mimic.analysis import AnalyzedQuery
@@ -155,38 +157,37 @@ executor_env.ENV["INTERVAL"] = _interval_delta
 # (pg_mimic.describe), so neither can drift from the library's. This file used to
 # carry its own copy of both, and did drift: it described `select 3000000000` as
 # int4 long after #40 was fixed for TableSession.
-SCHEMA = {
-    "commits": {
-        "sha": "text",
-        "author_name": "text",
-        "author_email": "text",
-        "committer_name": "text",
-        "committed_at": "timestamp",
-        "authored_at": "timestamp",
-        "subject": "text",
-        "insertions": "integer",
-        "deletions": "integer",
-        "files_changed": "integer",
-    },
-    "commit_files": {
-        "sha": "text",
-        "path": "text",
-        "insertions": "integer",
-        "deletions": "integer",
-    },
-    "files": {
-        "path": "text",
-        "ext": "text",
-        "size_bytes": "integer",
-        "lines": "integer",
-    },
-    "branches": {
-        "name": "text",
-        "is_head": "boolean",
-        "upstream": "text",
-        "last_commit_at": "timestamp",
-    },
-}
+SCHEMA = Schema(
+    [
+        Table(
+            "commits",
+            {
+                "sha": "text",
+                "author_name": "text",
+                "author_email": "text",
+                "committer_name": "text",
+                "committed_at": "timestamp",
+                "authored_at": "timestamp",
+                "subject": "text",
+                "insertions": "integer",
+                "deletions": "integer",
+                "files_changed": "integer",
+            },
+        ),
+        Table(
+            "commit_files",
+            {"sha": "text", "path": "text", "insertions": "integer", "deletions": "integer"},
+        ),
+        Table("files", {"path": "text", "ext": "text", "size_bytes": "integer", "lines": "integer"}),
+        Table("branches", {"name": "text", "is_head": "boolean", "upstream": "text", "last_commit_at": "timestamp"}),
+    ]
+)
+
+# sqlglot's `schema=` wants the nested dict, and so does the one place below that reads
+# a column's declared type. Derived once here rather than at each call site, and it is
+# the *declared* spellings rather than sqlglot's own view of them -- see
+# https://github.com/jbylund/pg_mimic/issues/135.
+COLUMN_TYPES = SCHEMA.column_types()
 
 
 # --- pushdown ------------------------------------------------------------------------
@@ -595,7 +596,7 @@ class GitSession(Session):
             # away. No `$n`, nothing to infer.
             return declared
         try:
-            expr = AnalyzedQuery(sqlglot.parse_one(sql, dialect="postgres"), schema=SCHEMA).qualified()
+            expr = AnalyzedQuery(sqlglot.parse_one(sql, dialect="postgres"), schema=COLUMN_TYPES).qualified()
         except Exception:
             return declared  # unparseable, or not about our tables -- leave it alone
         aliases = _alias_map(expr)
@@ -637,7 +638,7 @@ class GitSession(Session):
         expr = sqlglot.parse_one(sql, dialect="postgres")
         if not isinstance(expr, _SERVED):
             return None
-        return AnalyzedQuery(expr, schema=SCHEMA)
+        return AnalyzedQuery(expr, schema=COLUMN_TYPES)
 
     def _analyze(self, sql: str, params: list | None) -> exp.Expression:
         """Qualify every column to a table, then substitute bound parameters.
@@ -648,14 +649,14 @@ class GitSession(Session):
         expr = sqlglot.parse_one(sql, dialect="postgres")
         if not isinstance(expr, _SERVED):
             return expr
-        qualified = AnalyzedQuery(expr, schema=SCHEMA).qualified()
+        qualified = AnalyzedQuery(expr, schema=COLUMN_TYPES).qualified()
         _substitute_params(qualified, params)
         return qualified
 
     def _execute(self, expr: exp.Select):
         tables = self._tables(expr)  # a PgError from git or an unknown table stands as-is
         try:
-            return sqlglot_execute(expr, schema=SCHEMA, tables=tables, dialect="postgres")
+            return sqlglot_execute(expr, schema=COLUMN_TYPES, tables=tables, dialect="postgres")
         except Exception as error:
             # The executor supports a good deal less SQL than Postgres. Say so, rather
             # than returning an empty result the client reads as "no matching rows".
@@ -717,7 +718,7 @@ def _oid_of_compared_column(node: exp.Parameter, aliases: dict[str, str]) -> int
         return None
     for side in (parent.this, parent.expression):
         if isinstance(side, exp.Column):
-            declared = SCHEMA.get(aliases.get(side.table, ""), {}).get(side.name)
+            declared = COLUMN_TYPES.get(aliases.get(side.table, ""), {}).get(side.name)
             return oid_for_declared_type(declared) if declared else None
     return None
 

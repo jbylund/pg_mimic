@@ -16,6 +16,7 @@ import sqlglot
 
 from pg_mimic.catalog import _build_pg_catalog
 from pg_mimic.catalog_rewrite import rewrite_for_executor
+from pg_mimic.declared import resolve
 
 SCHEMA = {"users": {"id": "integer", "name": "text"}, "orders": {"id": "bigint", "total": "numeric"}}
 
@@ -25,7 +26,7 @@ class FakeConnection:
 
 
 def _run(sql, schema=None):
-    sqlglot_schema, tables = _build_pg_catalog(SCHEMA if schema is None else schema)
+    sqlglot_schema, tables = _build_pg_catalog(resolve(SCHEMA if schema is None else schema))
     from sqlglot.executor import execute
 
     expr = rewrite_for_executor(FakeConnection(), sqlglot.parse_one(sql, dialect="postgres"))
@@ -134,7 +135,7 @@ def test_declared_types_map_to_real_oids():
     rather than silently defaulting to text like an unrecognised spelling."""
     from pg_mimic.types import INT8, NUMERIC
 
-    _schema, tables = _build_pg_catalog(SCHEMA)
+    _schema, tables = _build_pg_catalog(resolve(SCHEMA))
     orders_oid = next(r["oid"] for r in tables["pg_catalog"]["pg_class"] if r["relname"] == "orders")
     attrs = {r["attname"]: r["atttypid"] for r in tables["pg_catalog"]["pg_attribute"] if r["attrelid"] == orders_oid}
     assert attrs == {"id": INT8, "total": NUMERIC}
@@ -145,7 +146,7 @@ def test_pg_type_covers_the_types_pg_mimic_can_encode():
     describe anything pg_mimic can put on the wire."""
     from pg_mimic import ARRAY_OID, INT8, TEXT
 
-    _schema, tables = _build_pg_catalog(SCHEMA)
+    _schema, tables = _build_pg_catalog(resolve(SCHEMA))
     by_oid = {r["oid"]: r for r in tables["pg_catalog"]["pg_type"]}
     assert by_oid[TEXT]["typname"] == "text"
     assert by_oid[ARRAY_OID[INT8]]["typelem"] == INT8  # what marks it an array

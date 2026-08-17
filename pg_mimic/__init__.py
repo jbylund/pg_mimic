@@ -29,6 +29,10 @@ from .auth import (
     TrustAuthPlugin,
 )
 
+# Table and Schema are what a Session.schema() declares. Public because declaring a
+# primary key or a foreign key is something a user does, not something pg_mimic infers.
+from .declared import Schema, Table
+
 # The two ways a column's type is named on the way to an OID, exported together
 # because they are one pair: `oid_for_declared_type("text[]")` takes the SQL
 # spelling a Session.schema() declares, `oid_for_type(list[str])` the Python type
@@ -88,6 +92,8 @@ __all__ = [
     "BaseSession",
     "Session",
     "TableSession",
+    "Schema",
+    "Table",
     "Statement",
     "StaticStatement",
     "Portal",
