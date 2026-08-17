@@ -539,6 +539,31 @@ TABLE_NAMES = (*LOG_PROJECTIONS, *COLLECTORS)
 
 # --- the session ---------------------------------------------------------------------
 
+# A UNION, EXCEPT or INTERSECT is as read-only as a SELECT, so all three are served.
+# exp.Query would also admit a bare exp.Subquery -- `(SELECT ...) LIMIT 1` -- whose
+# LIMIT the executor drops, answering every row instead of one. TableSession repairs
+# that in _flatten_parenthesized; this example has no such layer, so it stays out.
+_SERVED = (exp.Select, exp.SetOperation)
+
+
+def _reject_stripped_columns(expr: exp.Expression) -> None:
+    """Refuse an ORDER BY over a set operation, which the executor answers wrongly.
+
+    The rows come back with every column gone -- `[(), (), ()]` -- so what reaches
+    the client is `unexpected field count in "D" message`, a protocol violation
+    against the RowDescription describe() already sent, rather than an answer or an
+    error. A 0A000 is the honest reply until sqlglot's planner keeps the columns.
+
+    Tracked in https://github.com/jbylund/pg_mimic/issues/49; the fix is
+    https://github.com/jbylund/sqlglot/pull/34, and this goes when it lands.
+    """
+    if isinstance(expr, exp.SetOperation) and expr.args.get("order") is not None:
+        raise PgError(
+            FEATURE_NOT_SUPPORTED,
+            "ORDER BY over a UNION, EXCEPT or INTERSECT is beyond the demo's executor -- "
+            "it returns the rows with their columns stripped",
+        )
+
 
 class GitSession(Session):
     def __init__(self, repo: str):
@@ -596,8 +621,9 @@ class GitSession(Session):
 
     async def query(self, sql, params):
         expr = self._analyze(sql, params)
-        if not isinstance(expr, exp.Select):
+        if not isinstance(expr, _SERVED):
             raise PgError(FEATURE_NOT_SUPPORTED, "this example serves SELECT only -- a git repo is read-only")
+        _reject_stripped_columns(expr)
         # git, the file reads and the executor are all blocking, and pg_mimic runs one
         # task per connection -- without this hop a slow query freezes every other
         # session on the event loop, including psql's opening handshake.
@@ -607,9 +633,9 @@ class GitSession(Session):
 
     def _analyzed(self, sql: str) -> AnalyzedQuery | None:
         """The query in the forms describe() and query() each need, or None if it is
-        not a SELECT -- see pg_mimic.analysis."""
+        not one this example serves -- see pg_mimic.analysis."""
         expr = sqlglot.parse_one(sql, dialect="postgres")
-        if not isinstance(expr, exp.Select):
+        if not isinstance(expr, _SERVED):
             return None
         return AnalyzedQuery(expr, schema=SCHEMA)
 
@@ -620,7 +646,7 @@ class GitSession(Session):
         measured against, which is the only type information available for it.
         """
         expr = sqlglot.parse_one(sql, dialect="postgres")
-        if not isinstance(expr, exp.Select):
+        if not isinstance(expr, _SERVED):
             return expr
         qualified = AnalyzedQuery(expr, schema=SCHEMA).qualified()
         _substitute_params(qualified, params)
