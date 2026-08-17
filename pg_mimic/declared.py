@@ -48,10 +48,22 @@ class Table:
 
     A table with no columns at all is legal, because Postgres allows
     `CREATE TABLE footable ()`, permits queries over it, and keeps its row count.
+
+    `primary_key` names this table's own columns, in key order, and is normalised to a
+    tuple so nothing downstream has to branch on the spelling::
+
+        Table("commits", {"sha": "text", ...}, primary_key="sha")
+        Table("commit_files", {"sha": "text", "path": "text"}, primary_key=("sha", "path"))
+
+    A tuple rather than a set because a composite key's order is part of it -- it is
+    what `pg_constraint.conkey` records and what psql prints. pg_mimic enforces
+    nothing: nothing here stores rows, so a declared key is what the catalog reports,
+    not a uniqueness check anything applies.
     """
 
     name: str
     columns: Mapping[str, str]
+    primary_key: str | Sequence[str] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.name, str) or not self.name:
@@ -72,6 +84,26 @@ class Table:
             # included. This is where that check goes, once #134 makes the ordinary
             # spellings resolve so validating them stops rejecting them.
         object.__setattr__(self, "columns", MappingProxyType(columns))
+        object.__setattr__(self, "primary_key", _key_columns(self.name, "primary key", self.primary_key, columns))
+
+
+def _key_columns(table: str, kind: str, declared: str | Sequence[str], columns: Mapping[str, str]) -> tuple[str, ...]:
+    """A key spec as a tuple of this table's own columns, in the order it was given.
+
+    A bare string is one column, which is the common case and not worth making callers
+    spell as a one-tuple. Checked against `columns` here rather than at resolve time,
+    because a key naming a column the table does not have is knowable at construction
+    and so should raise on the line that wrote it. Whether a *reference target* is
+    covered by a key is the other kind of question and cannot be answered until every
+    table is in -- see https://github.com/jbylund/pg_mimic/issues/129.
+    """
+    key = (declared,) if isinstance(declared, str) else tuple(declared)
+    for column in key:
+        if column not in columns:
+            raise ValueError(f"{table!r} declares a {kind} on {column!r}, which is not one of its columns")
+    if len(set(key)) != len(key):
+        raise ValueError(f"{table!r} names a column twice in its {kind}: {key}")
+    return key
 
 
 class Schema:

@@ -133,3 +133,34 @@ def test_resolve_refuses_what_is_not_a_schema_at_all(declared):
 def test_a_table_refuses_a_name_or_type_that_is_not_a_non_empty_string(name, columns):
     with pytest.raises(ValueError):
         Table(name, columns)
+
+
+# --- primary keys --------------------------------------------------------------------
+
+
+def test_a_primary_key_is_normalised_to_a_tuple():
+    """A bare string is one column, which is the common case and not worth making a
+    caller spell as a one-tuple. Storing only the tuple means nothing downstream has to
+    branch on which spelling it was given."""
+    assert Table("t", {"a": "text"}, primary_key="a").primary_key == ("a",)
+    assert Table("t", {"a": "text", "b": "text"}, primary_key=("a", "b")).primary_key == ("a", "b")
+    assert Table("t", {"a": "text", "b": "text"}, primary_key=["b", "a"]).primary_key == ("b", "a")
+
+
+def test_a_table_declares_no_primary_key_by_default():
+    assert Table("t", {"a": "text"}).primary_key == ()
+
+
+def test_a_composite_key_keeps_the_order_it_was_declared_in():
+    """Not a set: the order is part of the key, and it is what conkey and psql report."""
+    assert Table("t", {"a": "text", "b": "text"}, primary_key=("b", "a")).primary_key == ("b", "a")
+
+
+def test_a_primary_key_must_name_the_tables_own_columns():
+    with pytest.raises(ValueError, match="not one of its columns"):
+        Table("t", {"a": "text"}, primary_key="b")
+
+
+def test_a_primary_key_cannot_name_a_column_twice():
+    with pytest.raises(ValueError, match="twice in its primary key"):
+        Table("t", {"a": "text"}, primary_key=("a", "a"))

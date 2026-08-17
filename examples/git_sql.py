@@ -173,13 +173,19 @@ SCHEMA = Schema(
                 "deletions": "integer",
                 "files_changed": "integer",
             },
+            primary_key="sha",
         ),
         Table(
             "commit_files",
             {"sha": "text", "path": "text", "insertions": "integer", "deletions": "integer"},
+            primary_key=("sha", "path"),
         ),
-        Table("files", {"path": "text", "ext": "text", "size_bytes": "integer", "lines": "integer"}),
-        Table("branches", {"name": "text", "is_head": "boolean", "upstream": "text", "last_commit_at": "timestamp"}),
+        Table("files", {"path": "text", "ext": "text", "size_bytes": "integer", "lines": "integer"}, primary_key="path"),
+        Table(
+            "branches",
+            {"name": "text", "is_head": "boolean", "upstream": "text", "last_commit_at": "timestamp"},
+            primary_key="name",
+        ),
     ]
 )
 

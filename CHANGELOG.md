@@ -10,6 +10,16 @@ what shipped rather than what was written down at the time.
 ## Unreleased
 
 ### Added
+- A `Table` can declare a **primary key** — `Table("commits", {...}, primary_key="sha")`, or a
+  tuple for a composite one — and psql's `\d` prints the footer it prints for a real
+  table: `"commits_pkey" PRIMARY KEY, btree (sha)`. Its columns are reported `not null`
+  by both `pg_catalog.pg_attribute.attnotnull` and
+  `information_schema.columns.is_nullable`, the key appears in `pg_index` and
+  `pg_constraint` with a real `pg_get_indexdef()` and `pg_get_constraintdef()`, and
+  `\di` lists it. Nothing is enforced: pg_mimic stores no rows of its own, so a declared
+  key is what the catalog reports rather than a uniqueness check. Declaring the key does
+  not renumber any table's OID. (#127)
+
 - `Schema` and `Table`: what a `Session.schema()` declares, as objects rather than a
   nested dict. `Schema([Table("users", {"id": "integer"})])` says the same thing
   `{"users": {"id": "integer"}}` did, and the dict is still accepted — but a `Table` has

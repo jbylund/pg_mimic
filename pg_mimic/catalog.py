@@ -33,7 +33,7 @@ from .analysis import AnalyzedQuery
 from .arrays import ARRAY_OID, is_array_oid
 from .catalog_data import INFORMATION_SCHEMA_SCHEMA, PG_CATALOG_SCHEMA
 from .catalog_rewrite import rewrite_for_executor
-from .declared import Schema, resolve
+from .declared import Schema, Table, resolve
 from .describe import oid_for_declared_type, result_columns
 from .errors import FEATURE_NOT_SUPPORTED, UNDEFINED_COLUMN, PgError
 from .results import ResultColumn
@@ -69,8 +69,15 @@ logger = logging.getLogger(__name__)
 _PUBLIC_OID = 2200
 _OWNER_OID = 10
 _HEAP_AM_OID = 2
+_BTREE_AM_OID = 403  # Postgres' own oid for btree, which psql prints by name
 # Real Postgres starts user objects here, and psql only cares that they're distinct.
 _FIRST_USER_OID = 16384
+# Indexes and constraints get their own OID ranges rather than continuing the table
+# numbering, so that declaring a primary key cannot renumber a *table* -- table OIDs
+# are positional and a client may have introspected them already. The gaps are wide
+# enough that a schema would have to declare 100000 tables to collide.
+_FIRST_INDEX_OID = _FIRST_USER_OID + 100_000
+_FIRST_CONSTRAINT_OID = _FIRST_USER_OID + 200_000
 
 
 _CATALOG_NAME = "pg_mimic"
@@ -192,9 +199,12 @@ def _build_information_schema(declared: Schema) -> _CatalogInput:
                     table_name=table_name,
                     column_name=col_name,
                     ordinal_position=i,
-                    # A declared schema names types, not constraints, so nothing here
-                    # is NOT NULL -- as pg_catalog already says with attnotnull.
-                    is_nullable="YES",
+                    # A primary key's columns are implicitly NOT NULL, which is the one
+                    # thing a declared schema settles here. Everything else is nullable:
+                    # nothing declares a NOT NULL of its own yet. pg_catalog says the
+                    # same through attnotnull, and the two must not disagree -- a client
+                    # reading one and a client reading the other are asking one question.
+                    is_nullable="NO" if col_name in table.primary_key else "YES",
                     data_type=col_type,
                     udt_catalog=_CATALOG_NAME,
                     # The underlying type, named as pg_type names it -- `int4`,
@@ -301,10 +311,32 @@ def _typname_for(rows: list[dict], oid: int) -> str:
     return "unknown"
 
 
+_PLAIN_IDENTIFIER = re.compile(r"^[a-z_][a-z0-9_$]*$")
+
+
+def _rendered_identifier(name: str) -> str:
+    """A name as Postgres would print it in a constraint or index definition.
+
+    Quoted only when it has to be, which is what `pg_get_constraintdef` does -- an
+    unquoted `sha` and a quoted `"userId"`. Reserved words are not consulted: the list
+    is long, it changes between releases, and a name that needs quoting for *that*
+    reason renders as bare here rather than wrongly quoted somewhere else.
+    """
+    return name if _PLAIN_IDENTIFIER.match(name) else '"' + name.replace('"', '""') + '"'
+
+
+def _key_positions(table: Table) -> list[int]:
+    """A key's columns as 1-based attnums, in key order -- Postgres' conkey and indkey."""
+    positions = {column: position for position, column in enumerate(table.columns, start=1)}
+    return [positions[column] for column in table.primary_key]
+
+
 def _build_pg_catalog(declared: Schema, database: str = "postgres") -> _CatalogInput:
     """The slice of pg_catalog psql's \\d family reads, from what the session declares."""
     class_rows = []
     attribute_rows = []
+    index_rows: list[dict] = []
+    constraint_rows: list[dict] = []
     for index, (table_name, table) in enumerate(declared.tables.items()):
         table_oid = _FIRST_USER_OID + index
         class_rows.append(
@@ -317,7 +349,9 @@ def _build_pg_catalog(declared: Schema, database: str = "postgres") -> _CatalogI
                 "relam": _HEAP_AM_OID,
                 "reltuples": -1,  # never analysed
                 "relpages": 0,
-                "relhasindex": False,
+                # psql gates the whole `Indexes:` footer on this, so a declared primary
+                # key that does not set it builds rows nothing ever asks for.
+                "relhasindex": bool(table.primary_key),
                 "relpersistence": "p",
                 "reltablespace": 0,
                 "relispartition": False,
@@ -338,7 +372,11 @@ def _build_pg_catalog(declared: Schema, database: str = "postgres") -> _CatalogI
                     "attname": col_name,
                     "atttypid": oid_for_declared_type(col_type),
                     "attnum": position,
-                    "attnotnull": False,
+                    # A primary key's columns are implicitly NOT NULL in Postgres, and
+                    # psql's Nullable column reads exactly this. PostgreSQL 17 also
+                    # records them as contype='n' rows in pg_constraint; pg_mimic reports
+                    # server_version 16, so it does not.
+                    "attnotnull": col_name in table.primary_key,
                     "atthasdef": False,
                     "attisdropped": False,
                     "attidentity": "",
@@ -353,6 +391,76 @@ def _build_pg_catalog(declared: Schema, database: str = "postgres") -> _CatalogI
                 }
             )
 
+        if table.primary_key:
+            index_oid = _FIRST_INDEX_OID + index
+            constraint_oid = _FIRST_CONSTRAINT_OID + index
+            key_name = f"{table_name}_pkey"
+            key_columns = ", ".join(_rendered_identifier(column) for column in table.primary_key)
+            # An index is a relation, so it needs its own pg_class row: psql reads the
+            # index's *name* as c2.relname off a second pg_class in the same query, and
+            # without this row the join drops every index it was told about.
+            class_rows.append(
+                {
+                    "oid": index_oid,
+                    "relname": key_name,
+                    "relnamespace": _PUBLIC_OID,
+                    "relkind": "i",
+                    "relowner": _OWNER_OID,
+                    "relam": _BTREE_AM_OID,
+                    "reltuples": -1,
+                    "relpages": 0,
+                    "relhasindex": False,
+                    "relpersistence": "p",
+                    "reltablespace": 0,
+                    "relispartition": False,
+                    "relrowsecurity": False,
+                    "relforcerowsecurity": False,
+                    "relreplident": "n",
+                    "reloftype": 0,
+                    "relhastriggers": False,
+                    "relchecks": 0,
+                    "relhasrules": False,
+                    "reltoastrelid": 0,
+                }
+            )
+            index_rows.append(
+                {
+                    # psql echoes everything after " USING " verbatim into the footer,
+                    # which is where `btree (sha)` comes from -- so the access method and
+                    # the column list have to be in this string, not derived from relam.
+                    "indexdef": f"CREATE UNIQUE INDEX {key_name} ON {_rendered_identifier(table_name)} USING btree ({key_columns})",
+                    "indexrelid": index_oid,
+                    "indrelid": table_oid,
+                    "indisprimary": True,
+                    "indisunique": True,
+                    "indisclustered": False,
+                    "indisvalid": True,
+                    "indisreplident": False,
+                    "indkey": " ".join(str(position) for position in _key_positions(table)),
+                }
+            )
+            constraint_rows.append(
+                {
+                    "condef": f"PRIMARY KEY ({key_columns})",
+                    "oid": constraint_oid,
+                    "conname": key_name,
+                    "conrelid": table_oid,
+                    "contype": "p",
+                    "conparentid": 0,
+                    "conindid": index_oid,
+                    "confrelid": 0,
+                    "condeferrable": False,
+                    "condeferred": False,
+                    "convalidated": True,
+                    "connoinherit": False,
+                    "conislocal": True,
+                    "coninhcount": 0,
+                    # Postgres' int2[] of attnums, as its array literal -- the column is
+                    # declared TEXT here, and a Python list has no wire encoding.
+                    "conkey": "{" + ",".join(str(position) for position in _key_positions(table)) + "}",
+                }
+            )
+
     tables = {
         "pg_catalog": {
             "pg_namespace": [
@@ -361,13 +469,16 @@ def _build_pg_catalog(declared: Schema, database: str = "postgres") -> _CatalogI
                 {"oid": 13000, "nspname": "information_schema", "nspowner": _OWNER_OID},
             ],
             "pg_class": class_rows,
-            "pg_am": [{"oid": _HEAP_AM_OID, "amname": "heap", "amhandler": "heap_tableam_handler", "amtype": "t"}],
+            "pg_am": [
+                {"oid": _HEAP_AM_OID, "amname": "heap", "amhandler": "heap_tableam_handler", "amtype": "t"},
+                {"oid": _BTREE_AM_OID, "amname": "btree", "amhandler": "bthandler", "amtype": "i"},
+            ],
             "pg_attribute": attribute_rows,
             "pg_type": _pg_type_rows(),
             "pg_attrdef": [],
             "pg_collation": [],
-            "pg_constraint": [],
-            "pg_index": [],
+            "pg_constraint": constraint_rows,
+            "pg_index": index_rows,
             "pg_inherits": [],
             "pg_rewrite": [],
             "pg_trigger": [],
