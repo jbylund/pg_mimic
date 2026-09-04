@@ -668,11 +668,12 @@ def _as_statement(expr: exp.Expression, catalog: _CatalogInput, *, strict: bool)
         logger.debug("catalog query answered empty, nothing models it: %s -- %s", error, expr.sql(dialect="postgres"))
         return _empty_result(expr)
     except Exception as error:
-        # The executor broke rather than ran out of catalog: a missing entry in its
-        # function table reads as `name 'DPIPE' is not defined`. On an
-        # information_schema query that is a pg_mimic gap and empty is a lie -- it
-        # is how #38 stayed hidden, since `SELECT a || b FROM
-        # information_schema.tables` came back as no rows and a clean exit.
+        # The executor broke rather than ran out of catalog: it compiles the query to
+        # Python, so a gap in its function table surfaces as a plain NameError from
+        # code it generated. On an information_schema query that is a pg_mimic gap
+        # and empty is a lie -- it is how #38 stayed hidden, since `SELECT a || b
+        # FROM information_schema.tables` came back as no rows and a clean exit
+        # while `||` was the missing name.
         if strict:
             raise PgError(
                 FEATURE_NOT_SUPPORTED,
