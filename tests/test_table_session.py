@@ -696,13 +696,44 @@ def semantics():
 
 
 def test_offset_pages_through_the_rows(semantics):
-    """The executor drops OFFSET and returns the first page for every page asked
-    for, so this is applied to the rows it returns instead -- along with the LIMIT,
-    which it would otherwise have counted before any row was skipped."""
+    """The executor dropped OFFSET and returned the first page for every page asked
+    for, until sqlglot v30.18.0 -- this was applied to the rows it returned instead,
+    along with the LIMIT it would otherwise have counted before any row was skipped.
+    Kept as coverage of the paging a client actually writes."""
     assert semantics.execute("SELECT id FROM items ORDER BY id LIMIT 2 OFFSET 1").fetchall() == [(2,), (3,)]
     assert semantics.execute("SELECT id FROM items ORDER BY id OFFSET 3").fetchall() == [(4,), (5,)]
     assert semantics.execute("SELECT id FROM items ORDER BY id LIMIT 2 OFFSET 9").fetchall() == []
     assert semantics.execute("SELECT id FROM items ORDER BY id LIMIT 2").fetchall() == [(1,), (2,)]
+
+
+def test_an_offset_inside_a_subquery_pages_too(semantics):
+    """Refused until sqlglot v30.18.0: the repair could only reach the whole query's
+    rows, so one buried in a subquery would have been ignored. The executor applies
+    it itself now, wherever it appears."""
+    assert semantics.execute("SELECT id FROM (SELECT id FROM items ORDER BY id OFFSET 2) AS page ORDER BY id").fetchall() == [
+        (3,),
+        (4,),
+        (5,),
+    ]
+    assert semantics.execute(
+        "WITH page AS (SELECT id FROM items ORDER BY id LIMIT 2 OFFSET 1) SELECT id FROM page ORDER BY id"
+    ).fetchall() == [(2,), (3,)]
+
+
+def test_a_plain_row_window_is_left_on_the_query():
+    """The other half of the OFFSET deletion, which rows alone cannot show: a query
+    the executor can window itself must reach it with the window still attached,
+    rather than being stripped and re-applied here for no reason. Both spellings
+    answer correctly either way, so this asserts the plan and not the rows.
+
+    A DISTINCT ON or a SELECT DISTINCT still has to be windowed here, because
+    Postgres counts a LIMIT after the rows those settle.
+    """
+    session = TableSession(SEMANTICS)
+    assert session._plan("SELECT id FROM items ORDER BY id LIMIT 2 OFFSET 1").rows_sliced_here is False
+    assert session._plan("SELECT id FROM items OFFSET 1").rows_sliced_here is False
+    assert session._plan("SELECT DISTINCT ON (user_id) user_id FROM visits ORDER BY user_id LIMIT 1").rows_sliced_here is True
+    assert session._plan("SELECT DISTINCT user_id FROM visits ORDER BY user_id DESC LIMIT 1").rows_sliced_here is True
 
 
 def test_parentheses_round_the_whole_query_do_not_hide_its_clauses(semantics):
@@ -739,22 +770,25 @@ def test_offset_takes_a_bind_parameter(semantics):
 
 
 def test_descending_order_puts_nulls_where_postgres_puts_them(semantics):
-    """Postgres sorts NULLS FIRST descending. The executor sorts with Python's own
-    comparisons, which raise TypeError on None rather than ordering it, so the
-    query is rewritten to settle the NULLs before any value is compared."""
+    """Postgres sorts NULLS FIRST descending. The executor sorted with Python's own
+    comparisons, which raise TypeError on None rather than ordering it, so an
+    `IS NULL` key was spliced in front of every ORDER BY term to settle the NULLs
+    before any value was compared. Its own since sqlglot v30.18.0."""
     rows = semantics.execute("SELECT name, score FROM scores ORDER BY score DESC, name").fetchall()
     assert rows == [("bo", None), ("di", None), ("ana", 3), ("cy", 1)]
 
 
 def test_ascending_order_still_puts_nulls_last(semantics):
-    """The case the executor already got right, which the rewrite must not disturb."""
+    """The case the executor got right by coincidence -- None sorts last in Python
+    -- back when descending raised. Its own since sqlglot v30.18.0."""
     rows = semantics.execute("SELECT name, score FROM scores ORDER BY score ASC, name").fetchall()
     assert rows == [("cy", 1), ("ana", 3), ("bo", None), ("di", None)]
 
 
 def test_nulls_first_and_nulls_last_are_honoured(semantics):
-    """Spelled out, against the default for each direction, so the rewrite is
-    reading the query rather than the direction."""
+    """Spelled out, against the default for each direction, so what answers is
+    reading the query rather than the direction. `ordered()` used to accept
+    `nulls_first` and discard it."""
     ascending = semantics.execute("SELECT name FROM scores ORDER BY score ASC NULLS FIRST, name").fetchall()
     assert ascending == [("bo",), ("di",), ("cy",), ("ana",)]
     descending = semantics.execute("SELECT name FROM scores ORDER BY score DESC NULLS LAST, name").fetchall()
@@ -762,32 +796,57 @@ def test_nulls_first_and_nulls_last_are_honoured(semantics):
 
 
 def test_not_in_a_subquery_filters(semantics):
-    """The executor returns every row for `NOT IN (subquery)` -- a WHERE clause
-    that is not approximate but inert. It runs NOT EXISTS correctly, so that is
-    what the query becomes."""
+    """The executor returned every row for `NOT IN (subquery)` until sqlglot
+    v30.18.0 -- a WHERE clause that was not approximate but inert. This session
+    rewrote it into a NOT EXISTS carrying SQL's NULL rule; the executor answers it
+    directly now, and this stays as the assertion that it does."""
     rows = semantics.execute("SELECT id FROM items WHERE id NOT IN (SELECT user_id FROM blocked) ORDER BY id")
     assert rows.fetchall() == [(1,), (3,), (4,), (5,)]
 
 
 def test_not_in_a_subquery_holding_null_matches_nothing(semantics):
-    """SQL's rule, which no anti-join carries on its own: one NULL in the subquery
-    makes the predicate unknown for every row, and the result is empty."""
+    """SQL's three-valued rule, and the half an anti-join does not carry on its
+    own: one NULL in the subquery makes the predicate unknown for every row, and
+    the result is empty. The reason the old rewrite here was a NOT EXISTS *and* a
+    NULL count, and the part of it most worth still checking."""
     rows = semantics.execute("SELECT id FROM items WHERE id NOT IN (SELECT user_id FROM blocked_with_null)")
     assert rows.fetchall() == []
 
 
+def test_not_in_a_subquery_with_a_null_left_operand():
+    """The other half of SQL's rule, and the one the old `_rewrite_not_in` got
+    wrong: `NULL NOT IN (...)` is unknown, so the NULL row is dropped -- but the
+    anti-join the rewrite emitted found no match for it and kept it, answering a row
+    Postgres does not. A silent wrong answer that lived behind the workaround
+    (jbylund/pg_mimic#123) and went unnoticed because the tripwires next door test
+    sqlglot, not TableSession. This is the assertion that was missing.
+
+    Its own tables, because SEMANTICS has no nullable key column.
+    """
+    tables = {"ids": [{"id": 1}, {"id": None}, {"id": 3}], "blocked": [{"user_id": 2}]}
+    with serve_in_thread(lambda: TableSession(tables)) as server:
+        with psycopg.Connection.connect(server.dsn(), autocommit=True) as conn:
+            rows = conn.execute("SELECT id FROM ids WHERE id NOT IN (SELECT user_id FROM blocked) ORDER BY id").fetchall()
+            # The other shape the rewrite broke (jbylund/pg_mimic#123 item 2): it
+            # replaced the NOT IN wherever it sat, and the NOT EXISTS + COUNT it
+            # emitted only compiles in a predicate position, so a select list raised.
+            in_a_select_list = conn.execute("SELECT NOT 0 IN (SELECT user_id FROM blocked) FROM blocked").fetchall()
+    assert rows == [(1,), (3,)]
+    assert in_a_select_list == [(True,)]
+
+
 def test_in_a_subquery_is_left_alone(semantics):
-    """Only the negated form is broken; the positive one the executor gets right,
-    NULL in the subquery and all."""
+    """The positive form was never the broken one -- the executor got it right,
+    NULL in the subquery and all, back when the negation was inert."""
     rows = semantics.execute("SELECT id FROM items WHERE id IN (SELECT user_id FROM blocked_with_null)")
     assert rows.fetchall() == [(2,)]
 
 
 def test_several_not_ins_in_one_query_stay_separate(semantics):
-    """Each rewrite brings its subquery in as a derived table, and the executor
-    keys its plan steps by name -- so two of them sharing an alias would answer as
-    one. The nested case also has to be rewritten innermost first, or the inner
-    NOT IN is a node the outer one's copy has already left behind."""
+    """Two of them in one query, and one inside another. This was the aliasing test
+    for the rewrite that used to bring each subquery in as a derived table; with the
+    rewrite gone it is coverage of the shapes themselves, which is what a client
+    sends and what regressed upstream once already."""
     both = semantics.execute(
         "SELECT id FROM items WHERE id NOT IN (SELECT user_id FROM blocked) "
         "AND id NOT IN (SELECT user_id FROM visits WHERE at > 8) ORDER BY id"
@@ -851,9 +910,10 @@ def test_both_branches_of_a_set_operation_run(semantics):
 
 
 def test_a_set_operation_can_be_ordered(semantics):
-    """Asked to sort a UNION the executor returns one empty tuple per row -- the
-    rows are all there and every column has gone. Postgres only lets such an ORDER
-    BY name output columns, so the sort is done here, on the result."""
+    """Asked to sort a UNION the executor returned one empty tuple per row -- the
+    rows all there and every column gone -- so the sort was done here instead. Fixed
+    in sqlglot v30.18.0; still asserted, because a UNION a client can order is the
+    point rather than who orders it."""
     assert semantics.execute(
         "SELECT id FROM items WHERE id < 3 UNION SELECT id FROM items WHERE id > 3 ORDER BY id"
     ).fetchall() == [(1,), (2,), (4,), (5,)]
@@ -894,14 +954,6 @@ def test_tablesample_is_refused(semantics):
         semantics.execute("SELECT id FROM items TABLESAMPLE BERNOULLI (50)")
 
 
-def test_an_offset_the_result_cannot_carry_is_refused(semantics):
-    """OFFSET is applied to the rows the executor returns, which reaches the whole
-    query's rows and nothing else. One inside a subquery would be silently dropped
-    as before, so it stays refused rather than half-supported."""
-    with pytest.raises(psycopg.errors.FeatureNotSupported, match="Lift it to the outermost SELECT"):
-        semantics.execute("SELECT id FROM (SELECT id FROM items ORDER BY id OFFSET 2) AS page")
-
-
 def test_a_distinct_on_the_result_cannot_carry_is_refused(semantics):
     with pytest.raises(psycopg.errors.FeatureNotSupported, match="Lift it to the outermost SELECT"):
         semantics.execute("SELECT user_id FROM (SELECT DISTINCT ON (user_id) user_id FROM visits ORDER BY user_id) AS first_visits")
@@ -925,9 +977,11 @@ def test_plain_select_distinct_is_untouched(semantics):
 
 
 def test_a_select_distinct_can_be_ordered_descending(semantics):
-    """A SELECT DISTINCT is sorted by its select list alone, which the `IS NULL`
-    key that places NULLs is deliberately not part of -- so adding that key left
-    the rows ascending. Ordered here instead, for the same reason a UNION is."""
+    """The executor deduplicates and then sorts by the select list alone, ignoring
+    the direction the ORDER BY asked for, so `ORDER BY x DESC` comes back ascending.
+    Ordered here instead. Still outstanding upstream after v30.18.0 fixed the set
+    operation this used to share a repair with -- see
+    tests/test_sqlglot_workarounds.py."""
     assert semantics.execute("SELECT DISTINCT user_id FROM visits ORDER BY user_id DESC").fetchall() == [
         (3,),
         (2,),

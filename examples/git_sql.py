@@ -97,24 +97,15 @@ def _utc_now() -> datetime:
 
 # sqlglot.executor.env.ENV is a plain dict of the functions the executor can call.
 # Editing it is process-global (pg_mimic's catalog_rewrite.py already does, for
-# REGEXPLIKE), and the two edits below are not the same kind of change.
+# REGEXPLIKE), and the edits below are not all the same kind of change.
 #
-# Filling a hole: an unfilled name raises, which _execute reports as a Postgres error.
-# date_trunc is deliberately absent -- the executor passes its unit as an env *function*
-# rather than a string. EXTRACT(year FROM committed_at) works natively.
+# `||` needed a DPIPE entry here until sqlglot v30.18.0, which routes it in the
+# generator to the CONCAT / SAFECONCAT / ARRAYCONCAT that already exist
+# (tobymao/sqlglot#8146) -- so nothing emits DPIPE to look up any more and the entry
+# is deleted. date_trunc is still deliberately absent: the executor passes its unit
+# as an env *function* rather than a string, and EXTRACT(year FROM committed_at)
+# works natively.
 #
-# It is wrapped in null_if_any, the executor's own convention: SQL says an operator on
-# NULL is NULL, and a bare Python function raises instead -- `path || ext` on an
-# extensionless file would yield ".gitignoreNone".
-#
-# Note this is not the shape the upstream fix takes. tobymao/sqlglot#8146 adds no DPIPE
-# at all: it routes `||` in the generator to the CONCAT / SAFECONCAT / ARRAYCONCAT that
-# already exist. So this line does not anticipate that fix, it goes inert the moment it
-# lands -- nothing will emit DPIPE to look up. Nothing changes here when it does, since
-# SAFECONCAT coerces and nulls identically for the two text operands this sees.
-# test_length_and_concatenation_exist is the tripwire that will say so; #72 tracks it.
-executor_env.ENV.setdefault("DPIPE", executor_env.null_if_any(lambda a, b: f"{a}{b}"))
-
 # Correcting a wrong answer: the executor's clock is datetime.now(), which is the
 # host's local time, while every timestamp collected below is naive UTC (see
 # _naive_utc) and so is the clock pushdown compares against. Left alone, `WHERE
@@ -126,7 +117,7 @@ executor_env.ENV["CURRENTDATE"] = lambda: _utc_now().date()
 
 def _interval_delta(count: str, unit: str) -> timedelta:
     """`interval '90 days'` as a timedelta -- a deliberate *semantic* departure, unlike
-    the two patches above, and so the one to weigh before importing this module into a
+    the clock patch above, and so the one to weigh before importing this module into a
     larger process. The shipped INTERVAL does `timedelta(**{unit: n})`, so
     `interval '1 year'` raises: timedelta has no years or months. Approximating them
     turns that error into an answer wrong by up to five days, for every session in the

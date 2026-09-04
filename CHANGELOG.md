@@ -127,6 +127,25 @@ what shipped rather than what was written down at the time.
   message contradicting the `RowDescription` rather than as an answer. (#125)
 
 ### Changed
+- **The sqlglot floor is now 30.18.0**, which fixes four of the executor bugs `TableSession`
+  worked around — so the workarounds are deleted. `OFFSET` is the executor's own
+  ([sqlglot#8219](https://redirect.github.com/tobymao/sqlglot/pull/8219)), and one nested in a
+  subquery or CTE is answered instead of refused; `NOT IN (subquery)` filters, NULL rule and all
+  ([#8190](https://redirect.github.com/tobymao/sqlglot/pull/8190),
+  [#8236](https://redirect.github.com/tobymao/sqlglot/pull/8236)); `ORDER BY` places NULLs where
+  Postgres places them rather than raising
+  ([#8158](https://redirect.github.com/tobymao/sqlglot/pull/8158)); and the `ORDER BY` of a
+  `UNION`, `EXCEPT` or `INTERSECT` keeps its columns
+  ([#8214](https://redirect.github.com/tobymao/sqlglot/pull/8214)). `_rewrite_not_in`,
+  `_rewrite_null_ordering` and their helpers are gone, and `_take_result_order` now takes only a
+  `SELECT DISTINCT`'s `ORDER BY`, which upstream still gets wrong. Answers are unchanged; there is
+  less pg_mimic between the query and them. (#49, #109)
+
+  Nine more of the untreated bugs in `tests/test_sqlglot_workarounds.py` were fixed in the same
+  release, so `||`, scalar and correlated subqueries, `EXISTS`, `IN (SELECT 1)`, `btrim`, `reverse`,
+  `NULL / 1` and an outer join under a `WHERE` clause all work now. The strict-xfail tripwires
+  there are what announced every one of them; thirteen turned red on the version bump. (#38, #58)
+
 - `TableSession.schema()` returns a `Schema` rather than the nested
   `{table: {column: type_name}}` dict. `Schema.column_types()` is the same declaration in
   the old shape for anything that wants it. A session of your own may keep returning the

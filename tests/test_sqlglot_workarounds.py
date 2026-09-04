@@ -17,6 +17,10 @@ patch whose stated justification had gone stale. These tests are how the next
 one announces itself instead. See
 https://github.com/jbylund/pg_mimic/issues/50
 
+It works. Moving the floor to v30.18.0 turned thirteen of these red at once, and
+four of them were repairs in tables.py that could then be deleted: OFFSET, the
+ORDER BY of a set operation, `NOT IN (subquery)` and NULL ordering.
+
 Each test names the issue tracking it, and the workaround it justifies where
 there is one, so a failure points straight at the code to delete. Two
 inventories: bugs we work around are
@@ -52,49 +56,88 @@ _NUMBERS = ({"t": [{"a": 1}, {"a": 2}, {"a": 3}]}, {"t": {"a": "INT"}})
 _TEXT = ({"q": [{"s": "Bump version"}, {"s": "Add feature"}]}, {"q": {"s": "TEXT"}})
 
 
-@pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
 def test_offset_is_applied():
     """https://github.com/jbylund/pg_mimic/issues/49
 
-    Workaround: `_take_row_window` / `rows_sliced_here` in tables.py.
+    Fixed in sqlglot v30.18.0 by
+    https://redirect.github.com/tobymao/sqlglot/pull/8219, one of the reasons the
+    floor is 30.18.0. `_take_row_window` no longer strips a row window off a query
+    whose rows this session does not reduce itself, and a nested OFFSET is answered
+    rather than refused.
     """
     assert _rows("SELECT a FROM t ORDER BY a OFFSET 1", *_NUMBERS) == [(2,), (3,)]
     assert _rows("SELECT a FROM t ORDER BY a LIMIT 1 OFFSET 1", *_NUMBERS) == [(2,)]
 
 
-@pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
 def test_order_by_on_a_set_operation_keeps_the_columns():
     """https://github.com/jbylund/pg_mimic/issues/49
 
-    Workaround: `_take_result_order` / `_sorted_rows` in tables.py.
-
-    The rows come back column-less -- `[(), (), ()]` -- not merely unsorted.
+    Fixed in sqlglot v30.18.0 by
+    https://redirect.github.com/tobymao/sqlglot/pull/8214. The rows used to come
+    back column-less -- `[(), (), ()]` -- not merely unsorted. `_take_result_order`
+    now takes only a SELECT DISTINCT's ORDER BY, which is still wrong upstream --
+    see test_select_distinct_ignores_the_order_by_direction below.
     """
     assert _rows("SELECT a FROM t UNION SELECT a FROM t ORDER BY a", *_NUMBERS) == [(1,), (2,), (3,)]
 
 
 @pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
+def test_select_distinct_ignores_the_order_by_direction():
+    """https://github.com/jbylund/pg_mimic/issues/49
+
+    Workaround: `_take_result_order` / `_sorted_rows` in tables.py.
+
+    The executor deduplicates and then sorts by the select list alone, ignoring the
+    direction asked for, so a DESC comes back ascending. Rows in the wrong order
+    with nothing in the result to say so.
+
+    Reported upstream as https://github.com/jbylund/sqlglot/issues/54: the planner
+    stacks the DISTINCT aggregate *above* the Sort step, and the aggregate groups by
+    sorting (`context.sort(group_by)`), so an ascending sort on the select list
+    overwrites the ORDER BY. `GROUP BY` builds the same two steps the other way
+    round and is correct.
+
+    Its own tripwire since v30.18.0 fixed the set operation above but not this. The
+    two shared one repair and one test, and a single assertion over both causes
+    cannot XPASS -- the same lesson as the `length()`/`||` split in
+    https://github.com/jbylund/pg_mimic/issues/107 and the `btrim`/`ltrim` split
+    below. One tripwire per independently fixable defect, not per surface symptom.
+
+    The direction is the least of it: with a LIMIT the wrong *rows* come back, and
+    `SELECT DISTINCT b, a FROM t ORDER BY a` is wrong with no DESC in it at all.
+    Asserted narrowly here because this file is about whether upstream has fixed it;
+    the full matrix is in the issue.
+    """
+    assert _rows("SELECT DISTINCT a FROM t ORDER BY a DESC", *_NUMBERS) == [(3,), (2,), (1,)]
+    assert _rows("SELECT DISTINCT a FROM t ORDER BY a DESC LIMIT 1", *_NUMBERS) == [(3,)]
+
+
 def test_not_in_a_subquery_filters():
     """https://github.com/jbylund/pg_mimic/issues/49
 
-    Workaround: `_rewrite_not_in` in tables.py. `NOT IN (literals)` is fine.
+    Fixed in sqlglot v30.18.0 by
+    https://redirect.github.com/tobymao/sqlglot/pull/8190, which evaluates the
+    subqueries the optimizer declines to rewrite, and
+    https://redirect.github.com/tobymao/sqlglot/pull/8236, which makes it decline a
+    negated correlated IN rather than decorrelate it unsafely. `_rewrite_not_in`,
+    `_anti_join` and `_null_count` are deleted.
+
+    The NULL rule is the half worth re-checking, and it is in
+    tests/test_table_session.py: one NULL in the subquery empties the result.
     """
     tables = {"t": [{"a": 1}, {"a": 2}], "u": [{"b": 1}]}
     schema = {"t": {"a": "INT"}, "u": {"b": "INT"}}
     assert _rows("SELECT a FROM t WHERE a NOT IN (SELECT b FROM u)", tables, schema) == [(2,)]
 
 
-@pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
 def test_descending_order_places_nulls_instead_of_raising():
     """https://github.com/jbylund/pg_mimic/issues/49
 
-    Workaround: `_rewrite_null_ordering` in tables.py.
+    Fixed in sqlglot v30.18.0 by
+    https://redirect.github.com/tobymao/sqlglot/pull/8158, which sorts on a
+    (null rank, value) key. `_rewrite_null_ordering` is deleted.
 
-    Ascending coincidentally matches Postgres; descending raises TypeError.
-
-    Fixed upstream but in no release, so the mark comes off when the floor moves:
-    https://github.com/jbylund/pg_mimic/issues/109 is the checklist. The daily
-    `Upstream sqlglot` job is already red on its `main` leg for this.
+    Ascending coincidentally matched Postgres; descending raised TypeError.
     """
     tables, schema = {"n": [{"a": 1}, {"a": None}]}, {"n": {"a": "INT"}}
     assert _rows("SELECT a FROM n ORDER BY a DESC", tables, schema) == [(None,), (1,)]
@@ -188,17 +231,16 @@ def test_length_exists():
     assert _rows("SELECT length(s) FROM q", *_TEXT) == [(12,), (11,)]
 
 
-@pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
 def test_concatenation_exists():
     """https://github.com/jbylund/pg_mimic/issues/38
 
-    No workaround to delete -- `||` raises, and pg_mimic reports that as
-    `0A000` on an information_schema query rather than answering no rows (#39).
+    Fixed in sqlglot v30.18.0 by
+    https://redirect.github.com/tobymao/sqlglot/pull/8146. Split from the
+    `length()` case above because the two were fixed separately, which is what let
+    this one XPASS on its own.
 
-    Split from the `length()` case above because the two were fixed separately:
-    implemented upstream in
-    https://redirect.github.com/tobymao/sqlglot/pull/8146, merged but not in any
-    release as of v30.17.0. When it ships, this mark comes off and the floor moves.
+    There was no workaround to delete: `||` raised, and pg_mimic reported that as
+    `0A000` on an information_schema query rather than answering no rows (#39).
     """
     assert _rows("SELECT s || '!' FROM q", *_TEXT) == [("Bump version!",), ("Add feature!",)]
 
@@ -282,28 +324,32 @@ def test_date_trunc_is_implementable():
     assert _rows("SELECT date_trunc('month', ts) FROM d", tables, {"d": {"ts": "TIMESTAMP"}}) == [(datetime.datetime(2024, 3, 1),)]
 
 
-@pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
 def test_a_scalar_subquery_in_the_select_list_runs():
     """https://github.com/jbylund/pg_mimic/issues/58
 
-    Emits invalid Python, so the client gets a SyntaxError out of generated code
-    it never wrote. One subquery is enough, with or without an outer FROM; a
-    subquery in WHERE, an IN (subquery) and a derived table are all fine.
+    Fixed in sqlglot v30.18.0 by
+    https://redirect.github.com/tobymao/sqlglot/pull/8190, which evaluates the
+    subqueries the optimizer declines to rewrite instead of compiling them to
+    invalid Python -- the client used to get a SyntaxError out of generated code it
+    never wrote.
     """
     tables = {"t": [{"a": 1}, {"a": 2}], "u": [{"b": 9}]}
     schema = {"t": {"a": "INT"}, "u": {"b": "INT"}}
     assert _rows("SELECT a, (SELECT max(b) FROM u) FROM t", tables, schema) == [(1, 9), (2, 9)]
 
 
-@pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
 def test_a_correlated_scalar_subquery_runs():
     """https://github.com/jbylund/pg_mimic/issues/58
 
-    Its own tripwire because the uncorrelated one above can be worked around
-    downstream -- rewritten to a CROSS JOIN, or evaluated once and spliced in as a
-    literal -- and this cannot: a correlated subquery has to be evaluated per outer
-    row, which is the thing the executor fails at. psql's \\dT sends this form, so
-    a fix for the uncorrelated case alone would flip that test and leave \\dT empty.
+    Fixed in sqlglot v30.18.0 by
+    https://redirect.github.com/tobymao/sqlglot/pull/8190, which evaluates it per
+    outer row.
+
+    Its own tripwire because the uncorrelated one above could have been worked
+    around downstream -- rewritten to a CROSS JOIN, or evaluated once and spliced
+    in as a literal -- and this could not. psql's \\dT sends this form, so a fix
+    for the uncorrelated case alone would have flipped that test and left \\dT
+    empty; splitting them is what would have caught it.
     """
     tables = {"t": [{"a": 1}, {"a": 20}], "u": [{"b": 9}]}
     schema = {"t": {"a": "INT"}, "u": {"b": "INT"}}
@@ -321,14 +367,16 @@ def test_an_inline_values_list_can_be_selected_from():
     assert _rows("SELECT * FROM (VALUES ('16384')) AS v", tables, schema) == [("16384",)]
 
 
-@pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
 def test_in_takes_a_from_less_subquery():
     """https://github.com/jbylund/pg_mimic/issues/58
 
+    Fixed in sqlglot v30.18.0 by
+    https://redirect.github.com/tobymao/sqlglot/pull/8221.
+
     Found underneath the inline VALUES: the obvious rewrite of `IN (SELECT * FROM
-    (VALUES (x)))` is `IN (SELECT x)`, and that fails too. `IN` over a real table
-    or a literal list is fine, and a FROM-less SELECT on its own is fine -- it is
-    the combination.
+    (VALUES (x)))` is `IN (SELECT x)`, and that failed too. `IN` over a real table
+    or a literal list was fine, and a FROM-less SELECT on its own was fine -- it
+    was the combination. The inline VALUES above it is still outstanding.
     """
     tables, schema = {"t": [{"a": 1}]}, {"t": {"a": "INT"}}
     assert _rows("SELECT a FROM t WHERE a IN (SELECT 1)", tables, schema) == [(1,)]
@@ -458,16 +506,15 @@ def test_like_honors_a_backslash_escape():
     assert _rows("SELECT s FROM q WHERE s LIKE 'a\\%b'", tables, schema) == [("a%b",)]
 
 
-@pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
 def test_exists_subquery_runs():
     """https://github.com/jbylund/pg_mimic/issues/58
 
-    `EXISTS (subquery)` emits invalid Python, in a WHERE clause or a select list,
-    correlated or not -- the client gets a SyntaxError out of generated code it
-    never wrote. The same failure mode as the scalar subquery above and probably
-    the same cause, but its own tripwire because EXISTS is the more common of the
-    two by far: it is how an ORM asks whether a related row exists, and how
-    `NOT IN (subquery)` is rewritten before it runs.
+    Fixed in sqlglot v30.18.0 by
+    https://redirect.github.com/tobymao/sqlglot/pull/8190 -- the same cause as the
+    scalar subquery above, as the docstring here guessed, and they XPASSed together.
+
+    Kept as its own assertion anyway: EXISTS is the more common of the two by far,
+    being how an ORM asks whether a related row exists.
     """
     tables, schema = {"t": [{"a": 1}], "u": [{"b": 1}]}, {"t": {"a": "INT"}, "u": {"b": "INT"}}
     assert _rows("SELECT a FROM t WHERE EXISTS (SELECT 1 FROM u)", tables, schema) == [(1,)]
@@ -502,33 +549,60 @@ def test_in_a_subquery_is_null_for_a_null_left_operand():
     assert _rows("SELECT NULL IN (SELECT b FROM u) FROM t", tables, schema) == [(None,)]
 
 
-@pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
 def test_an_outer_join_pads_rows_a_where_clause_then_removes():
     """https://github.com/jbylund/pg_mimic/issues/58
 
-    The NULL-padded row an outer join adds survives a WHERE clause that tests the
-    padded column, so `WHERE x.a = 1` keeps a row whose `x.a` is NULL. Extra rows
-    out of a filter that should have removed them, which is the worst shape a
-    wrong answer can take: nothing about the result looks suspicious.
+    Fixed in sqlglot v30.18.0 by
+    https://redirect.github.com/tobymao/sqlglot/pull/8282, which stops the optimizer
+    pushing a WHERE predicate into a source that a later RIGHT or FULL join
+    null-extends.
+
+    The NULL-padded row an outer join adds used to survive a WHERE clause testing
+    the padded column, so `WHERE x.a = 1` kept a row whose `x.a` was NULL. Extra
+    rows out of a filter that should have removed them, which is the worst shape a
+    wrong answer can take: nothing about the result looked suspicious.
     """
     tables = {"x": [{"a": 1}, {"a": 2}], "y": [{"b": 9}]}
     schema = {"x": {"a": "INT"}, "y": {"b": "INT"}}
     assert _rows("SELECT x.a FROM x FULL JOIN y ON NULL WHERE x.a = 1", tables, schema) == [(1,)]
 
 
-@pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
-def test_the_trim_and_reverse_functions_exist():
+def test_btrim_and_reverse_exist():
     """https://github.com/jbylund/pg_mimic/issues/58
 
-    Missing from ENV, like `length()` was before v30.17.0, and fixable the same
-    way. Grouped into one test because they are one gap: whichever of them is
-    added first, the rest are a line each.
+    Fixed in sqlglot v30.18.0: missing from ENV, like `length()` was before
+    v30.17.0, and fixed the same way by
+    https://redirect.github.com/tobymao/sqlglot/pull/8180 (REVERSE in ENV),
+    https://redirect.github.com/tobymao/sqlglot/pull/8181 (`btrim` parsed as TRIM
+    in the postgres dialect) and
+    https://redirect.github.com/tobymao/sqlglot/pull/8201 (REVERSE annotated).
 
     Worth a tripwire despite being a plain omission because these are not exotic --
-    `btrim` is what Postgres compiles a bare `trim(x)` to.
+    `btrim` is what Postgres compiles a bare `trim(x)` to. The `ltrim`/`rtrim`
+    position defect below is a different bug and is still outstanding.
     """
     tables, schema = {"q": [{"s": "  ab  "}]}, {"q": {"s": "TEXT"}}
-    assert _rows("SELECT BTRIM(s), LTRIM(s), RTRIM(s), REVERSE(BTRIM(s)) FROM q", tables, schema) == [("ab", "ab  ", "  ab", "ba")]
+    assert _rows("SELECT BTRIM(s), REVERSE(BTRIM(s)) FROM q", tables, schema) == [("ab", "ba")]
+
+
+@pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
+def test_ltrim_and_rtrim_take_a_position():
+    """https://github.com/jbylund/pg_mimic/issues/58
+
+    A different defect from the two above, and the reason this is its own test.
+    `ltrim`/`rtrim` parse to `exp.Trim` with a position, and the generator emits
+    that position as a bare Python identifier -- `TRIM(scope[None][s], LEADING)` --
+    so it fails as `name 'LEADING' is not defined`. `TRIM` itself is present and
+    correct, so adding LTRIM/RTRIM to ENV would fix neither.
+
+    These four were one test until BTRIM and REVERSE were fixed upstream and these
+    two were not: a single assertion over both causes cannot XPASS, so the fix
+    stayed invisible to the scheme this file exists to run. Same failure as the
+    `length()`/`||` split in https://github.com/jbylund/pg_mimic/issues/107 --
+    one tripwire per independently fixable defect, not per surface symptom.
+    """
+    tables, schema = {"q": [{"s": "  ab  "}]}, {"q": {"s": "TEXT"}}
+    assert _rows("SELECT LTRIM(s), RTRIM(s) FROM q", tables, schema) == [("ab  ", "  ab")]
 
 
 @pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
@@ -545,27 +619,36 @@ def test_extract_takes_a_day_of_week():
     assert _rows("SELECT EXTRACT(DOW FROM ts) FROM d", tables, schema) == [(5,)]
 
 
-@pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
 def test_dividing_null_is_null():
     """https://github.com/jbylund/pg_mimic/issues/58
 
-    `NULL / 1` raises `int() argument must be a string, a bytes-like object or a
-    real number, not 'NoneType'`: integer division coerces with `int()` before
-    checking for NULL. Any nullable integer column divided by anything is enough,
-    and the other operators handle NULL correctly, so it is division specifically.
+    Fixed in sqlglot v30.18.0 by
+    https://redirect.github.com/tobymao/sqlglot/pull/8178, which routes the coercion
+    through a NULL-propagating `INT`.
+
+    `NULL / 1` used to raise `int() argument must be a string, a bytes-like object
+    or a real number, not 'NoneType'`: integer division coerced with `int()` before
+    checking for NULL. The other operators handled NULL correctly, so it was
+    division specifically.
     """
     assert _rows("SELECT a / 1 FROM n", {"n": [{"a": None}]}, {"n": {"a": "INT"}}) == [(None,)]
 
 
-@pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
-def test_is_not_null_answers_a_boolean():
+def test_an_operator_after_a_case_binds_to_the_whole_case():
     """https://github.com/jbylund/pg_mimic/issues/58
 
-    `x IS NOT NULL` answers `x` itself when x is not null, rather than TRUE -- the
-    generated code is `x` where it should be `x is not None`. It reads as correct
-    for as long as the value happens to be truthy, and a column of strings in a
-    boolean-typed output column is a wire encoding error rather than a wrong row.
+    Fixed in sqlglot v30.18.0 by
+    https://redirect.github.com/tobymao/sqlglot/pull/8176.
 
-    `IS NULL` is fine; only the negation is wrong.
+    Renamed from `test_is_not_null_answers_a_boolean`, because `IS NOT NULL` was
+    never the defect -- `SELECT s IS NOT NULL FROM t` was correct at v30.17.0. The
+    generator emitted an unparenthesized CASE, so once the optimizer stripped the
+    query's own parens the Python bound as `NOT('x' if EQ(a, 1) else None is None)`
+    and the expression answered `'x'`. Any operator after a CASE was affected;
+    `IS NOT NULL` was just the vehicle the fuzzer arrived in.
+
+    It read as correct for as long as the value happened to be truthy, and a column
+    of strings in a boolean-typed output column is a wire encoding error rather than
+    a wrong row.
     """
     assert _rows("SELECT (CASE WHEN a = 1 THEN 'x' END) IS NOT NULL FROM t", *_NUMBERS) == [(True,), (False,), (False,)]
