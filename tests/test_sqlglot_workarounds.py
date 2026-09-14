@@ -27,6 +27,14 @@ inventories: bugs we work around are
 https://github.com/jbylund/pg_mimic/issues/49, and the ones reaching users
 untreated are https://github.com/jbylund/pg_mimic/issues/58
 
+**The invariant: every workaround pg_mimic carries has a tripwire here.** Without
+it this file's whole premise leaks -- a workaround with no tripwire is exactly the
+thing it exists to prevent. Three were missing and are covered now:
+`_make_decimal_comparisons_exact`, `_distinct_on_keys`/`_first_row_per_key`, and
+the `REGEXPLIKE` patch in catalog_rewrite.py. That last one is the reason to care:
+it is an `ENV.setdefault`, so the day upstream adds the function it goes dead
+silently. If you add a workaround, add its tripwire in the same change.
+
 The tests from `test_distinct_keeps_columns_that_share_a_name` down were found by
 `tools/fuzz`, which generates random SELECTs and compares the executor against a
 real PostgreSQL. Reading them as a group is the honest summary of how far the
@@ -43,9 +51,22 @@ import datetime
 from decimal import Decimal
 
 import pytest
+import sqlglot
 from sqlglot.executor import execute
 
 _UPSTREAM_FIXED = "sqlglot fixed this -- remove the workaround named in the test"
+
+# v30.18.0 is the newest release and the floor, and it is the last one without the
+# fix the single tripwire below carries this mark for. Every other version -- the
+# main commit tools/install_sqlglot.sh pins, and every release after this one --
+# is expected to have it, so the test must pass there. A 30.19.0 that somehow
+# shipped without it fails loudly, which is the news a tripwire exists to deliver.
+#
+# Marked conditionally rather than unmarked outright because unmarking a fix that
+# is merged-but-unreleased would make the `latest-release` leg of
+# upstream-sqlglot.yml permanently red -- #141's complaint with the legs swapped.
+# Delete this, and the workaround the test names, when the floor moves.
+_UNRELEASED = sqlglot.__version__ == "30.18.0"
 
 
 def _rows(sql: str, tables: dict, schema: dict) -> list[tuple]:
@@ -81,7 +102,7 @@ def test_order_by_on_a_set_operation_keeps_the_columns():
     assert _rows("SELECT a FROM t UNION SELECT a FROM t ORDER BY a", *_NUMBERS) == [(1,), (2,), (3,)]
 
 
-@pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
+@pytest.mark.xfail(_UNRELEASED, strict=True, reason=_UPSTREAM_FIXED)
 def test_select_distinct_ignores_the_order_by_direction():
     """https://github.com/jbylund/pg_mimic/issues/49
 
@@ -107,6 +128,12 @@ def test_select_distinct_ignores_the_order_by_direction():
     `SELECT DISTINCT b, a FROM t ORDER BY a` is wrong with no DESC in it at all.
     Asserted narrowly here because this file is about whether upstream has fixed it;
     the full matrix is in the issue.
+
+    Fixed on sqlglot's main by
+    https://redirect.github.com/tobymao/sqlglot/pull/8321, which plans the DISTINCT
+    below the Sort so the ORDER BY survives it. Unreleased as of v30.18.0, hence
+    the `_UNRELEASED` condition on the mark: this passes on the pinned commit and
+    still xfails on the floor.
     """
     assert _rows("SELECT DISTINCT a FROM t ORDER BY a DESC", *_NUMBERS) == [(3,), (2,), (1,)]
     assert _rows("SELECT DISTINCT a FROM t ORDER BY a DESC LIMIT 1", *_NUMBERS) == [(3,)]
@@ -393,6 +420,64 @@ def test_full_outer_join_preserves_unmatched_rows():
     schema = {"x": {"a": "INT"}, "y": {"b": "INT"}}
     rows = _rows("SELECT x.a, y.b FROM x FULL OUTER JOIN y ON x.a = y.b", tables, schema)
     assert sorted(rows, key=str) == [(1, None), (2, 2), (None, 3)]
+
+
+@pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
+def test_a_decimal_constant_is_compared_as_numeric():
+    """https://github.com/jbylund/pg_mimic/issues/49
+
+    Workaround: `_make_decimal_comparisons_exact` in tables.py.
+
+    The executor evaluates a bare `9.99` as a Python float, and
+    `Decimal("9.99") == 9.99` is False, so a `numeric` column never matches a
+    decimal constant: `where total = 9.99` misses the row it should find. Postgres
+    types the constant as `numeric` and finds it.
+
+    Distinct from `_cast` and test_a_decimal_cast_is_exact above, which is about an
+    explicit CAST. This one has no CAST in it -- the literal's own type is what is
+    wrong -- so the two are independently fixable and get a tripwire each.
+    """
+    tables, schema = {"m": [{"total": Decimal("9.99")}]}, {"m": {"total": "DECIMAL(10,2)"}}
+    assert _rows("SELECT total FROM m WHERE total = 9.99", tables, schema) == [(Decimal("9.99"),)]
+
+
+@pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
+def test_distinct_on_keeps_only_the_first_row_per_key():
+    """https://github.com/jbylund/pg_mimic/issues/49
+
+    Workaround: `_distinct_on_keys` / `_first_row_per_key` in tables.py.
+
+    The executor parses `DISTINCT ON` and then returns the duplicate rows anyway --
+    every row, as though the clause were not there -- and it has no window functions
+    to rewrite it into, so pg_mimic finishes it in Python.
+
+    The most user-visible of the untripwired workarounds: `DISTINCT ON` is
+    Postgres-specific syntax, so a client sending it is a client that has already
+    committed to Postgres.
+    """
+    tables = {"v": [{"u": 1, "p": "a"}, {"u": 1, "p": "b"}, {"u": 2, "p": "c"}]}
+    schema = {"v": {"u": "INT", "p": "TEXT"}}
+    assert _rows("SELECT DISTINCT ON (u) u, p FROM v ORDER BY u, p", tables, schema) == [(1, "a"), (2, "c")]
+
+
+@pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
+def test_regexp_like_exists():
+    """https://github.com/jbylund/pg_mimic/issues/49
+
+    Workaround: `ENV.setdefault("REGEXPLIKE", ...)` in catalog_rewrite.py, which is
+    the library's only `ENV` patch. psql's own catalog SQL uses `~`, so this is on
+    the path of `\\d` rather than of anything a user wrote.
+
+    `REGEXPLIKE` is absent from the executor's ENV, so Postgres's `~` and `~*`
+    reach the generated Python as an undefined name -- `NameError: name 'REGEXPLIKE'
+    is not defined`, wrapped in an ExecuteError.
+
+    Worth a tripwire more than most: the workaround is a `setdefault`, so the day
+    upstream adds the function ours goes dead *silently* -- no error, no wrong
+    answer, just code that never runs again. Nothing else here would notice.
+    """
+    assert _rows("SELECT s FROM q WHERE s ~ '^Bump'", *_TEXT) == [("Bump version",)]
+    assert _rows("SELECT s FROM q WHERE s ~* '^bump'", *_TEXT) == [("Bump version",)]
 
 
 # Everything below was found by tools/fuzz. See the module docstring.
