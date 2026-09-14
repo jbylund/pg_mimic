@@ -27,6 +27,14 @@ inventories: bugs we work around are
 https://github.com/jbylund/pg_mimic/issues/49, and the ones reaching users
 untreated are https://github.com/jbylund/pg_mimic/issues/58
 
+**The invariant: every workaround pg_mimic carries has a tripwire here.** Without
+it this file's whole premise leaks -- a workaround with no tripwire is exactly the
+thing it exists to prevent. Three were missing and are covered now:
+`_make_decimal_comparisons_exact`, `_distinct_on_keys`/`_first_row_per_key`, and
+the `REGEXPLIKE` patch in catalog_rewrite.py. That last one is the reason to care:
+it is an `ENV.setdefault`, so the day upstream adds the function it goes dead
+silently. If you add a workaround, add its tripwire in the same change.
+
 The tests from `test_distinct_keeps_columns_that_share_a_name` down were found by
 `tools/fuzz`, which generates random SELECTs and compares the executor against a
 real PostgreSQL. Reading them as a group is the honest summary of how far the
@@ -412,6 +420,64 @@ def test_full_outer_join_preserves_unmatched_rows():
     schema = {"x": {"a": "INT"}, "y": {"b": "INT"}}
     rows = _rows("SELECT x.a, y.b FROM x FULL OUTER JOIN y ON x.a = y.b", tables, schema)
     assert sorted(rows, key=str) == [(1, None), (2, 2), (None, 3)]
+
+
+@pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
+def test_a_decimal_constant_is_compared_as_numeric():
+    """https://github.com/jbylund/pg_mimic/issues/49
+
+    Workaround: `_make_decimal_comparisons_exact` in tables.py.
+
+    The executor evaluates a bare `9.99` as a Python float, and
+    `Decimal("9.99") == 9.99` is False, so a `numeric` column never matches a
+    decimal constant: `where total = 9.99` misses the row it should find. Postgres
+    types the constant as `numeric` and finds it.
+
+    Distinct from `_cast` and test_a_decimal_cast_is_exact above, which is about an
+    explicit CAST. This one has no CAST in it -- the literal's own type is what is
+    wrong -- so the two are independently fixable and get a tripwire each.
+    """
+    tables, schema = {"m": [{"total": Decimal("9.99")}]}, {"m": {"total": "DECIMAL(10,2)"}}
+    assert _rows("SELECT total FROM m WHERE total = 9.99", tables, schema) == [(Decimal("9.99"),)]
+
+
+@pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
+def test_distinct_on_keeps_only_the_first_row_per_key():
+    """https://github.com/jbylund/pg_mimic/issues/49
+
+    Workaround: `_distinct_on_keys` / `_first_row_per_key` in tables.py.
+
+    The executor parses `DISTINCT ON` and then returns the duplicate rows anyway --
+    every row, as though the clause were not there -- and it has no window functions
+    to rewrite it into, so pg_mimic finishes it in Python.
+
+    The most user-visible of the untripwired workarounds: `DISTINCT ON` is
+    Postgres-specific syntax, so a client sending it is a client that has already
+    committed to Postgres.
+    """
+    tables = {"v": [{"u": 1, "p": "a"}, {"u": 1, "p": "b"}, {"u": 2, "p": "c"}]}
+    schema = {"v": {"u": "INT", "p": "TEXT"}}
+    assert _rows("SELECT DISTINCT ON (u) u, p FROM v ORDER BY u, p", tables, schema) == [(1, "a"), (2, "c")]
+
+
+@pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
+def test_regexp_like_exists():
+    """https://github.com/jbylund/pg_mimic/issues/49
+
+    Workaround: `ENV.setdefault("REGEXPLIKE", ...)` in catalog_rewrite.py, which is
+    the library's only `ENV` patch. psql's own catalog SQL uses `~`, so this is on
+    the path of `\\d` rather than of anything a user wrote.
+
+    `REGEXPLIKE` is absent from the executor's ENV, so Postgres's `~` and `~*`
+    reach the generated Python as an undefined name -- `NameError: name 'REGEXPLIKE'
+    is not defined`, wrapped in an ExecuteError.
+
+    Worth a tripwire more than most: the workaround is a `setdefault`, so the day
+    upstream adds the function ours goes dead *silently* -- no error, no wrong
+    answer, just code that never runs again. Nothing else here would notice.
+    """
+    assert _rows("SELECT s FROM q WHERE s ~ '^Bump'", *_TEXT) == [("Bump version",)]
+    assert _rows("SELECT s FROM q WHERE s ~* '^bump'", *_TEXT) == [("Bump version",)]
 
 
 # Everything below was found by tools/fuzz. See the module docstring.
