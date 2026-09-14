@@ -34,25 +34,18 @@ jobs:
 
       - run: uv pip install --system -e ".[dev]"
 
-      # After the editable install, so it wins over the pinned floor.
+      # After the editable install, so it wins over the floor.
       - name: Install the sqlglot under test
+        env:
+          UV_SYSTEM_PYTHON: 1
         run: |
           if [ "${{ matrix.sqlglot }}" = "main" ]; then
-            # Cloned by hand rather than `uv pip install git+...`, because that runs
-            # `git submodule update --init` and sqlglot pins a submodule by SSH URL
-            # to a private repo (fivetran/sqlglot-integration-tests), which no
-            # runner can authenticate to. A plain clone leaves submodules alone, and
-            # that one is their integration suite -- not needed to build or import.
-            #
-            # --filter=blob:none, not --depth 1: a shallow clone carries no tags, so
-            # setuptools_scm cannot derive a version and produces 0.0.1.dev1, which
-            # then violates our own sqlglot floor. A blobless clone keeps every tag
-            # and is nearly as quick.
-            git clone --quiet --filter=blob:none https://github.com/tobymao/sqlglot "$RUNNER_TEMP/sqlglot-main"
-            uv pip install --system --upgrade "$RUNNER_TEMP/sqlglot-main"
+            # The branch tip, not tools/install_sqlglot.sh's pinned commit --
+            # this leg's job is to see what is queued upstream *beyond* the pin.
+            tools/install_sqlglot.sh main
           else
-            uv pip install --system --upgrade sqlglot
+            uv pip install --upgrade sqlglot
+            python -c "import sqlglot; print('sqlglot', sqlglot.__version__)"
           fi
-          python -c "import sqlglot; print('sqlglot', sqlglot.__version__)"
 
       - run: pytest -vvv --durations=0

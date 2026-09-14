@@ -25,6 +25,17 @@ jobs:
           enable-cache: true
           cache-dependency-glob: pyproject.toml
       - run: uv pip install --system -e ".[dev]"
+
+      # pg_mimic develops against a commit on sqlglot's main, not a release: the
+      # executor fixes it needs are merged upstream and unreleased. After the
+      # editable install, so it wins over the floor that install pulled in. The
+      # floor itself (`sqlglot>=30.18.0`, what a `pip install pg-mimic` gets)
+      # stays covered by the `latest-release` leg of upstream-sqlglot.yml, which
+      # runs this same suite daily.
+      - run: tools/install_sqlglot.sh
+        env:
+          UV_SYSTEM_PYTHON: 1
+
       # -vvv names every test, --durations=0 reports every duration (not just the
       # slowest N) so a test that starts creeping is visible before it times out.
       - run: pytest -vvv --durations=0

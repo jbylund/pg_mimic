@@ -43,9 +43,22 @@ import datetime
 from decimal import Decimal
 
 import pytest
+import sqlglot
 from sqlglot.executor import execute
 
 _UPSTREAM_FIXED = "sqlglot fixed this -- remove the workaround named in the test"
+
+# v30.18.0 is the newest release and the floor, and it is the last one without the
+# fix the single tripwire below carries this mark for. Every other version -- the
+# main commit tools/install_sqlglot.sh pins, and every release after this one --
+# is expected to have it, so the test must pass there. A 30.19.0 that somehow
+# shipped without it fails loudly, which is the news a tripwire exists to deliver.
+#
+# Marked conditionally rather than unmarked outright because unmarking a fix that
+# is merged-but-unreleased would make the `latest-release` leg of
+# upstream-sqlglot.yml permanently red -- #141's complaint with the legs swapped.
+# Delete this, and the workaround the test names, when the floor moves.
+_UNRELEASED = sqlglot.__version__ == "30.18.0"
 
 
 def _rows(sql: str, tables: dict, schema: dict) -> list[tuple]:
@@ -81,7 +94,7 @@ def test_order_by_on_a_set_operation_keeps_the_columns():
     assert _rows("SELECT a FROM t UNION SELECT a FROM t ORDER BY a", *_NUMBERS) == [(1,), (2,), (3,)]
 
 
-@pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
+@pytest.mark.xfail(_UNRELEASED, strict=True, reason=_UPSTREAM_FIXED)
 def test_select_distinct_ignores_the_order_by_direction():
     """https://github.com/jbylund/pg_mimic/issues/49
 
@@ -107,6 +120,12 @@ def test_select_distinct_ignores_the_order_by_direction():
     `SELECT DISTINCT b, a FROM t ORDER BY a` is wrong with no DESC in it at all.
     Asserted narrowly here because this file is about whether upstream has fixed it;
     the full matrix is in the issue.
+
+    Fixed on sqlglot's main by
+    https://redirect.github.com/tobymao/sqlglot/pull/8321, which plans the DISTINCT
+    below the Sort so the ORDER BY survives it. Unreleased as of v30.18.0, hence
+    the `_UNRELEASED` condition on the mark: this passes on the pinned commit and
+    still xfails on the floor.
     """
     assert _rows("SELECT DISTINCT a FROM t ORDER BY a DESC", *_NUMBERS) == [(3,), (2,), (1,)]
     assert _rows("SELECT DISTINCT a FROM t ORDER BY a DESC LIMIT 1", *_NUMBERS) == [(3,)]

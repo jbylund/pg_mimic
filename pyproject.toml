@@ -42,6 +42,12 @@ dependencies = [
     # ordering and the ORDER BY of a set operation -- four repairs TableSession
     # carried and no longer needs. Below it, each answers with the wrong rows.
     # tests/test_sqlglot_workarounds.py is what holds the floor to it.
+    #
+    # This is a floor, not what pg_mimic develops against: the fixes it wants next
+    # are merged on sqlglot's main and unreleased, and PyPI rejects a direct-URL
+    # dependency, so the commit lives in tools/install_sqlglot.sh instead and CI
+    # installs it over this. Raise this to the release that carries those fixes
+    # when there is one, and the script goes away.
     "sqlglot>=30.18.0",
     "scramp>=1.4.5",
 ]
