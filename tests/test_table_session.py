@@ -726,14 +726,15 @@ def test_a_plain_row_window_is_left_on_the_query():
     rather than being stripped and re-applied here for no reason. Both spellings
     answer correctly either way, so this asserts the plan and not the rows.
 
-    A DISTINCT ON or a SELECT DISTINCT still has to be windowed here, because
-    Postgres counts a LIMIT after the rows those settle.
+    A DISTINCT ON still has to be windowed here, because Postgres counts a LIMIT
+    after the rows it settles. A SELECT DISTINCT did too, until sqlglot v30.19.0
+    sorted one correctly.
     """
     session = TableSession(SEMANTICS)
     assert session._plan("SELECT id FROM items ORDER BY id LIMIT 2 OFFSET 1").rows_sliced_here is False
     assert session._plan("SELECT id FROM items OFFSET 1").rows_sliced_here is False
     assert session._plan("SELECT DISTINCT ON (user_id) user_id FROM visits ORDER BY user_id LIMIT 1").rows_sliced_here is True
-    assert session._plan("SELECT DISTINCT user_id FROM visits ORDER BY user_id DESC LIMIT 1").rows_sliced_here is True
+    assert session._plan("SELECT DISTINCT user_id FROM visits ORDER BY user_id DESC LIMIT 1").rows_sliced_here is False
 
 
 def test_parentheses_round_the_whole_query_do_not_hide_its_clauses(semantics):
@@ -743,7 +744,6 @@ def test_parentheses_round_the_whole_query_do_not_hide_its_clauses(semantics):
     assert semantics.execute("(SELECT id FROM items) LIMIT 2").fetchall() == [(1,), (2,)]
     assert semantics.execute("(SELECT id FROM items ORDER BY id DESC) LIMIT 2").fetchall() == [(5,), (4,)]
     assert semantics.execute("(SELECT id FROM items ORDER BY id) OFFSET 3").fetchall() == [(4,), (5,)]
-    # The two forms whose ORDER BY is sorted here rather than by the executor.
     union = "(SELECT id FROM items UNION SELECT id FROM items) ORDER BY id DESC LIMIT 2"
     assert semantics.execute(union).fetchall() == [(5,), (4,)]
     distinct = "(SELECT DISTINCT id FROM items ORDER BY id DESC) LIMIT 2"
@@ -959,6 +959,13 @@ def test_a_distinct_on_the_result_cannot_carry_is_refused(semantics):
         semantics.execute("SELECT user_id FROM (SELECT DISTINCT ON (user_id) user_id FROM visits ORDER BY user_id) AS first_visits")
 
 
+def test_a_select_distinct_ordered_by_something_it_does_not_select_is_rejected(semantics):
+    """Postgres refuses `SELECT DISTINCT a ... ORDER BY b`, and the executor answers
+    it anyway, in some order, so the refusal is ours to make."""
+    with pytest.raises(psycopg.errors.UndefinedColumn, match="must appear in the select list"):
+        semantics.execute("SELECT DISTINCT user_id FROM visits ORDER BY page")
+
+
 def test_distinct_on_that_postgres_itself_rejects_is_rejected(semantics):
     """Postgres requires the ORDER BY to begin with the DISTINCT ON expressions.
     Answering a query it would have refused is its own kind of wrong."""
@@ -978,10 +985,9 @@ def test_plain_select_distinct_is_untouched(semantics):
 
 def test_a_select_distinct_can_be_ordered_descending(semantics):
     """The executor deduplicates and then sorts by the select list alone, ignoring
-    the direction the ORDER BY asked for, so `ORDER BY x DESC` comes back ascending.
-    Ordered here instead. Still outstanding upstream after v30.18.0 fixed the set
-    operation this used to share a repair with -- see
-    tests/test_sqlglot_workarounds.py."""
+    the direction the ORDER BY asked for, so `ORDER BY x DESC` came back ascending,
+    until sqlglot v30.19.0 -- this was sorted here instead. Kept as coverage of the
+    ordering a client actually writes."""
     assert semantics.execute("SELECT DISTINCT user_id FROM visits ORDER BY user_id DESC").fetchall() == [
         (3,),
         (2,),

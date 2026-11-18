@@ -31,13 +31,13 @@
   The executor's more dangerous gaps are the clauses it parses and then answers *wrongly* — a wrong answer
   wearing a right answer's clothes. `TableSession` repairs the ones it can, verified against a real
   PostgreSQL: `DISTINCT ON` is applied to the rows the executor returns (with `LIMIT` counting what
-  survives, as Postgres does); a `SELECT DISTINCT` is ordered here, because the executor sorts one by its
-  select list alone and ignores the direction the `ORDER BY` asked for; and a `UNION`, `EXCEPT` or
+  survives, as Postgres does); and a `UNION`, `EXCEPT` or
   `INTERSECT` over the same table runs both of its branches rather than the first one twice.
 
-  That list used to be longer. `OFFSET`, `NOT IN (subquery)`, NULL ordering and the `ORDER BY` of a set
-  operation were all repaired here until sqlglot v30.18.0 fixed them upstream — which is the floor
-  `pyproject.toml` pins, and why a nested `OFFSET` is answered now rather than refused. The strict-xfail
+  That list used to be longer. `OFFSET`, `NOT IN (subquery)`, NULL ordering, and the `ORDER BY` of a set
+  operation or a `SELECT DISTINCT` were all repaired here until sqlglot fixed them upstream (v30.18.0 and
+  v30.19.0) — and the floor `pyproject.toml` pins is v30.32.0, which also fixed `agg(DISTINCT x)` and
+  `NULL IN (SELECT ...)`. It is why a nested `OFFSET` is answered now rather than refused. The strict-xfail
   tripwires in `tests/test_sqlglot_workarounds.py` are what turned red the moment each fix shipped.
 
   Numbers are the same story. A decimal constant is compared as `numeric`, the way Postgres types one, so

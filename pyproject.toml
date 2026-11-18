@@ -38,11 +38,17 @@ classifiers = [
     # is what PyPI renders now.
 ]
 dependencies = [
-    # 30.18.0 is where the executor learned OFFSET, `NOT IN (subquery)`, NULL
-    # ordering and the ORDER BY of a set operation -- four repairs TableSession
-    # carried and no longer needs. Below it, each answers with the wrong rows.
-    # tests/test_sqlglot_workarounds.py is what holds the floor to it.
-    "sqlglot>=30.18.0",
+    # 30.32.0 is where the executor stopped answering the wrong rows for a good
+    # deal of ordinary SQL: OFFSET, `NOT IN (subquery)`, NULL ordering and the ORDER
+    # BY of a set operation (30.18.0), the ORDER BY of a `SELECT DISTINCT` and
+    # `agg(DISTINCT x)` (30.19.0), and `NULL IN (SELECT ...)` (30.32.0). Below it,
+    # each answers with the wrong rows. tests/test_sqlglot_workarounds.py is what
+    # holds the floor to it.
+    #
+    # CI develops against a commit on sqlglot's main instead
+    # (tools/install_sqlglot.sh), and the `latest-release` leg of
+    # upstream-sqlglot.yml exercises this floor daily.
+    "sqlglot>=30.32.0",
     "scramp>=1.4.5",
 ]
 

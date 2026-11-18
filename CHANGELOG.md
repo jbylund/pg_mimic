@@ -127,6 +127,21 @@ what shipped rather than what was written down at the time.
   message contradicting the `RowDescription` rather than as an answer. (#125)
 
 ### Changed
+- **The sqlglot floor is now 30.32.0**, which lets `TableSession` delete its last sorting repair.
+  The executor used to deduplicate a `SELECT DISTINCT` and then sort by its select list alone, so
+  `ORDER BY x DESC` came back ascending; it plans the DISTINCT below the sort now
+  ([sqlglot#8321](https://redirect.github.com/tobymao/sqlglot/pull/8321), v30.19.0), so
+  `_take_result_order` and `_sorted_rows` are gone and a `SELECT DISTINCT`'s `LIMIT` is the
+  executor's own. What stays is the check that its `ORDER BY` names only selected columns, which
+  Postgres enforces and the executor does not. The same floor fixes two bugs that had no workaround
+  and reached users: `count(DISTINCT x)` and every other `agg(DISTINCT x)` ignored the DISTINCT
+  ([#8395](https://redirect.github.com/tobymao/sqlglot/pull/8395), v30.19.0), and
+  `NULL IN (SELECT ...)` answered FALSE where Postgres answers NULL
+  ([#8990](https://redirect.github.com/tobymao/sqlglot/pull/8990),
+  [#9151](https://redirect.github.com/tobymao/sqlglot/pull/9151), v30.32.0). Their tripwires are
+  plain assertions now. `tools/install_sqlglot.sh` stays, pinned to a commit past the floor, for the
+  next fix that lands on main before it ships. (#49, #58)
+
 - **The sqlglot floor is now 30.18.0**, which fixes four of the executor bugs `TableSession`
   worked around — so the workarounds are deleted. `OFFSET` is the executor's own
   ([sqlglot#8219](https://redirect.github.com/tobymao/sqlglot/pull/8219)), and one nested in a
