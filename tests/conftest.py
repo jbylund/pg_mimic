@@ -1,5 +1,6 @@
-"""The suite's own fixtures: a configurable MockSession, and the
-psycopg/asyncpg/pg8000 connections the tests drive it through.
+"""The suite's own fixtures: a configurable MockSession, the
+psycopg/asyncpg/pg8000 connections the tests drive it through, and
+examples/git_sql.py loaded as a module for the two files that assert on it.
 
 The server itself comes from `pg_mimic.testing`, the shipped helpers, so this
 suite exercises the same code users get rather than a private copy of it. That
@@ -16,7 +17,10 @@ whole point there, so it must not go through a re-export.)
 
 from __future__ import annotations
 
+import importlib.util
 import re
+import sys
+from pathlib import Path
 
 import asyncpg
 import pg8000.dbapi
@@ -110,6 +114,44 @@ class MockSession(Session):
             raise self.error
         for row in self.rows:
             yield row
+
+
+GIT_SQL = Path(__file__).resolve().parent.parent / "examples" / "git_sql.py"
+
+# The repository this suite lives in, which is the git repo GitSession is pointed at
+# when a test needs one: it exists wherever the suite runs, and no test here reads a
+# row out of it.
+REPO_ROOT = GIT_SQL.parent.parent
+
+
+@pytest.fixture(scope="session")
+def git_sql_example():
+    """examples/git_sql.py, loaded by path -- `examples` is not an importable package.
+
+    Its ENV edits are rolled back around the import. The example patches
+    `sqlglot.executor.env.ENV` at module scope, which is process-global, and
+    test_sqlglot_workarounds.py's strict xfails are assertions about the ENV sqlglot
+    ships -- one of them starts passing if the example's INTERVAL is left in place.
+    Neither describe() nor a refused statement reaches the executor, so nothing that
+    takes this fixture wants those edits anyway.
+
+    `examples/` goes on sys.path for the duration because the example imports its
+    sibling `_args` for the shared command line. Running it as a script puts that
+    directory there automatically; loading it by path does not.
+    """
+    import sqlglot.executor.env as executor_env
+
+    saved = dict(executor_env.ENV)
+    sys.path.insert(0, str(GIT_SQL.parent))
+    try:
+        spec = importlib.util.spec_from_file_location("git_sql_example", GIT_SQL)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    finally:
+        sys.path.remove(str(GIT_SQL.parent))
+        executor_env.ENV.clear()
+        executor_env.ENV.update(saved)
 
 
 @pytest.fixture
