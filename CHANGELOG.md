@@ -137,10 +137,14 @@ what shipped rather than what was written down at the time.
 - `examples/git_sql.py` serves `UNION`, `EXCEPT` and `INTERSECT` instead of refusing
   them as writes. The read-only guard tested for `exp.Select`, and a set operation is
   an `exp.SetOperation`, so psql's own `\d` — whose publications footer is three
-  `SELECT`s joined by `UNION` — was answered "a git repo is read-only". An `ORDER BY`
-  over a set operation is still refused, with a `0A000` naming why: sqlglot's executor
-  returns those rows with every column stripped, which reaches the client as a `D`
-  message contradicting the `RowDescription` rather than as an answer. (#125)
+  `SELECT`s joined by `UNION` — was answered "a git repo is read-only". (#125)
+
+- `examples/git_sql.py` answers an `ORDER BY` over a `UNION`, `EXCEPT` or `INTERSECT`
+  instead of refusing it with a `0A000`. The refusal guarded against sqlglot's executor
+  returning those rows with every column stripped, which reached the client as a `D`
+  message contradicting the `RowDescription`; sqlglot v30.18.0 keeps the columns
+  ([8214](https://redirect.github.com/tobymao/sqlglot/pull/8214)), so the guard answered
+  an error to a query that works. It is deleted. (#49)
 
 ### Changed
 - **The sqlglot floor is now 30.32.0**, which lets `TableSession` delete its last sorting repair.

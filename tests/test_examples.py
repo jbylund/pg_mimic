@@ -12,11 +12,11 @@ possible: a fixed port would collide with whatever is on 5432 on the developer's
 machine, and with a parallel run of this same test.
 
 The two git_sql set-operation tests at the bottom are the exception to "shallow".
-They run over the wire because that is the only place the bug they cover shows:
-a `UNION` with an `ORDER BY` comes back from the executor with its columns
-stripped, which is not a wrong value but a `D` message that contradicts the
-`RowDescription` already sent. In-process the rows merely look odd; on a socket
-psycopg drops the connection.
+They run over the wire because that is where a set operation went wrong in a way
+nothing in-process showed: before sqlglot v30.18.0 a `UNION` with an `ORDER BY`
+came back from the executor with its columns stripped, which is not a wrong value
+but a `D` message that contradicts the `RowDescription` already sent. In-process the
+rows merely looked odd; on a socket psycopg dropped the connection.
 """
 
 from __future__ import annotations
@@ -109,20 +109,24 @@ def test_git_sql_serves_a_set_operation():
 
 
 @_SUBPROCESS_TIMEOUT
-def test_git_sql_refuses_an_order_by_over_a_set_operation():
-    """0A000 rather than a protocol violation -- see the module docstring.
+def test_git_sql_orders_a_set_operation():
+    """Answered, in order, over the wire -- see the module docstring.
 
-    Delete this and _reject_stripped_columns together when sqlglot keeps the
-    columns: https://github.com/jbylund/sqlglot/pull/34.
+    The executor used to return these rows with every column stripped, so the
+    example refused the query with a 0A000 to keep psycopg from dropping the
+    connection on the resulting `D` message. sqlglot v30.18.0 keeps the columns
+    (https://redirect.github.com/tobymao/sqlglot/pull/8214), the refusal is gone,
+    and this is what stays: the query comes back with its columns, sorted both ways.
     """
     with _serving("git_sql.py") as conn, conn.cursor() as cur:
-        with pytest.raises(psycopg.errors.FeatureNotSupported, match="columns stripped"):
-            cur.execute("SELECT path FROM files UNION SELECT path FROM files ORDER BY 1")
-        conn.rollback()
-        # The connection survives it, which is the difference between an error and
-        # the `D` message that used to reach psycopg here.
-        cur.execute("SELECT path FROM files LIMIT 1")
-        assert len(cur.fetchall()) == 1
+        cur.execute("SELECT path FROM files")
+        paths = sorted({row[0] for row in cur.fetchall()})
+        assert len(paths) > 1, "an ordering over a single row proves nothing"
+
+        cur.execute("SELECT path FROM files UNION SELECT path FROM files ORDER BY 1")
+        assert [row[0] for row in cur.fetchall()] == paths
+        cur.execute("SELECT path FROM files UNION SELECT path FROM files ORDER BY 1 DESC")
+        assert [row[0] for row in cur.fetchall()] == paths[::-1]
 
 
 @pytest.mark.parametrize(
