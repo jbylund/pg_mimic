@@ -26,11 +26,10 @@ jobs:
           cache-dependency-glob: pyproject.toml
       - run: uv pip install --system -e ".[dev]"
 
-      # pg_mimic develops against a commit on sqlglot's main, not a release: the
-      # executor fixes it needs are merged upstream and unreleased. After the
-      # editable install, so it wins over the floor that install pulled in. The
-      # floor itself (`sqlglot>=30.18.0`, what a `pip install pg-mimic` gets)
-      # stays covered by the `latest-release` leg of upstream-sqlglot.yml, which
+      # pg_mimic develops against a commit on sqlglot's main, not a release, so a
+      # fix it wants is usable before it ships. After the editable install, so it
+      # wins over the floor that install pulled in. The floor itself
+      # (`sqlglot>=30.32.0`, what a `pip install pg-mimic` gets) stays covered by the `latest-release` leg of upstream-sqlglot.yml, which
       # runs this same suite daily.
       - run: tools/install_sqlglot.sh
         env:

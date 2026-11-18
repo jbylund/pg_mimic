@@ -2,24 +2,27 @@
 # Install the sqlglot that pg_mimic develops against, which is a commit on their
 # main rather than a release.
 #
-# Why a commit: the executor fixes pg_mimic needs are merged upstream and
-# unreleased. v30.18.0 is the newest release and main is well ahead of it. The
-# published package still declares `sqlglot>=30.18.0` (pyproject.toml) because
-# PyPI rejects a direct-URL dependency, so this pin is a development and CI
-# posture only -- never what a user installing pg-mimic gets. The floor keeps
-# being exercised daily by the `latest-release` leg of upstream-sqlglot.yml.
+# Why a commit: a fix pg_mimic wants can be merged upstream and unreleased for
+# weeks. The published package declares only a floor (`sqlglot>=...` in
+# pyproject.toml) because PyPI rejects a direct-URL dependency, so this pin is a
+# development and CI posture only -- never what a user installing pg-mimic gets.
+# The floor keeps being exercised daily by the `latest-release` leg of
+# upstream-sqlglot.yml.
+#
+# Right now every fix pg_mimic needs is in a release (the floor), so the pin is
+# only here to be ready for the next one. It must never sit *below* the floor, or
+# CI would be testing a sqlglot the package itself refuses to install.
 #
 #   tools/install_sqlglot.sh          # the pinned commit below
 #   tools/install_sqlglot.sh main     # whatever the branch tip is now
 #
-# Move PINNED_REV when a fix we want lands, and delete this script entirely once
-# a release carries everything (then the floor in pyproject.toml is the pin).
+# Move PINNED_REV when a fix we want lands on main -- and whenever the floor in
+# pyproject.toml moves past it.
 set -euo pipefail
 
-# tobymao/sqlglot main @ 2026-09-14, 43 commits past v30.18.0. Carries
-# e27b7654, which plans DISTINCT before ORDER BY -- the fix that makes
-# _take_result_order's sorting redundant (jbylund/sqlglot#54).
-PINNED_REV="3ca824895ef423f7895fb13d72357548c0f1f367"
+# tobymao/sqlglot main @ 2026-11-18, 18 commits past v30.33.0 and so past the
+# 30.32.0 floor.
+PINNED_REV="a59724cdf3a05f061e4faceae3f28ba59b9e28b7"
 
 rev="${1:-$PINNED_REV}"
 

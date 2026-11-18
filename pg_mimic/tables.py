@@ -37,14 +37,14 @@ because a mimic that returns plausible wrong rows is worse than one that says no
 The same rule governs what it parses and then answers wrongly, which is the more
 dangerous half: those don't fail, they answer the wrong question. Where the right
 answer is reachable -- by rewriting the query into a shape the executor does get
-right, or by finishing the job on the rows it returns (DISTINCT ON, and the
-ORDER BY of a SELECT DISTINCT) -- this session does that. Where it isn't
+right, or by finishing the job on the rows it returns (DISTINCT ON) -- this
+session does that. Where it isn't
 (TABLESAMPLE), the query is refused.
 
-That list only shrinks. OFFSET, NOT IN (subquery) and NULL ordering were all
-repaired here until sqlglot v30.18.0 fixed them upstream, and the floor in
-pyproject.toml is what it is so that the repairs could be deleted. The tripwires
-in tests/test_sqlglot_workarounds.py are what announced that.
+That list only shrinks. OFFSET, NOT IN (subquery), NULL ordering and the ORDER BY
+of a SELECT DISTINCT were all repaired here until sqlglot fixed them upstream, and
+the floor in pyproject.toml is what it is so that the repairs could be deleted.
+The tripwires in tests/test_sqlglot_workarounds.py are what announced that.
 """
 
 from __future__ import annotations
@@ -52,7 +52,6 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from decimal import Decimal
-from functools import cmp_to_key
 from typing import Any, Mapping, Sequence
 
 import sqlglot
@@ -159,10 +158,9 @@ class _Plan:
     """A query rewritten into what sqlglot's executor answers correctly, plus the
     work left over for Python.
 
-    What is left after v30.18.0 fixed the rewritable gaps upstream cannot be said
-    to the executor at all -- keeping the first row per key, sorting a result it
-    would hand back in the wrong order -- so it is done to its output instead.
-    Everything else is still refused rather than approximated.
+    What is left after sqlglot fixed the rewritable gaps upstream cannot be said to
+    the executor at all -- keeping the first row per key -- so it is done to its
+    output instead. Everything else is still refused rather than approximated.
     """
 
     expression: exp.Query
@@ -171,15 +169,12 @@ class _Plan:
     column_names: tuple[str, ...] = ()
     # Select positions to keep the first row of, for DISTINCT ON; empty otherwise.
     distinct_on: tuple[int, ...] = ()
-    # (output position, descending, nulls first) per ORDER BY term of a SELECT
-    # DISTINCT, which is sorted here rather than by the executor; empty otherwise.
-    sort_keys: tuple[tuple[int, bool, bool], ...] = ()
     # How many leading columns the client asked for. Fewer than the query selects
     # when a DISTINCT ON key had to be added to the select list to be deduplicated
     # on; those trailing columns are the executor's business, not the client's.
     visible_columns: int = 0
     # Whether LIMIT/OFFSET are applied to the executor's rows rather than by it,
-    # which they have to be once the rows above are reduced or reordered here.
+    # which they have to be once DISTINCT ON has reduced them here.
     rows_sliced_here: bool = False
 
 
@@ -276,12 +271,10 @@ class TableSession(Session):
                 f"it has no recursive CTEs and implements only part of Postgres's function library.",
             ) from None
         rows = [tuple(row) for row in result.rows]
-        # In Postgres's order: DISTINCT ON reduces the sorted rows, and only what
-        # survives that is what LIMIT counts.
+        # DISTINCT ON reduces the sorted rows, and only what survives that is what
+        # LIMIT counts.
         if plan.distinct_on:
             rows = _first_row_per_key(rows, plan.distinct_on)
-        if plan.sort_keys:
-            rows = _sorted_rows(rows, plan.sort_keys)
         rows = rows[offset : None if limit is None else offset + limit]
         if plan.visible_columns < len(plan.expression.selects):
             rows = [row[: plan.visible_columns] for row in rows]  # drop the added DISTINCT ON keys
@@ -373,16 +366,15 @@ class TableSession(Session):
         # Which decimal literals to make exact is a question only the annotator's
         # types answer, so this runs after annotate() rather than on the parse tree.
         _make_decimal_comparisons_exact(annotated)
-        sort_keys = _take_result_order(annotated)
+        _reject_distinct_order_outside_select_list(annotated)
         return _Plan(
             expression=annotated,
             column_names=analyzed.column_names(),
             distinct_on=distinct_on,
-            sort_keys=sort_keys,
             visible_columns=visible_columns,
-            # A DISTINCT ON or an ORDER BY whose rows have to be settled here before
-            # a LIMIT can count them. A plain LIMIT/OFFSET is the executor's own.
-            rows_sliced_here=bool(distinct_on or sort_keys),
+            # A DISTINCT ON whose rows have to be settled here before a LIMIT can
+            # count them. A plain LIMIT/OFFSET is the executor's own.
+            rows_sliced_here=bool(distinct_on),
         )
 
     def _reject_unknown_tables(self, expression: exp.Expression) -> None:
@@ -575,8 +567,8 @@ def _flatten_parenthesized(expression: exp.Expression) -> exp.Expression:
 
     `(SELECT ...) LIMIT 1` parses as an exp.Subquery carrying the LIMIT, and every
     check below reads the clauses it cares about -- the LIMIT/OFFSET window, the
-    ORDER BY a set operation or a SELECT DISTINCT has to be sorted by here -- off
-    the outermost node. Left wrapped they are found on neither node: the executor
+    ORDER BY of a SELECT DISTINCT -- off the outermost node. Left wrapped they are
+    found on neither node: the executor
     ignores a LIMIT on a Subquery, so `(SELECT a FROM t) LIMIT 1` answers with
     every row.
 
@@ -771,64 +763,30 @@ def _output_position(expression: exp.Query, key: exp.Expression) -> int | None:
     return None
 
 
-def _take_result_order(expression: exp.Query) -> tuple[tuple[int, bool, bool], ...]:
-    """Strip the ORDER BY off a SELECT DISTINCT and return its keys, to sort the
-    rows by here instead.
+def _reject_distinct_order_outside_select_list(expression: exp.Query) -> None:
+    """Refuse a `SELECT DISTINCT` whose ORDER BY names something it does not select.
 
-    The executor deduplicates and then sorts by the select list alone, ignoring
-    what the ORDER BY asked for: `SELECT DISTINCT a FROM t ORDER BY a DESC` comes
-    back ascending. Wrong rows in the wrong order, with nothing about the result
-    to say so.
-
-    Sortable here because Postgres only lets this kind of ORDER BY name the output
-    columns, so every key is a position in the result rather than an expression
-    that would have to be evaluated to find it.
-
-    A set operation's ORDER BY was taken here too, until sqlglot v30.18.0 -- below
-    that floor, sorting a UNION returned one empty tuple per row, the rows all
-    there and every column gone.
+    Postgres rejects `SELECT DISTINCT a FROM t ORDER BY b` -- which `b` would a
+    deduplicated row be sorted by? -- and the executor answers it anyway, in some
+    order, with no error. Every key has to be an output column, which is also what
+    makes the check cheap: a position in the result, not an expression to evaluate.
     """
     order = expression.args.get("order")
     if order is None or not isinstance(expression.args.get("distinct"), exp.Distinct):
-        return ()
-
-    keys = []
+        return
     for ordered in order.expressions:
-        position = _output_position(expression, ordered.this)
-        if position is None:
+        if _output_position(expression, ordered.this) is None:
             raise PgError(
                 UNDEFINED_COLUMN,
                 f"for SELECT DISTINCT, ORDER BY expressions must appear in the select list, and "
                 f"{ordered.this.sql(dialect='postgres')} does not",
             )
-        keys.append((position, bool(ordered.args.get("desc")), bool(ordered.args.get("nulls_first"))))
-    expression.set("order", None)
-    return tuple(keys)
-
-
-def _sorted_rows(rows: list[Row], keys: tuple[tuple[int, bool, bool], ...]) -> list[Row]:
-    """Sort by SQL's rules rather than Python's, which have no answer for NULL."""
-
-    def compare(left: Row, right: Row) -> int:
-        for position, descending, nulls_first in keys:
-            a, b = left[position], right[position]
-            if a is None and b is None:
-                continue
-            if a is None or b is None:
-                first_is_null = a is None
-                return -1 if first_is_null == nulls_first else 1
-            if a == b:
-                continue
-            return (-1 if a < b else 1) * (-1 if descending else 1)
-        return 0
-
-    return sorted(rows, key=cmp_to_key(compare))
 
 
 def _take_row_window(expression: exp.Query) -> tuple[int | None, int]:
     """Strip LIMIT/OFFSET off the query and return them, to be applied to the rows.
 
-    Only for a query whose rows this session reduces or reorders itself. A LIMIT
+    Only for a query whose rows this session reduces itself. A LIMIT
     left in place would be counted against the rows the executor returned, before
     DISTINCT ON removed any of them, and Postgres counts it after.
     """

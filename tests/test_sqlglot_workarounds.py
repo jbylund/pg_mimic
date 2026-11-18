@@ -19,7 +19,9 @@ https://github.com/jbylund/pg_mimic/issues/50
 
 It works. Moving the floor to v30.18.0 turned thirteen of these red at once, and
 four of them were repairs in tables.py that could then be deleted: OFFSET, the
-ORDER BY of a set operation, `NOT IN (subquery)` and NULL ordering.
+ORDER BY of a set operation, `NOT IN (subquery)` and NULL ordering. Moving it to
+v30.32.0 did the same for the ORDER BY of a `SELECT DISTINCT`, and turned two
+more green: `agg(DISTINCT x)` and `NULL IN (SELECT ...)`.
 
 Each test names the issue tracking it, and the workaround it justifies where
 there is one, so a failure points straight at the code to delete. Two
@@ -51,22 +53,9 @@ import datetime
 from decimal import Decimal
 
 import pytest
-import sqlglot
 from sqlglot.executor import execute
 
 _UPSTREAM_FIXED = "sqlglot fixed this -- remove the workaround named in the test"
-
-# v30.18.0 is the newest release and the floor, and it is the last one without the
-# fix the single tripwire below carries this mark for. Every other version -- the
-# main commit tools/install_sqlglot.sh pins, and every release after this one --
-# is expected to have it, so the test must pass there. A 30.19.0 that somehow
-# shipped without it fails loudly, which is the news a tripwire exists to deliver.
-#
-# Marked conditionally rather than unmarked outright because unmarking a fix that
-# is merged-but-unreleased would make the `latest-release` leg of
-# upstream-sqlglot.yml permanently red -- #141's complaint with the legs swapped.
-# Delete this, and the workaround the test names, when the floor moves.
-_UNRELEASED = sqlglot.__version__ == "30.18.0"
 
 
 def _rows(sql: str, tables: dict, schema: dict) -> list[tuple]:
@@ -82,7 +71,7 @@ def test_offset_is_applied():
 
     Fixed in sqlglot v30.18.0 by
     https://redirect.github.com/tobymao/sqlglot/pull/8219, one of the reasons the
-    floor is 30.18.0. `_take_row_window` no longer strips a row window off a query
+    floor moved to 30.18.0. `_take_row_window` no longer strips a row window off a query
     whose rows this session does not reduce itself, and a nested OFFSET is answered
     rather than refused.
     """
@@ -102,38 +91,31 @@ def test_order_by_on_a_set_operation_keeps_the_columns():
     assert _rows("SELECT a FROM t UNION SELECT a FROM t ORDER BY a", *_NUMBERS) == [(1,), (2,), (3,)]
 
 
-@pytest.mark.xfail(_UNRELEASED, strict=True, reason=_UPSTREAM_FIXED)
 def test_select_distinct_ignores_the_order_by_direction():
     """https://github.com/jbylund/pg_mimic/issues/49
 
-    Workaround: `_take_result_order` / `_sorted_rows` in tables.py.
-
-    The executor deduplicates and then sorts by the select list alone, ignoring the
-    direction asked for, so a DESC comes back ascending. Rows in the wrong order
-    with nothing in the result to say so.
-
-    Reported upstream as https://github.com/jbylund/sqlglot/issues/54: the planner
-    stacks the DISTINCT aggregate *above* the Sort step, and the aggregate groups by
-    sorting (`context.sort(group_by)`), so an ascending sort on the select list
-    overwrites the ORDER BY. `GROUP BY` builds the same two steps the other way
-    round and is correct.
-
-    Its own tripwire since v30.18.0 fixed the set operation above but not this. The
-    two shared one repair and one test, and a single assertion over both causes
-    cannot XPASS -- the same lesson as the `length()`/`||` split in
-    https://github.com/jbylund/pg_mimic/issues/107 and the `btrim`/`ltrim` split
-    below. One tripwire per independently fixable defect, not per surface symptom.
-
-    The direction is the least of it: with a LIMIT the wrong *rows* come back, and
-    `SELECT DISTINCT b, a FROM t ORDER BY a` is wrong with no DESC in it at all.
-    Asserted narrowly here because this file is about whether upstream has fixed it;
-    the full matrix is in the issue.
-
-    Fixed on sqlglot's main by
+    Fixed in sqlglot v30.19.0 by
     https://redirect.github.com/tobymao/sqlglot/pull/8321, which plans the DISTINCT
-    below the Sort so the ORDER BY survives it. Unreleased as of v30.18.0, hence
-    the `_UNRELEASED` condition on the mark: this passes on the pinned commit and
-    still xfails on the floor.
+    below the Sort so the ORDER BY survives it. `_take_result_order` and
+    `_sorted_rows` in tables.py, which sorted these rows by hand, are gone.
+
+    The executor used to deduplicate and then sort by the select list alone,
+    ignoring the direction asked for, so a DESC came back ascending. Rows in the
+    wrong order with nothing in the result to say so. Reported upstream as
+    https://github.com/jbylund/sqlglot/issues/54: the planner stacked the DISTINCT
+    aggregate *above* the Sort step, and the aggregate groups by sorting
+    (`context.sort(group_by)`), so an ascending sort on the select list
+    overwrote the ORDER BY. `GROUP BY` built the same two steps the other way
+    round and was correct.
+
+    It had its own tripwire, apart from the set operation above, because v30.18.0
+    fixed that one and not this: one tripwire per independently fixable defect, not
+    per surface symptom (the same lesson as the `length()`/`||` split in
+    https://github.com/jbylund/pg_mimic/issues/107).
+
+    The direction was the least of it: with a LIMIT the wrong *rows* came back, and
+    `SELECT DISTINCT b, a FROM t ORDER BY a` was wrong with no DESC in it at all.
+    Asserted narrowly here; the full matrix is in the issue.
     """
     assert _rows("SELECT DISTINCT a FROM t ORDER BY a DESC", *_NUMBERS) == [(3,), (2,), (1,)]
     assert _rows("SELECT DISTINCT a FROM t ORDER BY a DESC LIMIT 1", *_NUMBERS) == [(3,)]
@@ -519,11 +501,14 @@ def test_star_expands_columns_that_share_a_name():
     assert _rows("WITH c AS (SELECT a, a FROM t) SELECT * FROM c", *_NUMBERS) == [(1, 1), (2, 2), (3, 3)]
 
 
-@pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
 def test_distinct_inside_an_aggregate_is_honored():
     """https://github.com/jbylund/pg_mimic/issues/58
 
-    Every `agg(DISTINCT x)` is broken, not just `count`, and the cause is one line
+    Fixed in sqlglot v30.19.0 by
+    https://redirect.github.com/tobymao/sqlglot/pull/8395. No workaround here to
+    delete: this was an untreated bug, reaching users.
+
+    Every `agg(DISTINCT x)` was broken, not just `count`, and the cause was one line
     of codegen: the Python generator renders `exp.Distinct` as `set()`, discarding
     the expression inside it, so the aggregate is handed an empty set literal
     instead of the column. `COUNT(DISTINCT a)` compiles to `COUNT(set())`.
@@ -621,9 +606,13 @@ def test_arithmetic_mixes_numeric_and_double():
     assert _rows("SELECT n * v FROM m", *_MIXED) == [(5.0,)]
 
 
-@pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
 def test_in_a_subquery_is_null_for_a_null_left_operand():
     """https://github.com/jbylund/pg_mimic/issues/58
+
+    Fixed in sqlglot v30.32.0 by
+    https://redirect.github.com/tobymao/sqlglot/pull/8990 and
+    https://redirect.github.com/tobymao/sqlglot/pull/9151. No workaround here to
+    delete: this was an untreated bug, reaching users.
 
     `NULL IN (SELECT ...)` is NULL in Postgres, not FALSE -- three-valued logic,
     and the reason `NOT IN (subquery)` excludes a NULL row rather than keeping it.
@@ -702,6 +691,71 @@ def test_extract_takes_a_day_of_week():
     """
     tables, schema = {"d": [{"ts": datetime.datetime(2024, 3, 15)}]}, {"d": {"ts": "TIMESTAMP"}}
     assert _rows("SELECT EXTRACT(DOW FROM ts) FROM d", tables, schema) == [(5,)]
+
+
+@pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
+def test_like_runs_an_escape_clause():
+    """https://github.com/jbylund/pg_mimic/issues/58
+
+    Item 12, split from the default escape character that
+    test_like_honors_a_backslash_escape covers (12b): `LIKE 'a!%b' ESCAPE '!'`
+    raises `name 'ESCAPE' is not defined`, because the Python generator wraps the
+    LIKE in an `ESCAPE(...)` call that nothing in ENV defines. Postgres, MySQL,
+    DuckDB and SQLite all agree on what it means, so a fix is not dialect-gated.
+    Tracked upstream by https://github.com/jbylund/sqlglot/issues/39.
+
+    Asserted on PostgreSQL 18.6: `!%` is a literal percent sign, so only `a%b`
+    matches, not `axb`.
+    """
+    tables, schema = {"q": [{"s": "a%b"}, {"s": "axb"}]}, {"q": {"s": "TEXT"}}
+    assert _rows("SELECT s FROM q WHERE s LIKE 'a!%b' ESCAPE '!'", tables, schema) == [("a%b",)]
+
+
+@pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
+def test_nullif_exists():
+    """https://github.com/jbylund/pg_mimic/issues/58
+
+    Item 19: `NULLIF` is absent from ENV, so `SELECT NULLIF(a, 2)` raises
+    `name 'NULLIF' is not defined`. A plain omission, of the `length()` and `ILIKE`
+    kind, and an ordinary idiom: `x / NULLIF(y, 0)` is how SQL avoids dividing by
+    zero.
+
+    Asserted on PostgreSQL 18.6: NULL where the two arguments are equal, otherwise
+    the first.
+    """
+    assert _rows("SELECT NULLIF(a, 2) FROM t", *_NUMBERS) == [(1,), (None,), (3,)]
+
+
+@pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
+def test_an_aggregate_can_wrap_a_scalar_subquery():
+    """https://github.com/jbylund/pg_mimic/issues/58
+
+    Item 20: a scalar subquery inside an aggregated select raises `'int' object is
+    not iterable` in the Aggregate step. Scalar subqueries themselves work since
+    v30.18.0 (8190); #58 records this as what 8190 made reachable. A bare
+    `SUM((SELECT ...))` with no GROUP BY answers correctly, so it is the grouped
+    aggregate that breaks.
+
+    Asserted on PostgreSQL 18.6: one group, so one row, holding u's row count.
+    """
+    tables, schema = {"u": [{"b": 10}, {"b": 20}]}, {"u": {"b": "INT"}}
+    assert _rows("SELECT COALESCE((SELECT COUNT(1) FROM u), 100) FROM u GROUP BY 1", tables, schema) == [(2,)]
+
+
+@pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
+def test_bool_or_and_bool_and_exist():
+    """https://github.com/jbylund/pg_mimic/issues/58
+
+    Item 23: `BOOL_OR` and `BOOL_AND` parse to `LogicalOr` and `LogicalAnd`, which
+    the Python generator emits as `LOGICALOR(...)` and `LOGICALAND(...)` -- and
+    neither is in ENV, so both raise `name 'LOGICALOR' is not defined`. The same
+    omission as `NULLIF` above, and the same fix: a dict entry each. Found while
+    re-checking item 20, whose `BOOL_OR(EXISTS(...))` example hid it.
+
+    Asserted on PostgreSQL 18.6: true and false rows give `true` and `false`.
+    """
+    tables, schema = {"b": [{"a": True}, {"a": False}]}, {"b": {"a": "BOOLEAN"}}
+    assert _rows("SELECT BOOL_OR(a), BOOL_AND(a) FROM b", tables, schema) == [(True, False)]
 
 
 def test_dividing_null_is_null():
