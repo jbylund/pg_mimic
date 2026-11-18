@@ -544,25 +544,6 @@ TABLE_NAMES = (*LOG_PROJECTIONS, *COLLECTORS)
 _SERVED = (exp.Select, exp.SetOperation)
 
 
-def _reject_stripped_columns(expr: exp.Expression) -> None:
-    """Refuse an ORDER BY over a set operation, which the executor answers wrongly.
-
-    The rows come back with every column gone -- `[(), (), ()]` -- so what reaches
-    the client is `unexpected field count in "D" message`, a protocol violation
-    against the RowDescription describe() already sent, rather than an answer or an
-    error. A 0A000 is the honest reply until sqlglot's planner keeps the columns.
-
-    Tracked in https://github.com/jbylund/pg_mimic/issues/49; the fix is
-    https://github.com/jbylund/sqlglot/pull/34, and this goes when it lands.
-    """
-    if isinstance(expr, exp.SetOperation) and expr.args.get("order") is not None:
-        raise PgError(
-            FEATURE_NOT_SUPPORTED,
-            "ORDER BY over a UNION, EXCEPT or INTERSECT is beyond the demo's executor -- "
-            "it returns the rows with their columns stripped",
-        )
-
-
 # Statements whose refusal is about a git repo being read-only rather than about what
 # this example covers. Only long-standing sqlglot node names: anything else (TRUNCATE,
 # ALTER, ...) lands in the coverage refusal, which is equally true of it.
@@ -654,7 +635,6 @@ class GitSession(Session):
         expr = self._analyze(sql, params)
         if not isinstance(expr, _SERVED):
             _refuse(sql, expr)
-        _reject_stripped_columns(expr)
         # git, the file reads and the executor are all blocking, and pg_mimic runs one
         # task per connection -- without this hop a slow query freezes every other
         # session on the event loop, including psql's opening handshake.
