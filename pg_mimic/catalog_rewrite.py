@@ -49,9 +49,9 @@ _CATALOG_FUNCTIONS = {
     "pg_table_is_visible": lambda connection: exp.true(),
     "pg_type_is_visible": lambda connection: exp.true(),
     "pg_function_is_visible": lambda connection: exp.true(),
-    # No indexes, constraints or defaults to describe.
-    "pg_get_indexdef": lambda connection: exp.Literal.string(""),
-    "pg_get_constraintdef": lambda connection: exp.Literal.string(""),
+    # pg_get_indexdef and pg_get_constraintdef are *not* here: their answer depends on
+    # the row, so they are rewritten into a reference to the column carrying it, the
+    # same way format_type is. No column defaults to describe.
     "pg_get_expr": lambda connection: exp.Literal.string(""),
     "pg_get_partkeydef": lambda connection: exp.null(),
     "pg_get_viewdef": lambda connection: exp.Literal.string(""),
@@ -67,13 +67,17 @@ _CATALOG_FUNCTIONS = {
 
 _REGEX_OPERATORS = {"~", "!~", "~*", "!~*"}
 
-# Catalog tables pg_mimic never has rows for: there are no column defaults, no
-# non-default collations, and no indexes or constraints to describe.
+# Catalog functions whose answer depends on the row rather than being constant, and the
+# column each one's answer travels on. See the rewrite in rewrite_for_executor.
+_ROW_DEPENDENT_FUNCTIONS = {"pg_get_indexdef": "indexdef", "pg_get_constraintdef": "condef"}
+
+# Catalog tables pg_mimic never has rows for: there are no column defaults and no
+# non-default collations. pg_index and pg_constraint left this set in #127 -- a declared
+# primary key puts rows in both, and psql reads them in a JOIN rather than in one of the
+# correlated subqueries this substitution exists for.
 _ALWAYS_EMPTY_TABLES = {
     "pg_attrdef",
     "pg_collation",
-    "pg_constraint",
-    "pg_index",
     "pg_inherits",
     "pg_rewrite",
     "pg_trigger",
@@ -156,6 +160,27 @@ def rewrite_for_executor(connection: Connection, expr: exp.Expression) -> exp.Ex
         # Qualified as `pg_catalog.format_type(...)` the call is wrapped in a Dot,
         # and replacing only the inner function leaves `pg_catalog.<column>` behind
         # -- which fails later, in the Sort step, a long way from here.
+        parent = node.parent
+        (parent if isinstance(parent, exp.Dot) else node).replace(column)
+
+    # pg_get_indexdef(i.indexrelid, 0, true) and pg_get_constraintdef(con.oid, true)
+    # depend on the row for the same reason format_type does, so they get the same
+    # treatment: the rendered text travels on the row and the call becomes a reference
+    # to it. psql echoes everything after " USING " in the indexdef straight into the
+    # `Indexes:` footer, which is where `btree (sha)` comes from -- a constant "" there
+    # would render an index with no columns.
+    for node in list(expr.find_all(exp.Anonymous)):
+        rendered = _ROW_DEPENDENT_FUNCTIONS.get(str(node.this).lower())
+        if rendered is None or not node.expressions:
+            continue
+        first = node.expressions[0]
+        if not isinstance(first, exp.Column):
+            continue
+        # The argument says which relation the OID came from, so the replacement carries
+        # the same qualifier -- `con.oid` becomes `con.condef`. An unqualified `oid`
+        # becomes an unqualified `condef`, which qualify() then resolves, since only
+        # pg_constraint has that column.
+        column = exp.column(rendered, table=first.table)
         parent = node.parent
         (parent if isinstance(parent, exp.Dot) else node).replace(column)
 

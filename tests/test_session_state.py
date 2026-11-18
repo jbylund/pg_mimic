@@ -17,7 +17,8 @@ import pytest
 from psycopg.pq import TransactionStatus
 from wire import SYNC, connect_and_get_backend_key, make_parse, make_query, read_message
 
-from pg_mimic import middleware, settings_catalog
+from pg_mimic import Session, middleware, settings_catalog
+from pg_mimic.state import SessionState
 from pg_mimic.testing import serve_in_thread
 
 # sql -> the command tag real Postgres completes it with (src/include/tcop/cmdtaglist.h).
@@ -234,14 +235,34 @@ def test_set_role_and_session_authorization_pass_through(conn, mock_session):
 # --- ParameterStatus ----------------------------------------------------------------
 
 
-def test_client_observes_a_client_encoding_change(conn, mock_session):
-    """psycopg reads its connection encoding out of the cached ParameterStatus, so
-    without one it goes on using the value from the startup burst forever."""
-    assert conn.info.parameter_status("client_encoding") == "UTF8"
+def test_client_observes_a_reported_setting_change(conn, mock_session):
+    """A client caches the startup burst and reads settings out of it -- psycopg's
+    conn.info.encoding is just the cached client_encoding -- so without a
+    ParameterStatus it goes on using the value it was born with forever.
+
+    DateStyle rather than client_encoding as the vehicle: that one may only ever be
+    UTF8 here, so it cannot change and would prove nothing (#116)."""
+    assert conn.info.parameter_status("DateStyle") == "ISO, MDY"
 
     with conn.cursor() as cur:
-        cur.execute("SET client_encoding TO 'LATIN1'")
-    assert conn.info.parameter_status("client_encoding") == "LATIN1"
+        cur.execute("SET DateStyle TO 'ISO, DMY'")
+    assert conn.info.parameter_status("DateStyle") == "ISO, DMY"
+
+
+def test_client_encoding_may_only_be_utf8(conn):
+    """Every string this server writes goes out as UTF-8, and client_encoding is a
+    promise about exactly that. Postgres takes LATIN1 and converts; taking it here
+    left `café` arriving as `cafÃ©`, silently. A name that is not an encoding at all
+    kills psycopg outright, which looks it up as a Python codec."""
+    with conn.cursor() as cur:
+        cur.execute("SET client_encoding TO 'UTF8'")
+        cur.execute("SET client_encoding TO 'utf8'")  # Postgres takes the name case-insensitively
+        for value in ("LATIN1", "SQL_ASCII", "on"):
+            with pytest.raises(psycopg.errors.InvalidParameterValue) as excinfo:
+                cur.execute(f"SET client_encoding TO '{value}'")
+            assert excinfo.value.sqlstate == "22023"
+            assert excinfo.value.diag.message_primary == f'invalid value for parameter "client_encoding": "{value}"'
+            assert excinfo.value.diag.message_hint == "Available values: UTF8."
 
 
 def test_reported_settings_are_reported_again_when_reset(conn, mock_session):
@@ -316,7 +337,7 @@ async def test_parameter_status_arrives_before_ready_for_query(mock_session):
     before ReadyForQuery -- not spliced into the command's own messages."""
     with serve_in_thread(mock_session.spawn) as server:
         reader, writer, _pid, _secret = await connect_and_get_backend_key(server.port)
-        writer.write(make_query("SET client_encoding TO 'LATIN1'"))
+        writer.write(make_query("SET DateStyle TO 'ISO, DMY'"))
         await writer.drain()
 
         tags = []
@@ -324,7 +345,7 @@ async def test_parameter_status_arrives_before_ready_for_query(mock_session):
             tag, payload = await read_message(reader)
             tags.append(tag)
             if tag == b"S":
-                assert payload == b"client_encoding\x00LATIN1\x00"
+                assert payload == b"DateStyle\x00ISO, DMY\x00"
             if tag == b"Z":
                 break
         assert tags == [b"C", b"S", b"Z"]  # CommandComplete, ParameterStatus, ReadyForQuery
@@ -600,6 +621,190 @@ def test_resetting_a_parameter_a_session_cannot_change_is_refused_too(conn, mock
         assert excinfo.value.sqlstate == "55P02"
         assert 'parameter "shared_buffers" cannot be changed without restarting the server' in str(excinfo.value)
     assert mock_session.queries == []
+
+
+# Every message and HINT below was read off a PostgreSQL 18.4 socket. Each of the
+# five vartypes fails differently, and the wording is what a client matches on (#105).
+_REFUSED_BY_VALUE = {
+    "an integer that is not a number": {
+        "sql": "SET work_mem = 'banana'",
+        "message": 'invalid value for parameter "work_mem": "banana"',
+        "hint": None,
+    },
+    "a bare integer is in the parameter's own unit": {
+        "sql": "SET work_mem = 32",
+        "message": '32 kB is outside the valid range for parameter "work_mem" (64 kB .. 2147483647 kB)',
+        "hint": None,
+    },
+    "an integer past int32 overflows rather than exceeding max_val": {
+        "sql": "SET work_mem = 99999999999",
+        "message": 'invalid value for parameter "work_mem": "99999999999"',
+        "hint": "Value exceeds integer range.",
+    },
+    "a unit from the wrong family": {
+        "sql": "SET work_mem = '5s'",
+        "message": 'invalid value for parameter "work_mem": "5s"',
+        "hint": 'Valid units for this parameter are "B", "kB", "MB", "GB", and "TB".',
+    },
+    "a real below min_val": {
+        "sql": "SET random_page_cost = -1",
+        "message": '-1 is outside the valid range for parameter "random_page_cost" (0 .. 1.79769e+308)',
+        "hint": None,
+    },
+    "an enum lists what it would have taken": {
+        "sql": "SET default_transaction_isolation = 'sideways'",
+        "message": 'invalid value for parameter "default_transaction_isolation": "sideways"',
+        "hint": "Available values: serializable, repeatable read, read committed, read uncommitted.",
+    },
+    "a bool has its own wording": {
+        "sql": "SET row_security = 'maybe'",
+        "message": 'parameter "row_security" requires a Boolean value',
+        "hint": None,
+    },
+    "set_config goes through the same check": {
+        "sql": "SELECT set_config('work_mem', 'banana', false)",
+        "message": 'invalid value for parameter "work_mem": "banana"',
+        "hint": None,
+    },
+}
+
+
+@pytest.mark.parametrize(
+    argnames=sorted(next(iter(_REFUSED_BY_VALUE.values()))),
+    argvalues=[[v for k, v in sorted(_REFUSED_BY_VALUE[name].items())] for name in sorted(_REFUSED_BY_VALUE)],
+    ids=sorted(_REFUSED_BY_VALUE),
+)
+def test_a_value_the_parameter_does_not_accept_is_refused(conn, mock_session, sql, message, hint):
+    with conn.cursor() as cur:
+        with pytest.raises(psycopg.errors.InvalidParameterValue) as excinfo:
+            cur.execute(sql)
+        assert excinfo.value.sqlstate == "22023"
+        assert excinfo.value.diag.message_primary == message
+        assert excinfo.value.diag.message_hint == hint
+    assert mock_session.queries == []
+
+
+# Accepted, and each for a reason the check could get wrong.
+_ACCEPTED_BY_VALUE = {
+    "a unit scales into the parameter's own": "SET work_mem = '32MB'",
+    "a bool takes any unambiguous prefix": "SET row_security = 'tr'",
+    "a time unit on a ms parameter": "SET statement_timeout = '5s'",
+    "an enum matches case-insensitively": "SET default_transaction_isolation = 'SERIALIZABLE'",
+    "a string parameter takes anything": "SET search_path = 'anything at all'",
+    "a custom GUC takes anything": "SET app.tenant = 'acme'",
+    "RESET has no value to check": "RESET work_mem",
+}
+
+
+@pytest.mark.parametrize(
+    argnames=["sql"],
+    argvalues=[[_ACCEPTED_BY_VALUE[name]] for name in sorted(_ACCEPTED_BY_VALUE)],
+    ids=sorted(_ACCEPTED_BY_VALUE),
+)
+def test_a_value_the_parameter_accepts_is_not_refused(conn, sql):
+    with conn.cursor() as cur:
+        cur.execute(sql)
+
+
+# What PostgreSQL 18.4 answers SHOW with after each SET. The point of storing the
+# value rather than the client's text: `tr` and `1` are the same setting as `on`,
+# and the server says so (#115).
+_CANONICAL = {
+    "a bool prefix reads back as on": {"sql": "SET row_security = 'tr'", "name": "row_security", "shown": "on"},
+    "so does the number 1": {"sql": "SET row_security = '1'", "name": "row_security", "shown": "on"},
+    "an enum reads back in the catalogue's casing": {
+        "sql": "SET default_transaction_isolation = 'SERIALIZABLE'",
+        "name": "default_transaction_isolation",
+        "shown": "serializable",
+    },
+    "an enum offering on/off also takes the word": {
+        "sql": "SET synchronous_commit = '1'",
+        "name": "synchronous_commit",
+        "shown": "on",
+    },
+    "an integer reads back in the largest unit that divides it": {
+        "sql": "SET work_mem = '32768kB'",
+        "name": "work_mem",
+        "shown": "32MB",
+    },
+    "and in its own unit when nothing larger does": {"sql": "SET work_mem = '1023'", "name": "work_mem", "shown": "1023kB"},
+    "a bare integer is in the parameter's unit": {"sql": "SET work_mem = '1048576'", "name": "work_mem", "shown": "1GB"},
+    "a time unit likewise": {"sql": "SET statement_timeout = '5000'", "name": "statement_timeout", "shown": "5s"},
+    "zero carries no unit": {"sql": "SET statement_timeout = '0'", "name": "statement_timeout", "shown": "0"},
+    "a parameter whose unit has a multiplier renders in the family's": {
+        "sql": "SET temp_buffers = '100'",
+        "name": "temp_buffers",
+        "shown": "800kB",
+    },
+    "a real drops a trailing zero": {"sql": "SET random_page_cost = '4.0'", "name": "random_page_cost", "shown": "4"},
+    "a real with a unit gets one too": {"sql": "SET vacuum_cost_delay = '2.5'", "name": "vacuum_cost_delay", "shown": "2500us"},
+    "a string is left alone": {"sql": "SET application_name = 'MiXeD'", "name": "application_name", "shown": "MiXeD"},
+}
+
+
+@pytest.mark.parametrize(
+    argnames=sorted(next(iter(_CANONICAL.values()))),
+    argvalues=[[v for k, v in sorted(_CANONICAL[name].items())] for name in sorted(_CANONICAL)],
+    ids=sorted(_CANONICAL),
+)
+def test_show_reports_the_value_not_the_text_that_was_typed(conn, name, shown, sql):
+    with conn.cursor() as cur:
+        cur.execute(sql)
+        cur.execute(f"SHOW {name}")
+        assert cur.fetchone()[0] == shown
+
+
+def test_current_setting_reads_the_same_rendering(conn):
+    """SHOW, current_setting() and ParameterStatus all read the stored value, so one
+    rendering serves all three."""
+    with conn.cursor() as cur:
+        cur.execute("SET row_security = 'tr'")
+        cur.execute("SELECT current_setting('row_security')")
+        assert cur.fetchone()[0] == "on"
+
+
+class _StateCapturingSession(Session):
+    """Answers nothing, but hands back the state the middleware wrote into."""
+
+    seen: SessionState | None = None
+
+    async def query(self, sql, params):
+        type(self).seen = self.state
+        return
+        yield  # pragma: no cover -- makes this an async generator
+
+
+def _settings_after(*statements: str) -> dict:
+    _StateCapturingSession.seen = None
+    with serve_in_thread(_StateCapturingSession) as server:
+        with psycopg.connect(server.dsn(), autocommit=True) as connection, connection.cursor() as cur:
+            for statement in statements:
+                cur.execute(statement)
+            cur.execute("SELECT 1")
+    return dict(_StateCapturingSession.seen.session_vars)
+
+
+def test_a_session_reads_a_setting_as_a_value():
+    """The reason for storing it: a session gets something it can use rather than
+    text it has to parse (#115)."""
+    stored = _settings_after("SET row_security = 'tr'", "SET statement_timeout = '5s'", "SET work_mem = '32MB'")
+    assert stored["row_security"] is True
+    assert stored["statement_timeout"] == 5000
+    assert stored["work_mem"] == 32768
+
+
+def test_a_custom_guc_has_no_type_to_be():
+    stored = _settings_after("SELECT set_config('app.tenant', 'acme', false)")
+    assert stored["app.tenant"] == "acme"
+
+
+def test_a_value_is_only_checked_once_the_parameter_may_be_changed(conn, mock_session):
+    """Order matters: 55P02 outranks 22023, so a parameter no session may change is
+    refused for that rather than for the value being wrong as well."""
+    with conn.cursor() as cur:
+        with pytest.raises(psycopg.errors.CantChangeRuntimeParam) as excinfo:
+            cur.execute("SET shared_buffers = 'banana'")
+        assert excinfo.value.sqlstate == "55P02"
 
 
 def test_setting_a_name_that_is_not_a_parameter_is_refused(conn, mock_session):

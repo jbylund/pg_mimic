@@ -25,8 +25,9 @@ import inspect
 from abc import ABC, abstractmethod
 from typing import Any, AsyncIterable, AsyncIterator, Awaitable, Callable, Iterable, Sequence
 
+from .declared import Declared, Schema
 from .results import ResultColumn
-from .state import SessionState
+from .state import SessionState, SettingValue
 from .types import TEXT
 
 Row = tuple
@@ -191,7 +192,14 @@ class StaticPortal(Portal):
     async def execute(self, max_rows: int) -> tuple[list[Row], bool]:
         if self._row_source is None:
             if self._on_execute is not None:
-                self._on_execute()
+                # Awaited when there is something to await. A middleware effect is
+                # ordinarily synchronous -- it writes connection state and returns --
+                # but one that has to reach the *session* cannot be, and this is the
+                # only place an effect runs. Same shape as _resolve_row_source, for
+                # the same reason: the caller should not have to know which it got.
+                effect = self._on_execute()
+                if inspect.isawaitable(effect):
+                    await effect
             # After on_execute, so a statement that both writes and reads back --
             # `SELECT set_config('x', 'y', false)` -- reports the value it just set.
             self._row_source = _rows_as_async_iter(self._rows())
@@ -253,8 +261,17 @@ class Session(BaseSession):
     #: The connection's session state -- settings, prepared statements, portals,
     #: savepoints, and who is connected. Assigned by the framework before init()
     #: runs, so an override may use it without calling super(). Read what the
-    #: middleware decided (`self.state.session_vars["search_path"]`), or manage it
-    #: yourself if you set `middleware = ()`. See pg_mimic.state.
+    #: middleware decided, or manage it yourself if you set `middleware = ()`.
+    #: See pg_mimic.state.
+    #:
+    #: `session_vars` holds *values*, not the text a client typed, so a setting
+    #: comes back ready to use::
+    #:
+    #:     self.state.session_vars["row_security"]      # True, not "on" or "tr"
+    #:     self.state.session_vars["statement_timeout"] # 5000, not "5s"
+    #:
+    #: An overridden setting only -- one nobody has SET is absent rather than at
+    #: its default.
     state: SessionState = None  # type: ignore[assignment]
 
     async def init(self, connection: Any) -> None:
@@ -286,10 +303,82 @@ class Session(BaseSession):
     async def query(self, sql: str, params: list[str | None]) -> RowSource:
         raise NotImplementedError
 
-    async def schema(self) -> dict | None:
+    async def set_parameter(self, name: str, raw_value: str | None, parsed_value: SettingValue | None) -> None:
+        """Told about every SET, RESET and set_config() the middleware handled.
+
+        Both spellings, because a session wants different ones for different jobs:
+        `raw_value` is the text the client wrote, which is what to forward to a real
+        backend, and `parsed_value` is what it means, which is what to act on::
+
+            SET work_mem = '32MB'      raw='32MB'  parsed=32768   (its own unit, kB)
+            SET row_security = 'tr'    raw='tr'    parsed=True
+            SET client_encoding='utf8' raw='utf8'  parsed='UTF8'
+            SET app.tenant = 'acme'    raw='acme'  parsed='acme'  (a custom GUC has
+                                                                   no type to parse)
+            RESET work_mem             raw=None    parsed=None
+
+        Both are None for a RESET, which is the only thing None means here -- no
+        parameter parses to it.
+
+        Handed over rather than read off `self.state.session_vars`, which holds the
+        same parsed value by the time this runs. Depending on that would make the
+        order the connection happens to do things in part of this contract.
+
+        `pg_mimic.settings_values.parse` and `.render` are the same pair the
+        middleware used to produce it, for a session that needs to read a value this
+        did not hand it -- one a real backend reported back, say.
+
+        `name` is lowercased. Dotted custom GUCs (`app.tenant_id`) arrive here too,
+        which is the point: the alternative was re-parsing raw SQL out of `query()`
+        to discover it was connection boilerplate at all.
+
+        The connection has already recorded the change and will send any
+        ParameterStatus it owes. Raising `PgError` rejects the setting and undoes
+        that record, so a session may refuse one it cannot honour::
+
+            async def set_parameter(self, name, raw_value, parsed_value):
+                if name == "app.tenant_id" and not self.may_use(raw_value):
+                    raise PgError(INVALID_PARAMETER_VALUE, f"no such tenant: {raw_value}")
+
+        Does nothing by default.
+        """
+
+    async def discard(self, kind: str) -> None:
+        """Told about `DISCARD ALL | PLANS | SEQUENCES | TEMP`.
+
+        `kind` is upper-case and `TEMPORARY` arrives as `TEMP`, the two being one
+        thing in Postgres.
+
+        All four reach here, including the three the connection itself does nothing
+        for: pg_mimic has no plan cache, no sequences and no temp tables, but a
+        session may have all three, and finding out is the point. `DISCARD ALL` also
+        arrives as one `set_parameter(name, None, None)` per setting still held.
+
+        Called *before* the connection clears what it owns -- session vars, prepared
+        statements, portals, savepoints, listeners -- so raising `PgError` refuses
+        the statement and leaves everything as it was. That is the other way round
+        from `set_parameter`, which records first and undoes on refusal; here the
+        undo would mean snapshotting the whole connection, and telling first buys
+        the same atomicity for nothing.
+
+        Does nothing by default.
+        """
+
+    async def schema(self) -> Declared:
         """Optional: describe your tables for information_schema/pg_catalog
-        emulation. See pg_mimic.catalog."""
-        return None
+        emulation. See pg_mimic.catalog and pg_mimic.declared.
+
+        Return a `Schema` of `Table`s, a sequence of `Table`, or the nested
+        `{table: {column: type_name}}` dict this has always accepted.
+
+        An empty `Schema` by default, rather than None: the two produced identical
+        catalogs, and the branch that guarded the difference is what once crashed
+        every catalog query for a session that did not override this. #136 covers
+        whether "I declare no tables" is worth distinguishing from "I make no claim
+        about my tables" -- if it ever is, it wants a named sentinel rather than a
+        resurrected None.
+        """
+        return Schema()
 
     async def copy_in(self, sql: str, rows: AsyncIterator[Row]) -> int | None:
         """Optional: handle `COPY ... FROM STDIN`.

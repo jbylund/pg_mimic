@@ -63,3 +63,76 @@ def test_both_sessions_describe_a_bare_expression_as_postgres_does(measured, sql
     assert not rest
     reported = {"name": name, "type": type_name}
     assert {key: reported[key] for key in measured} == measured
+
+
+# Every `expected` below is what PostgreSQL 18.4 puts in RowDescription for that
+# query, read through psycopg rather than psql's display (#94).
+_literal_names = {
+    "an integer literal is not named after itself": {"expected": ["?column?"], "sql": "SELECT 1"},
+    "a literal past int4 is not either": {"expected": ["?column?"], "sql": "SELECT 3000000000"},
+    "a string literal does not leak its contents": {"expected": ["?column?"], "sql": "SELECT 'abc'"},
+    "a float literal": {"expected": ["?column?"], "sql": "SELECT 2.5"},
+    "an exponent literal": {"expected": ["?column?"], "sql": "SELECT 1e5"},
+    "parentheses do not name a literal either": {"expected": ["?column?"], "sql": "SELECT (1)"},
+    "NULL was already right": {"expected": ["?column?"], "sql": "SELECT NULL"},
+    "TRUE was already right": {"expected": ["?column?"], "sql": "SELECT TRUE"},
+    "a negative literal was already right": {"expected": ["?column?"], "sql": "SELECT -1"},
+    "an expression over literals was already right": {"expected": ["?column?"], "sql": "SELECT 1 + 1"},
+    "unaliased columns repeat rather than uniquify": {"expected": ["?column?"] * 3, "sql": "SELECT 1, 2, 3"},
+    "an alias survives beside unaliased literals": {"expected": ["a", "?column?"], "sql": "SELECT 1 AS a, 2"},
+    "an alias unlike the literal's text is kept": {"expected": ["total"], "sql": "SELECT 1 AS total"},
+    "duplicate aliases are not uniquified either": {"expected": ["dup", "dup"], "sql": "SELECT 1 AS dup, 2 AS dup"},
+}
+
+
+@pytest.mark.parametrize(
+    argnames=sorted(next(iter(_literal_names.values()))),
+    argvalues=[[value for _, value in sorted(_literal_names[name].items())] for name in sorted(_literal_names)],
+    ids=sorted(_literal_names),
+)
+def test_an_unaliased_literal_is_named_column_not_after_itself(expected, sql):
+    session = TableSession({"users": [{"id": 1}]})
+    assert [name for name, _ in _described(session, sql)] == expected
+
+
+def test_an_alias_that_matches_the_literals_own_text_is_kept():
+    """`SELECT 'a'` and `SELECT 'a' AS a` are the same tree once qualify() has run,
+    and Postgres calls them `?column?` and `a`. Naming reads the query as written,
+    which is the only place they still differ (#111)."""
+    session = TableSession({"users": [{"id": 1}]})
+    assert [name for name, _ in _described(session, "SELECT 'a' AS a")] == ["a"]
+    assert [name for name, _ in _described(session, "SELECT 'a'")] == ["?column?"]
+
+
+# Postgres names a cast after its operand, and only falls back to the target type
+# when the operand has no name of its own -- using typname, so `1::int` is `int4`
+# rather than `integer`. Measured against PostgreSQL 18.4 (#111).
+_cast_names = {
+    "a cast over a named column keeps the column's name": {"expected": ["id"], "sql": "SELECT CAST(id AS TEXT) FROM users"},
+    "the shorthand does too": {"expected": ["id"], "sql": "SELECT id::text FROM users"},
+    "a cast over a literal falls back to the type": {"expected": ["text"], "sql": "SELECT CAST(1 AS TEXT)"},
+    "over an expression, likewise": {"expected": ["text"], "sql": "SELECT CAST(1 + 1 AS TEXT)"},
+    "over NULL, likewise": {"expected": ["text"], "sql": "SELECT CAST(NULL AS TEXT)"},
+    "the fallback is typname, not the declared spelling": {"expected": ["int4"], "sql": "SELECT 1::int"},
+    "numeric": {"expected": ["numeric"], "sql": "SELECT 1::numeric"},
+    "float8": {"expected": ["float8"], "sql": "SELECT 1::float8"},
+    "a sub-select operand stops short of the type name": {"expected": ["?column?"], "sql": "SELECT (SELECT 1)::text"},
+}
+
+
+@pytest.mark.parametrize(
+    argnames=sorted(next(iter(_cast_names.values()))),
+    argvalues=[[value for _, value in sorted(_cast_names[name].items())] for name in sorted(_cast_names)],
+    ids=sorted(_cast_names),
+)
+def test_a_cast_is_named_after_its_operand_then_its_type(expected, sql):
+    session = TableSession({"users": [{"id": 1}]})
+    assert [name for name, _ in _described(session, sql)] == expected
+
+
+def test_qualifys_label_for_an_unnameable_column_is_not_passed_on():
+    """`*` over a derived table expands to a reference *named* `_col_0` when the inner
+    column had no name of its own. That label is qualify's bookkeeping; Postgres calls
+    it `?column?`, measured on 18.4."""
+    session = TableSession({"users": [{"id": 1}]})
+    assert [name for name, _ in _described(session, "SELECT * FROM (SELECT 1 + 1 FROM users) x")] == ["?column?"]

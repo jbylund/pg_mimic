@@ -22,7 +22,7 @@ anywhere below.
 Two parts are worth reading for their own sake.
 
 describe() never runs the query. Column shape comes from sqlglot's type
-annotator against SCHEMA and is exact even through aggregates and arithmetic
+annotator against the declared SCHEMA and is exact even through aggregates and arithmetic
 -- count(*) is int8, insertions / 2.0 is float8 -- so Parse/Describe is
 answered without touching git. examples/dbapi_proxy.py has to execute a SELECT
 to learn its own column types; a declared schema buys the difference. The
@@ -50,8 +50,6 @@ import sqlglot.executor.env as executor_env
 from _args import example_parser, parse_args, serve
 from sqlglot import exp
 from sqlglot.executor import execute as sqlglot_execute
-from sqlglot.optimizer.annotate_types import annotate_types
-from sqlglot.optimizer.qualify import qualify
 
 from pg_mimic import (
     BOOL,
@@ -61,10 +59,13 @@ from pg_mimic import (
     INT8,
     NUMERIC,
     TIMESTAMP,
+    Schema,
     Session,
+    Table,
     oid_for_declared_type,
 )
-from pg_mimic.describe import result_columns, size_integer_literals
+from pg_mimic.analysis import AnalyzedQuery
+from pg_mimic.describe import result_columns
 from pg_mimic.errors import FEATURE_NOT_SUPPORTED, READ_ONLY_SQL_TRANSACTION, PgError
 
 # --- patterns --------------------------------------------------------------------
@@ -96,24 +97,15 @@ def _utc_now() -> datetime:
 
 # sqlglot.executor.env.ENV is a plain dict of the functions the executor can call.
 # Editing it is process-global (pg_mimic's catalog_rewrite.py already does, for
-# REGEXPLIKE), and the two edits below are not the same kind of change.
+# REGEXPLIKE), and the edits below are not all the same kind of change.
 #
-# Filling a hole: an unfilled name raises, which _execute reports as a Postgres error.
-# date_trunc is deliberately absent -- the executor passes its unit as an env *function*
-# rather than a string. EXTRACT(year FROM committed_at) works natively.
+# `||` needed a DPIPE entry here until sqlglot v30.18.0, which routes it in the
+# generator to the CONCAT / SAFECONCAT / ARRAYCONCAT that already exist
+# (tobymao/sqlglot#8146) -- so nothing emits DPIPE to look up any more and the entry
+# is deleted. date_trunc is still deliberately absent: the executor passes its unit
+# as an env *function* rather than a string, and EXTRACT(year FROM committed_at)
+# works natively.
 #
-# It is wrapped in null_if_any, the executor's own convention: SQL says an operator on
-# NULL is NULL, and a bare Python function raises instead -- `path || ext` on an
-# extensionless file would yield ".gitignoreNone".
-#
-# Note this is not the shape the upstream fix takes. tobymao/sqlglot#8146 adds no DPIPE
-# at all: it routes `||` in the generator to the CONCAT / SAFECONCAT / ARRAYCONCAT that
-# already exist. So this line does not anticipate that fix, it goes inert the moment it
-# lands -- nothing will emit DPIPE to look up. Nothing changes here when it does, since
-# SAFECONCAT coerces and nulls identically for the two text operands this sees.
-# test_length_and_concatenation_exist is the tripwire that will say so; #72 tracks it.
-executor_env.ENV.setdefault("DPIPE", executor_env.null_if_any(lambda a, b: f"{a}{b}"))
-
 # Correcting a wrong answer: the executor's clock is datetime.now(), which is the
 # host's local time, while every timestamp collected below is naive UTC (see
 # _naive_utc) and so is the clock pushdown compares against. Left alone, `WHERE
@@ -125,7 +117,7 @@ executor_env.ENV["CURRENTDATE"] = lambda: _utc_now().date()
 
 def _interval_delta(count: str, unit: str) -> timedelta:
     """`interval '90 days'` as a timedelta -- a deliberate *semantic* departure, unlike
-    the two patches above, and so the one to weigh before importing this module into a
+    the clock patch above, and so the one to weigh before importing this module into a
     larger process. The shipped INTERVAL does `timedelta(**{unit: n})`, so
     `interval '1 year'` raises: timedelta has no years or months. Approximating them
     turns that error into an answer wrong by up to five days, for every session in the
@@ -156,38 +148,43 @@ executor_env.ENV["INTERVAL"] = _interval_delta
 # (pg_mimic.describe), so neither can drift from the library's. This file used to
 # carry its own copy of both, and did drift: it described `select 3000000000` as
 # int4 long after #40 was fixed for TableSession.
-SCHEMA = {
-    "commits": {
-        "sha": "text",
-        "author_name": "text",
-        "author_email": "text",
-        "committer_name": "text",
-        "committed_at": "timestamp",
-        "authored_at": "timestamp",
-        "subject": "text",
-        "insertions": "integer",
-        "deletions": "integer",
-        "files_changed": "integer",
-    },
-    "commit_files": {
-        "sha": "text",
-        "path": "text",
-        "insertions": "integer",
-        "deletions": "integer",
-    },
-    "files": {
-        "path": "text",
-        "ext": "text",
-        "size_bytes": "integer",
-        "lines": "integer",
-    },
-    "branches": {
-        "name": "text",
-        "is_head": "boolean",
-        "upstream": "text",
-        "last_commit_at": "timestamp",
-    },
-}
+SCHEMA = Schema(
+    [
+        Table(
+            "commits",
+            {
+                "sha": "text",
+                "author_name": "text",
+                "author_email": "text",
+                "committer_name": "text",
+                "committed_at": "timestamp",
+                "authored_at": "timestamp",
+                "subject": "text",
+                "insertions": "integer",
+                "deletions": "integer",
+                "files_changed": "integer",
+            },
+            primary_key="sha",
+        ),
+        Table(
+            "commit_files",
+            {"sha": "text", "path": "text", "insertions": "integer", "deletions": "integer"},
+            primary_key=("sha", "path"),
+        ),
+        Table("files", {"path": "text", "ext": "text", "size_bytes": "integer", "lines": "integer"}, primary_key="path"),
+        Table(
+            "branches",
+            {"name": "text", "is_head": "boolean", "upstream": "text", "last_commit_at": "timestamp"},
+            primary_key="name",
+        ),
+    ]
+)
+
+# sqlglot's `schema=` wants the nested dict, and so does the one place below that reads
+# a column's declared type. Derived once here rather than at each call site, and it is
+# the *declared* spellings rather than sqlglot's own view of them -- see
+# https://github.com/jbylund/pg_mimic/issues/135.
+COLUMN_TYPES = SCHEMA.column_types()
 
 
 # --- pushdown ------------------------------------------------------------------------
@@ -540,6 +537,32 @@ TABLE_NAMES = (*LOG_PROJECTIONS, *COLLECTORS)
 
 # --- the session ---------------------------------------------------------------------
 
+# A UNION, EXCEPT or INTERSECT is as read-only as a SELECT, so all three are served.
+# exp.Query would also admit a bare exp.Subquery -- `(SELECT ...) LIMIT 1` -- whose
+# LIMIT the executor drops, answering every row instead of one. TableSession repairs
+# that in _flatten_parenthesized; this example has no such layer, so it stays out.
+_SERVED = (exp.Select, exp.SetOperation)
+
+
+def _reject_stripped_columns(expr: exp.Expression) -> None:
+    """Refuse an ORDER BY over a set operation, which the executor answers wrongly.
+
+    The rows come back with every column gone -- `[(), (), ()]` -- so what reaches
+    the client is `unexpected field count in "D" message`, a protocol violation
+    against the RowDescription describe() already sent, rather than an answer or an
+    error. A 0A000 is the honest reply until sqlglot's planner keeps the columns.
+
+    Tracked in https://github.com/jbylund/pg_mimic/issues/49; the fix is
+    https://github.com/jbylund/sqlglot/pull/34, and this goes when it lands.
+    """
+    if isinstance(expr, exp.SetOperation) and expr.args.get("order") is not None:
+        raise PgError(
+            FEATURE_NOT_SUPPORTED,
+            "ORDER BY over a UNION, EXCEPT or INTERSECT is beyond the demo's executor -- "
+            "it returns the rows with their columns stripped",
+        )
+
+
 # Statements whose refusal is about a git repo being read-only rather than about what
 # this example covers. Only long-standing sqlglot node names: anything else (TRUNCATE,
 # ALTER, ...) lands in the coverage refusal, which is equally true of it.
@@ -559,13 +582,12 @@ def _refuse(sql: str, expr: exp.Expression) -> None:
     if isinstance(expr, _WRITES):
         raise PgError(READ_ONLY_SQL_TRANSACTION, f"cannot execute {tag} -- this example serves a git repo read-only")
     if isinstance(expr, exp.Query):
-        # A set operation and a parenthesized query both parse as a Query that is not
-        # a Select, and their first word is SELECT or "(" -- so the message below
-        # would tell their author that SELECT is not supported. Everything here is
-        # written against one Select: qualification, pushdown, parameter substitution.
+        # What is left of Query once _SERVED has taken its Select and SetOperation is
+        # a parenthesized query, whose first word is "(" -- so the message below
+        # would name a statement called "(SELECT" as the thing that cannot run.
         raise PgError(
             FEATURE_NOT_SUPPORTED,
-            "this example runs a single SELECT -- a set operation or a parenthesized query is not covered",
+            "this example runs a SELECT or a set operation -- a parenthesized query is not covered",
         )
     # EXPLAIN is worth a sentence of its own: it is the read-only statement most
     # likely to be tried here (psql users type it, BI tools send it), and "not
@@ -604,7 +626,7 @@ class GitSession(Session):
             # away. No `$n`, nothing to infer.
             return declared
         try:
-            expr = qualify(sqlglot.parse_one(sql, dialect="postgres"), schema=SCHEMA, dialect="postgres")
+            expr = AnalyzedQuery(sqlglot.parse_one(sql, dialect="postgres"), schema=COLUMN_TYPES).qualified()
         except Exception:
             return declared  # unparseable, or not about our tables -- leave it alone
         aliases = _alias_map(expr)
@@ -623,17 +645,16 @@ class GitSession(Session):
         that crashes asyncpg's binary decoder, and result_columns is what calls an
         unaliased output column `?column?` the way Postgres does.
         """
-        expr = self._analyze(sql, params=None)
-        if not isinstance(expr, exp.Select):
+        analyzed = self._analyzed(sql)
+        if analyzed is None:
             return None
-        size_integer_literals(expr)
-        expr = annotate_types(expr, schema=SCHEMA, dialect="postgres")
-        return result_columns(expr, param_oids)
+        return result_columns(analyzed.annotated(), param_oids, names=analyzed.column_names())
 
     async def query(self, sql, params):
         expr = self._analyze(sql, params)
-        if not isinstance(expr, exp.Select):
+        if not isinstance(expr, _SERVED):
             _refuse(sql, expr)
+        _reject_stripped_columns(expr)
         # git, the file reads and the executor are all blocking, and pg_mimic runs one
         # task per connection -- without this hop a slow query freezes every other
         # session on the event loop, including psql's opening handshake.
@@ -641,22 +662,31 @@ class GitSession(Session):
         for row in result.rows:
             yield tuple(row)
 
+    def _analyzed(self, sql: str) -> AnalyzedQuery | None:
+        """The query in the forms describe() and query() each need, or None if it is
+        not one this example serves -- see pg_mimic.analysis."""
+        expr = sqlglot.parse_one(sql, dialect="postgres")
+        if not isinstance(expr, _SERVED):
+            return None
+        return AnalyzedQuery(expr, schema=COLUMN_TYPES)
+
     def _analyze(self, sql: str, params: list | None) -> exp.Expression:
-        """Parse, qualify every column to a table, then substitute bound parameters.
+        """Qualify every column to a table, then substitute bound parameters.
 
         Qualifying first is what lets _substitute_params see which column each `$1` is
         measured against, which is the only type information available for it.
         """
         expr = sqlglot.parse_one(sql, dialect="postgres")
-        if isinstance(expr, exp.Select):
-            expr = qualify(expr, schema=SCHEMA, dialect="postgres")
-            _substitute_params(expr, params)
-        return expr
+        if not isinstance(expr, _SERVED):
+            return expr
+        qualified = AnalyzedQuery(expr, schema=COLUMN_TYPES).qualified()
+        _substitute_params(qualified, params)
+        return qualified
 
     def _execute(self, expr: exp.Select):
         tables = self._tables(expr)  # a PgError from git or an unknown table stands as-is
         try:
-            return sqlglot_execute(expr, schema=SCHEMA, tables=tables, dialect="postgres")
+            return sqlglot_execute(expr, schema=COLUMN_TYPES, tables=tables, dialect="postgres")
         except Exception as error:
             # The executor supports a good deal less SQL than Postgres. Say so, rather
             # than returning an empty result the client reads as "no matching rows".
@@ -718,7 +748,7 @@ def _oid_of_compared_column(node: exp.Parameter, aliases: dict[str, str]) -> int
         return None
     for side in (parent.this, parent.expression):
         if isinstance(side, exp.Column):
-            declared = SCHEMA.get(aliases.get(side.table, ""), {}).get(side.name)
+            declared = COLUMN_TYPES.get(aliases.get(side.table, ""), {}).get(side.name)
             return oid_for_declared_type(declared) if declared else None
     return None
 

@@ -17,11 +17,32 @@ patch whose stated justification had gone stale. These tests are how the next
 one announces itself instead. See
 https://github.com/jbylund/pg_mimic/issues/50
 
+It works. Moving the floor to v30.18.0 turned thirteen of these red at once, and
+four of them were repairs in tables.py that could then be deleted: OFFSET, the
+ORDER BY of a set operation, `NOT IN (subquery)` and NULL ordering. Moving it to
+v30.32.0 did the same for the ORDER BY of a `SELECT DISTINCT`, and turned two
+more green: `agg(DISTINCT x)` and `NULL IN (SELECT ...)`.
+
 Each test names the issue tracking it, and the workaround it justifies where
 there is one, so a failure points straight at the code to delete. Two
 inventories: bugs we work around are
 https://github.com/jbylund/pg_mimic/issues/49, and the ones reaching users
 untreated are https://github.com/jbylund/pg_mimic/issues/58
+
+**The invariant: every workaround pg_mimic carries has a tripwire here.** Without
+it this file's whole premise leaks -- a workaround with no tripwire is exactly the
+thing it exists to prevent. Three were missing and are covered now:
+`_make_decimal_comparisons_exact`, `_distinct_on_keys`/`_first_row_per_key`, and
+the `REGEXPLIKE` patch in catalog_rewrite.py. That last one is the reason to care:
+it is an `ENV.setdefault`, so the day upstream adds the function it goes dead
+silently. If you add a workaround, add its tripwire in the same change.
+
+The tests from `test_distinct_keeps_columns_that_share_a_name` down were found by
+`tools/fuzz`, which generates random SELECTs and compares the executor against a
+real PostgreSQL. Reading them as a group is the honest summary of how far the
+executor is from Postgres: it is a good query engine for the shapes sqlglot's own
+tests cover, and every one of these is a wrong answer or a refusal for SQL that a
+client has every reason to send.
 
 A failure here is never a pg_mimic regression: it means good news upstream.
 """
@@ -45,45 +66,87 @@ _NUMBERS = ({"t": [{"a": 1}, {"a": 2}, {"a": 3}]}, {"t": {"a": "INT"}})
 _TEXT = ({"q": [{"s": "Bump version"}, {"s": "Add feature"}]}, {"q": {"s": "TEXT"}})
 
 
-@pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
 def test_offset_is_applied():
     """https://github.com/jbylund/pg_mimic/issues/49
 
-    Workaround: `_take_row_window` / `rows_sliced_here` in tables.py.
+    Fixed in sqlglot v30.18.0 by
+    https://redirect.github.com/tobymao/sqlglot/pull/8219, one of the reasons the
+    floor moved to 30.18.0. `_take_row_window` no longer strips a row window off a query
+    whose rows this session does not reduce itself, and a nested OFFSET is answered
+    rather than refused.
     """
     assert _rows("SELECT a FROM t ORDER BY a OFFSET 1", *_NUMBERS) == [(2,), (3,)]
     assert _rows("SELECT a FROM t ORDER BY a LIMIT 1 OFFSET 1", *_NUMBERS) == [(2,)]
 
 
-@pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
 def test_order_by_on_a_set_operation_keeps_the_columns():
     """https://github.com/jbylund/pg_mimic/issues/49
 
-    Workaround: `_take_result_order` / `_sorted_rows` in tables.py.
-
-    The rows come back column-less -- `[(), (), ()]` -- not merely unsorted.
+    Fixed in sqlglot v30.18.0 by
+    https://redirect.github.com/tobymao/sqlglot/pull/8214. The rows used to come
+    back column-less -- `[(), (), ()]` -- not merely unsorted. `_take_result_order`
+    now takes only a SELECT DISTINCT's ORDER BY, which is still wrong upstream --
+    see test_select_distinct_ignores_the_order_by_direction below.
     """
     assert _rows("SELECT a FROM t UNION SELECT a FROM t ORDER BY a", *_NUMBERS) == [(1,), (2,), (3,)]
 
 
-@pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
+def test_select_distinct_ignores_the_order_by_direction():
+    """https://github.com/jbylund/pg_mimic/issues/49
+
+    Fixed in sqlglot v30.19.0 by
+    https://redirect.github.com/tobymao/sqlglot/pull/8321, which plans the DISTINCT
+    below the Sort so the ORDER BY survives it. `_take_result_order` and
+    `_sorted_rows` in tables.py, which sorted these rows by hand, are gone.
+
+    The executor used to deduplicate and then sort by the select list alone,
+    ignoring the direction asked for, so a DESC came back ascending. Rows in the
+    wrong order with nothing in the result to say so. Reported upstream as
+    https://github.com/jbylund/sqlglot/issues/54: the planner stacked the DISTINCT
+    aggregate *above* the Sort step, and the aggregate groups by sorting
+    (`context.sort(group_by)`), so an ascending sort on the select list
+    overwrote the ORDER BY. `GROUP BY` built the same two steps the other way
+    round and was correct.
+
+    It had its own tripwire, apart from the set operation above, because v30.18.0
+    fixed that one and not this: one tripwire per independently fixable defect, not
+    per surface symptom (the same lesson as the `length()`/`||` split in
+    https://github.com/jbylund/pg_mimic/issues/107).
+
+    The direction was the least of it: with a LIMIT the wrong *rows* came back, and
+    `SELECT DISTINCT b, a FROM t ORDER BY a` was wrong with no DESC in it at all.
+    Asserted narrowly here; the full matrix is in the issue.
+    """
+    assert _rows("SELECT DISTINCT a FROM t ORDER BY a DESC", *_NUMBERS) == [(3,), (2,), (1,)]
+    assert _rows("SELECT DISTINCT a FROM t ORDER BY a DESC LIMIT 1", *_NUMBERS) == [(3,)]
+
+
 def test_not_in_a_subquery_filters():
     """https://github.com/jbylund/pg_mimic/issues/49
 
-    Workaround: `_rewrite_not_in` in tables.py. `NOT IN (literals)` is fine.
+    Fixed in sqlglot v30.18.0 by
+    https://redirect.github.com/tobymao/sqlglot/pull/8190, which evaluates the
+    subqueries the optimizer declines to rewrite, and
+    https://redirect.github.com/tobymao/sqlglot/pull/8236, which makes it decline a
+    negated correlated IN rather than decorrelate it unsafely. `_rewrite_not_in`,
+    `_anti_join` and `_null_count` are deleted.
+
+    The NULL rule is the half worth re-checking, and it is in
+    tests/test_table_session.py: one NULL in the subquery empties the result.
     """
     tables = {"t": [{"a": 1}, {"a": 2}], "u": [{"b": 1}]}
     schema = {"t": {"a": "INT"}, "u": {"b": "INT"}}
     assert _rows("SELECT a FROM t WHERE a NOT IN (SELECT b FROM u)", tables, schema) == [(2,)]
 
 
-@pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
 def test_descending_order_places_nulls_instead_of_raising():
     """https://github.com/jbylund/pg_mimic/issues/49
 
-    Workaround: `_rewrite_null_ordering` in tables.py.
+    Fixed in sqlglot v30.18.0 by
+    https://redirect.github.com/tobymao/sqlglot/pull/8158, which sorts on a
+    (null rank, value) key. `_rewrite_null_ordering` is deleted.
 
-    Ascending coincidentally matches Postgres; descending raises TypeError.
+    Ascending coincidentally matched Postgres; descending raised TypeError.
     """
     tables, schema = {"n": [{"a": 1}, {"a": None}]}, {"n": {"a": "INT"}}
     assert _rows("SELECT a FROM n ORDER BY a DESC", tables, schema) == [(None,), (1,)]
@@ -177,17 +240,16 @@ def test_length_exists():
     assert _rows("SELECT length(s) FROM q", *_TEXT) == [(12,), (11,)]
 
 
-@pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
 def test_concatenation_exists():
     """https://github.com/jbylund/pg_mimic/issues/38
 
-    No workaround to delete -- `||` raises, and pg_mimic reports that as
-    `0A000` on an information_schema query rather than answering no rows (#39).
+    Fixed in sqlglot v30.18.0 by
+    https://redirect.github.com/tobymao/sqlglot/pull/8146. Split from the
+    `length()` case above because the two were fixed separately, which is what let
+    this one XPASS on its own.
 
-    Split from the `length()` case above because the two were fixed separately:
-    implemented upstream in
-    https://redirect.github.com/tobymao/sqlglot/pull/8146, merged but not in any
-    release as of v30.17.0. When it ships, this mark comes off and the floor moves.
+    There was no workaround to delete: `||` raised, and pg_mimic reported that as
+    `0A000` on an information_schema query rather than answering no rows (#39).
     """
     assert _rows("SELECT s || '!' FROM q", *_TEXT) == [("Bump version!",), ("Add feature!",)]
 
@@ -271,28 +333,32 @@ def test_date_trunc_is_implementable():
     assert _rows("SELECT date_trunc('month', ts) FROM d", tables, {"d": {"ts": "TIMESTAMP"}}) == [(datetime.datetime(2024, 3, 1),)]
 
 
-@pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
 def test_a_scalar_subquery_in_the_select_list_runs():
     """https://github.com/jbylund/pg_mimic/issues/58
 
-    Emits invalid Python, so the client gets a SyntaxError out of generated code
-    it never wrote. One subquery is enough, with or without an outer FROM; a
-    subquery in WHERE, an IN (subquery) and a derived table are all fine.
+    Fixed in sqlglot v30.18.0 by
+    https://redirect.github.com/tobymao/sqlglot/pull/8190, which evaluates the
+    subqueries the optimizer declines to rewrite instead of compiling them to
+    invalid Python -- the client used to get a SyntaxError out of generated code it
+    never wrote.
     """
     tables = {"t": [{"a": 1}, {"a": 2}], "u": [{"b": 9}]}
     schema = {"t": {"a": "INT"}, "u": {"b": "INT"}}
     assert _rows("SELECT a, (SELECT max(b) FROM u) FROM t", tables, schema) == [(1, 9), (2, 9)]
 
 
-@pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
 def test_a_correlated_scalar_subquery_runs():
     """https://github.com/jbylund/pg_mimic/issues/58
 
-    Its own tripwire because the uncorrelated one above can be worked around
-    downstream -- rewritten to a CROSS JOIN, or evaluated once and spliced in as a
-    literal -- and this cannot: a correlated subquery has to be evaluated per outer
-    row, which is the thing the executor fails at. psql's \\dT sends this form, so
-    a fix for the uncorrelated case alone would flip that test and leave \\dT empty.
+    Fixed in sqlglot v30.18.0 by
+    https://redirect.github.com/tobymao/sqlglot/pull/8190, which evaluates it per
+    outer row.
+
+    Its own tripwire because the uncorrelated one above could have been worked
+    around downstream -- rewritten to a CROSS JOIN, or evaluated once and spliced
+    in as a literal -- and this could not. psql's \\dT sends this form, so a fix
+    for the uncorrelated case alone would have flipped that test and left \\dT
+    empty; splitting them is what would have caught it.
     """
     tables = {"t": [{"a": 1}, {"a": 20}], "u": [{"b": 9}]}
     schema = {"t": {"a": "INT"}, "u": {"b": "INT"}}
@@ -310,14 +376,16 @@ def test_an_inline_values_list_can_be_selected_from():
     assert _rows("SELECT * FROM (VALUES ('16384')) AS v", tables, schema) == [("16384",)]
 
 
-@pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
 def test_in_takes_a_from_less_subquery():
     """https://github.com/jbylund/pg_mimic/issues/58
 
+    Fixed in sqlglot v30.18.0 by
+    https://redirect.github.com/tobymao/sqlglot/pull/8221.
+
     Found underneath the inline VALUES: the obvious rewrite of `IN (SELECT * FROM
-    (VALUES (x)))` is `IN (SELECT x)`, and that fails too. `IN` over a real table
-    or a literal list is fine, and a FROM-less SELECT on its own is fine -- it is
-    the combination.
+    (VALUES (x)))` is `IN (SELECT x)`, and that failed too. `IN` over a real table
+    or a literal list was fine, and a FROM-less SELECT on its own was fine -- it
+    was the combination. The inline VALUES above it is still outstanding.
     """
     tables, schema = {"t": [{"a": 1}]}, {"t": {"a": "INT"}}
     assert _rows("SELECT a FROM t WHERE a IN (SELECT 1)", tables, schema) == [(1,)]
@@ -334,3 +402,392 @@ def test_full_outer_join_preserves_unmatched_rows():
     schema = {"x": {"a": "INT"}, "y": {"b": "INT"}}
     rows = _rows("SELECT x.a, y.b FROM x FULL OUTER JOIN y ON x.a = y.b", tables, schema)
     assert sorted(rows, key=str) == [(1, None), (2, 2), (None, 3)]
+
+
+@pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
+def test_a_decimal_constant_is_compared_as_numeric():
+    """https://github.com/jbylund/pg_mimic/issues/49
+
+    Workaround: `_make_decimal_comparisons_exact` in tables.py.
+
+    The executor evaluates a bare `9.99` as a Python float, and
+    `Decimal("9.99") == 9.99` is False, so a `numeric` column never matches a
+    decimal constant: `where total = 9.99` misses the row it should find. Postgres
+    types the constant as `numeric` and finds it.
+
+    Distinct from `_cast` and test_a_decimal_cast_is_exact above, which is about an
+    explicit CAST. This one has no CAST in it -- the literal's own type is what is
+    wrong -- so the two are independently fixable and get a tripwire each.
+    """
+    tables, schema = {"m": [{"total": Decimal("9.99")}]}, {"m": {"total": "DECIMAL(10,2)"}}
+    assert _rows("SELECT total FROM m WHERE total = 9.99", tables, schema) == [(Decimal("9.99"),)]
+
+
+@pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
+def test_distinct_on_keeps_only_the_first_row_per_key():
+    """https://github.com/jbylund/pg_mimic/issues/49
+
+    Workaround: `_distinct_on_keys` / `_first_row_per_key` in tables.py.
+
+    The executor parses `DISTINCT ON` and then returns the duplicate rows anyway --
+    every row, as though the clause were not there -- and it has no window functions
+    to rewrite it into, so pg_mimic finishes it in Python.
+
+    The most user-visible of the untripwired workarounds: `DISTINCT ON` is
+    Postgres-specific syntax, so a client sending it is a client that has already
+    committed to Postgres.
+    """
+    tables = {"v": [{"u": 1, "p": "a"}, {"u": 1, "p": "b"}, {"u": 2, "p": "c"}]}
+    schema = {"v": {"u": "INT", "p": "TEXT"}}
+    assert _rows("SELECT DISTINCT ON (u) u, p FROM v ORDER BY u, p", tables, schema) == [(1, "a"), (2, "c")]
+
+
+@pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
+def test_regexp_like_exists():
+    """https://github.com/jbylund/pg_mimic/issues/49
+
+    Workaround: `ENV.setdefault("REGEXPLIKE", ...)` in catalog_rewrite.py, which is
+    the library's only `ENV` patch. psql's own catalog SQL uses `~`, so this is on
+    the path of `\\d` rather than of anything a user wrote.
+
+    `REGEXPLIKE` is absent from the executor's ENV, so Postgres's `~` and `~*`
+    reach the generated Python as an undefined name -- `NameError: name 'REGEXPLIKE'
+    is not defined`, wrapped in an ExecuteError.
+
+    Worth a tripwire more than most: the workaround is a `setdefault`, so the day
+    upstream adds the function ours goes dead *silently* -- no error, no wrong
+    answer, just code that never runs again. Nothing else here would notice.
+    """
+    assert _rows("SELECT s FROM q WHERE s ~ '^Bump'", *_TEXT) == [("Bump version",)]
+    assert _rows("SELECT s FROM q WHERE s ~* '^bump'", *_TEXT) == [("Bump version",)]
+
+
+# Everything below was found by tools/fuzz. See the module docstring.
+
+# A NULL in here on purpose: without one, count(DISTINCT a) and count(*) are the
+# same number, and the test cannot tell which of the two the executor answered.
+_DUPLICATES = ({"t": [{"a": 1}, {"a": 1}, {"a": 2}, {"a": None}]}, {"t": {"a": "INT"}})
+_MIXED = ({"m": [{"n": Decimal("2.5"), "v": 2.0}]}, {"m": {"n": "DECIMAL", "v": "DOUBLE"}})
+
+
+@pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
+def test_distinct_keeps_columns_that_share_a_name():
+    """https://github.com/jbylund/pg_mimic/issues/58
+
+    Two output columns with the same name are silently merged into one, so the
+    query answers a *narrower* result than it was asked for -- and with DISTINCT
+    over a join, a shorter one too: nine rows of two columns become three of one.
+    Dropping a column the client's Describe already promised is worse than an
+    error, and no workaround in tables.py would catch it, since nothing peeks at
+    result rows.
+
+    `SELECT a, a` without DISTINCT is fine, which is what makes this a DISTINCT bug
+    rather than a projection one.
+    """
+    assert _rows("SELECT DISTINCT a, a FROM t", *_NUMBERS) == [(1, 1), (2, 2), (3, 3)]
+    rows = _rows("SELECT DISTINCT x.a, y.a FROM t AS x CROSS JOIN t AS y", *_NUMBERS)
+    assert len(rows) == 9
+
+
+@pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
+def test_star_expands_columns_that_share_a_name():
+    """https://github.com/jbylund/pg_mimic/issues/58
+
+    The same merge-by-name as above, reached through `*` instead of DISTINCT, and
+    the reason `WITH c AS (SELECT 1, 1 FROM t) SELECT * FROM c` answers one column:
+    both are named `_col_0`. A CTE or derived table whose columns are expressions
+    rather than plain column references is the common way to hit it.
+    """
+    assert _rows("WITH c AS (SELECT a, a FROM t) SELECT * FROM c", *_NUMBERS) == [(1, 1), (2, 2), (3, 3)]
+
+
+def test_distinct_inside_an_aggregate_is_honored():
+    """https://github.com/jbylund/pg_mimic/issues/58
+
+    Fixed in sqlglot v30.19.0 by
+    https://redirect.github.com/tobymao/sqlglot/pull/8395. No workaround here to
+    delete: this was an untreated bug, reaching users.
+
+    Every `agg(DISTINCT x)` was broken, not just `count`, and the cause was one line
+    of codegen: the Python generator renders `exp.Distinct` as `set()`, discarding
+    the expression inside it, so the aggregate is handed an empty set literal
+    instead of the column. `COUNT(DISTINCT a)` compiles to `COUNT(set())`.
+
+    `count` then answers `count(*)` -- 4 here, so both the DISTINCT *and* the
+    NULL-skipping that plain `count(a)` gets right are lost -- while `sum` and
+    `avg` raise on the empty set. `avg(DISTINCT a)` is 1.5 in Postgres and is left
+    out of the assertions only to keep them integer-exact.
+
+    The parser is fine: the `Distinct` node survives in the AST, in every dialect.
+    And the executor is wrong in every dialect, not only `postgres`, while
+    single-argument `count(DISTINCT x)` is SQL-92 and agrees exactly across
+    PostgreSQL 18.4, SQLite 3.51 and MySQL 8.0.46 -- so a fix upstream is not
+    dialect-gated and cannot break a dialect that wanted the old behaviour.
+    """
+    assert _rows("SELECT COUNT(a) FROM t", *_DUPLICATES) == [(3,)]  # correct today; the contrast
+    assert _rows("SELECT COUNT(DISTINCT a) FROM t", *_DUPLICATES) == [(2,)]
+    assert _rows("SELECT COUNT(DISTINCT 1) FROM t", *_DUPLICATES) == [(1,)]
+    assert _rows("SELECT SUM(DISTINCT a) FROM t", *_DUPLICATES) == [(3,)]
+
+
+@pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
+def test_casting_to_an_integer_rounds_rather_than_truncates():
+    """https://github.com/jbylund/pg_mimic/issues/58
+
+    `env.cast` sends the value through `int()`, which truncates toward zero, where
+    Postgres rounds -- and by the same two rules as `round()`: an exact type goes
+    half away from zero, a binary float goes through rint() and lands half to even.
+    Verified against PostgreSQL 18.
+
+    So `CAST(0.5 AS INT)` is 1 rather than 0, and `CAST(-1.5::double AS INT)` is -2
+    rather than -1. Off-by-one in a value, silently.
+    """
+    exact = {"d": [{"n": Decimal(text)} for text in ("0.5", "-0.5", "2.5")]}
+    assert _rows("SELECT CAST(n AS INT) FROM d", exact, {"d": {"n": "DECIMAL"}}) == [(1,), (-1,), (3,)]
+    binary = {"d": [{"v": 0.5}, {"v": 2.5}, {"v": -1.5}]}
+    assert _rows("SELECT CAST(v AS INT) FROM d", binary, {"d": {"v": "DOUBLE"}}) == [(0,), (2,), (-2,)]
+
+
+@pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
+def test_round_to_a_scale_goes_half_away_from_zero():
+    """https://github.com/jbylund/pg_mimic/issues/58
+
+    The two-argument `round()`, split from
+    `test_round_on_numeric_goes_half_away_from_zero` above because it is a separate
+    code path with a separate symptom: ENV["ROUND"] passes the scale to Python's
+    builtin, so 0.25 to one place is 0.2 where Postgres says 0.3.
+    """
+    assert _rows("SELECT ROUND(n, 1) FROM d", {"d": [{"n": Decimal("0.25")}]}, {"d": {"n": "DECIMAL"}}) == [(Decimal("0.3"),)]
+
+
+@pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
+def test_like_honors_a_backslash_escape():
+    """https://github.com/jbylund/pg_mimic/issues/58
+
+    Postgres' LIKE takes backslash as its default escape character, so
+    `LIKE 'a\\%b'` matches the literal text `a%b` and nothing else. The executor
+    treats the backslash as a literal, matches nothing, and answers no rows.
+
+    Distinct from the anchoring and metacharacter bugs fixed in v30.17.0 and
+    covered by test_like_is_anchored_and_takes_metacharacters_literally: escaping
+    is the part that still differs.
+    """
+    tables, schema = {"q": [{"s": "a%b"}, {"s": "axb"}]}, {"q": {"s": "TEXT"}}
+    assert _rows("SELECT s FROM q WHERE s LIKE 'a\\%b'", tables, schema) == [("a%b",)]
+
+
+def test_exists_subquery_runs():
+    """https://github.com/jbylund/pg_mimic/issues/58
+
+    Fixed in sqlglot v30.18.0 by
+    https://redirect.github.com/tobymao/sqlglot/pull/8190 -- the same cause as the
+    scalar subquery above, as the docstring here guessed, and they XPASSed together.
+
+    Kept as its own assertion anyway: EXISTS is the more common of the two by far,
+    being how an ORM asks whether a related row exists.
+    """
+    tables, schema = {"t": [{"a": 1}], "u": [{"b": 1}]}, {"t": {"a": "INT"}, "u": {"b": "INT"}}
+    assert _rows("SELECT a FROM t WHERE EXISTS (SELECT 1 FROM u)", tables, schema) == [(1,)]
+
+
+@pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
+def test_arithmetic_mixes_numeric_and_double():
+    """https://github.com/jbylund/pg_mimic/issues/58
+
+    A NUMERIC column against a DOUBLE one -- or against a float literal -- raises
+    `unsupported operand type(s) for *: 'decimal.Decimal' and 'float'`, because the
+    executor does Python arithmetic on the storage types and Python refuses that
+    pair. Postgres resolves both to double precision and answers 5.
+
+    The one on this list most likely to be the first thing a user hits, since it
+    needs no subquery, no join and no unusual function: two numeric columns of
+    different types multiplied together is enough.
+    """
+    assert _rows("SELECT n * v FROM m", *_MIXED) == [(5.0,)]
+
+
+def test_in_a_subquery_is_null_for_a_null_left_operand():
+    """https://github.com/jbylund/pg_mimic/issues/58
+
+    Fixed in sqlglot v30.32.0 by
+    https://redirect.github.com/tobymao/sqlglot/pull/8990 and
+    https://redirect.github.com/tobymao/sqlglot/pull/9151. No workaround here to
+    delete: this was an untreated bug, reaching users.
+
+    `NULL IN (SELECT ...)` is NULL in Postgres, not FALSE -- three-valued logic,
+    and the reason `NOT IN (subquery)` excludes a NULL row rather than keeping it.
+    The executor answers FALSE, so the negation keeps it, and a `NOT IN` against a
+    nullable column returns rows Postgres would not.
+    """
+    tables, schema = {"t": [{"a": 1}], "u": [{"b": 1}]}, {"t": {"a": "INT"}, "u": {"b": "INT"}}
+    assert _rows("SELECT NULL IN (SELECT b FROM u) FROM t", tables, schema) == [(None,)]
+
+
+def test_an_outer_join_pads_rows_a_where_clause_then_removes():
+    """https://github.com/jbylund/pg_mimic/issues/58
+
+    Fixed in sqlglot v30.18.0 by
+    https://redirect.github.com/tobymao/sqlglot/pull/8282, which stops the optimizer
+    pushing a WHERE predicate into a source that a later RIGHT or FULL join
+    null-extends.
+
+    The NULL-padded row an outer join adds used to survive a WHERE clause testing
+    the padded column, so `WHERE x.a = 1` kept a row whose `x.a` was NULL. Extra
+    rows out of a filter that should have removed them, which is the worst shape a
+    wrong answer can take: nothing about the result looked suspicious.
+    """
+    tables = {"x": [{"a": 1}, {"a": 2}], "y": [{"b": 9}]}
+    schema = {"x": {"a": "INT"}, "y": {"b": "INT"}}
+    assert _rows("SELECT x.a FROM x FULL JOIN y ON NULL WHERE x.a = 1", tables, schema) == [(1,)]
+
+
+def test_btrim_and_reverse_exist():
+    """https://github.com/jbylund/pg_mimic/issues/58
+
+    Fixed in sqlglot v30.18.0: missing from ENV, like `length()` was before
+    v30.17.0, and fixed the same way by
+    https://redirect.github.com/tobymao/sqlglot/pull/8180 (REVERSE in ENV),
+    https://redirect.github.com/tobymao/sqlglot/pull/8181 (`btrim` parsed as TRIM
+    in the postgres dialect) and
+    https://redirect.github.com/tobymao/sqlglot/pull/8201 (REVERSE annotated).
+
+    Worth a tripwire despite being a plain omission because these are not exotic --
+    `btrim` is what Postgres compiles a bare `trim(x)` to. The `ltrim`/`rtrim`
+    position defect below is a different bug and is still outstanding.
+    """
+    tables, schema = {"q": [{"s": "  ab  "}]}, {"q": {"s": "TEXT"}}
+    assert _rows("SELECT BTRIM(s), REVERSE(BTRIM(s)) FROM q", tables, schema) == [("ab", "ba")]
+
+
+@pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
+def test_ltrim_and_rtrim_take_a_position():
+    """https://github.com/jbylund/pg_mimic/issues/58
+
+    A different defect from the two above, and the reason this is its own test.
+    `ltrim`/`rtrim` parse to `exp.Trim` with a position, and the generator emits
+    that position as a bare Python identifier -- `TRIM(scope[None][s], LEADING)` --
+    so it fails as `name 'LEADING' is not defined`. `TRIM` itself is present and
+    correct, so adding LTRIM/RTRIM to ENV would fix neither.
+
+    These four were one test until BTRIM and REVERSE were fixed upstream and these
+    two were not: a single assertion over both causes cannot XPASS, so the fix
+    stayed invisible to the scheme this file exists to run. Same failure as the
+    `length()`/`||` split in https://github.com/jbylund/pg_mimic/issues/107 --
+    one tripwire per independently fixable defect, not per surface symptom.
+    """
+    tables, schema = {"q": [{"s": "  ab  "}]}, {"q": {"s": "TEXT"}}
+    assert _rows("SELECT LTRIM(s), RTRIM(s) FROM q", tables, schema) == [("ab  ", "  ab")]
+
+
+@pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
+def test_extract_takes_a_day_of_week():
+    """https://github.com/jbylund/pg_mimic/issues/58
+
+    `EXTRACT(DOW FROM ts)` reaches `datetime.dow`, an attribute datetime does not
+    have, so it raises rather than answering. YEAR, MONTH, DAY and HOUR all work,
+    which is what makes this a per-field gap rather than a missing EXTRACT.
+
+    2024-03-15 is a Friday, and Postgres numbers Sunday 0, so 5.
+    """
+    tables, schema = {"d": [{"ts": datetime.datetime(2024, 3, 15)}]}, {"d": {"ts": "TIMESTAMP"}}
+    assert _rows("SELECT EXTRACT(DOW FROM ts) FROM d", tables, schema) == [(5,)]
+
+
+@pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
+def test_like_runs_an_escape_clause():
+    """https://github.com/jbylund/pg_mimic/issues/58
+
+    Item 12, split from the default escape character that
+    test_like_honors_a_backslash_escape covers (12b): `LIKE 'a!%b' ESCAPE '!'`
+    raises `name 'ESCAPE' is not defined`, because the Python generator wraps the
+    LIKE in an `ESCAPE(...)` call that nothing in ENV defines. Postgres, MySQL,
+    DuckDB and SQLite all agree on what it means, so a fix is not dialect-gated.
+    Tracked upstream by https://github.com/jbylund/sqlglot/issues/39.
+
+    Asserted on PostgreSQL 18.6: `!%` is a literal percent sign, so only `a%b`
+    matches, not `axb`.
+    """
+    tables, schema = {"q": [{"s": "a%b"}, {"s": "axb"}]}, {"q": {"s": "TEXT"}}
+    assert _rows("SELECT s FROM q WHERE s LIKE 'a!%b' ESCAPE '!'", tables, schema) == [("a%b",)]
+
+
+@pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
+def test_nullif_exists():
+    """https://github.com/jbylund/pg_mimic/issues/58
+
+    Item 19: `NULLIF` is absent from ENV, so `SELECT NULLIF(a, 2)` raises
+    `name 'NULLIF' is not defined`. A plain omission, of the `length()` and `ILIKE`
+    kind, and an ordinary idiom: `x / NULLIF(y, 0)` is how SQL avoids dividing by
+    zero.
+
+    Asserted on PostgreSQL 18.6: NULL where the two arguments are equal, otherwise
+    the first.
+    """
+    assert _rows("SELECT NULLIF(a, 2) FROM t", *_NUMBERS) == [(1,), (None,), (3,)]
+
+
+@pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
+def test_an_aggregate_can_wrap_a_scalar_subquery():
+    """https://github.com/jbylund/pg_mimic/issues/58
+
+    Item 20: a scalar subquery inside an aggregated select raises `'int' object is
+    not iterable` in the Aggregate step. Scalar subqueries themselves work since
+    v30.18.0 (8190); #58 records this as what 8190 made reachable. A bare
+    `SUM((SELECT ...))` with no GROUP BY answers correctly, so it is the grouped
+    aggregate that breaks.
+
+    Asserted on PostgreSQL 18.6: one group, so one row, holding u's row count.
+    """
+    tables, schema = {"u": [{"b": 10}, {"b": 20}]}, {"u": {"b": "INT"}}
+    assert _rows("SELECT COALESCE((SELECT COUNT(1) FROM u), 100) FROM u GROUP BY 1", tables, schema) == [(2,)]
+
+
+@pytest.mark.xfail(strict=True, reason=_UPSTREAM_FIXED)
+def test_bool_or_and_bool_and_exist():
+    """https://github.com/jbylund/pg_mimic/issues/58
+
+    Item 23: `BOOL_OR` and `BOOL_AND` parse to `LogicalOr` and `LogicalAnd`, which
+    the Python generator emits as `LOGICALOR(...)` and `LOGICALAND(...)` -- and
+    neither is in ENV, so both raise `name 'LOGICALOR' is not defined`. The same
+    omission as `NULLIF` above, and the same fix: a dict entry each. Found while
+    re-checking item 20, whose `BOOL_OR(EXISTS(...))` example hid it.
+
+    Asserted on PostgreSQL 18.6: true and false rows give `true` and `false`.
+    """
+    tables, schema = {"b": [{"a": True}, {"a": False}]}, {"b": {"a": "BOOLEAN"}}
+    assert _rows("SELECT BOOL_OR(a), BOOL_AND(a) FROM b", tables, schema) == [(True, False)]
+
+
+def test_dividing_null_is_null():
+    """https://github.com/jbylund/pg_mimic/issues/58
+
+    Fixed in sqlglot v30.18.0 by
+    https://redirect.github.com/tobymao/sqlglot/pull/8178, which routes the coercion
+    through a NULL-propagating `INT`.
+
+    `NULL / 1` used to raise `int() argument must be a string, a bytes-like object
+    or a real number, not 'NoneType'`: integer division coerced with `int()` before
+    checking for NULL. The other operators handled NULL correctly, so it was
+    division specifically.
+    """
+    assert _rows("SELECT a / 1 FROM n", {"n": [{"a": None}]}, {"n": {"a": "INT"}}) == [(None,)]
+
+
+def test_an_operator_after_a_case_binds_to_the_whole_case():
+    """https://github.com/jbylund/pg_mimic/issues/58
+
+    Fixed in sqlglot v30.18.0 by
+    https://redirect.github.com/tobymao/sqlglot/pull/8176.
+
+    Renamed from `test_is_not_null_answers_a_boolean`, because `IS NOT NULL` was
+    never the defect -- `SELECT s IS NOT NULL FROM t` was correct at v30.17.0. The
+    generator emitted an unparenthesized CASE, so once the optimizer stripped the
+    query's own parens the Python bound as `NOT('x' if EQ(a, 1) else None is None)`
+    and the expression answered `'x'`. Any operator after a CASE was affected;
+    `IS NOT NULL` was just the vehicle the fuzzer arrived in.
+
+    It read as correct for as long as the value happened to be truthy, and a column
+    of strings in a boolean-typed output column is a wire encoding error rather than
+    a wrong row.
+    """
+    assert _rows("SELECT (CASE WHEN a = 1 THEN 'x' END) IS NOT NULL FROM t", *_NUMBERS) == [(True,), (False,), (False,)]

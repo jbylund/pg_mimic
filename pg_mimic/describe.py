@@ -14,15 +14,18 @@ describing `select 3000000000` as int4, the bug that crashes asyncpg's binary
 decoder (#40), long after the library copy had learned to size an integer
 literal by its value. This module is the one copy (#88).
 
-The recipe, and the order matters::
+The recipe used to be written out here, and each caller reassembled it. It is
+`pg_mimic.analysis.AnalyzedQuery` now, which owns the order::
 
-    size_integer_literals(qualified)                    # *before* the annotator
-    annotated = annotate_types(qualified, schema=..., dialect="postgres")
-    columns = result_columns(annotated, param_oids)
+    analyzed = AnalyzedQuery(parsed, schema=...)
+    columns = result_columns(analyzed.annotated(), param_oids, names=analyzed.column_names())
 
-Sizing has to run before annotation or the width never reaches the columns
+Two orderings that module keeps, and that anything reaching past it would have to
+keep too. Sizing runs before annotation or the width never reaches the columns
 derived from it -- and it widens the literal rather than the OID afterwards, so
-that `3000000000 + 0` is a bigint sum rather than an int4 one.
+that `3000000000 + 0` is a bigint sum rather than an int4 one. Names are read off
+the query as written, before qualify() rewrites the select list out from under
+the question (see `written_column_names`).
 
 `oid_for_declared_type` runs the other direction of the same round trip: the
 `schema()` type name a column was declared as, back to the OID it means.
@@ -35,6 +38,8 @@ on it without a cycle, and so can a session written outside the package.
 """
 
 from __future__ import annotations
+
+from collections.abc import Sequence
 
 from sqlglot import exp
 
@@ -71,35 +76,40 @@ from .types import (
     oid_for_type,
 )
 
-# (OID, the name Session.schema()/psql show, sqlglot's spelling of it). One table
-# rather than three dicts because these have to agree: a declared type is handed
-# to sqlglot by its spelling and comes back out of the annotator, and that round
-# trip is only lossless if both directions read the same row here.
-_TYPES: tuple[tuple[int, str, str], ...] = (
-    (BOOL, "boolean", "BOOLEAN"),
-    (INT2, "smallint", "SMALLINT"),
-    (INT4, "integer", "INT"),
-    (INT8, "bigint", "BIGINT"),
-    (FLOAT4, "real", "FLOAT"),
-    (FLOAT8, "double precision", "DOUBLE"),
-    (NUMERIC, "numeric", "DECIMAL"),
-    (TEXT, "text", "TEXT"),
-    (VARCHAR, "character varying", "VARCHAR"),
-    (BPCHAR, "character", "CHAR"),
-    (BYTEA, "bytea", "VARBINARY"),
-    (DATE, "date", "DATE"),
-    (TIME, "time", "TIME"),
-    (TIMESTAMP, "timestamp", "TIMESTAMP"),
-    (TIMESTAMPTZ, "timestamptz", "TIMESTAMPTZ"),
-    (INTERVAL, "interval", "INTERVAL"),
-    (UUID, "uuid", "UUID"),
-    (JSON, "json", "JSON"),
-    (JSONB, "jsonb", "JSONB"),
+# (OID, the name Session.schema()/psql show, sqlglot's spelling of it, pg_type.typname).
+# One table rather than four dicts because these have to agree: a declared type is
+# handed to sqlglot by its spelling and comes back out of the annotator, and that
+# round trip is only lossless if both directions read the same row here.
+#
+# typname is the last column because it is a *different* spelling from the second:
+# Postgres shows `integer` in a schema but names an unnameable cast `int4`, so
+# `SELECT 1::int` is a column called int4 rather than integer (#111).
+_TYPES: tuple[tuple[int, str, str, str], ...] = (
+    (BOOL, "boolean", "BOOLEAN", "bool"),
+    (INT2, "smallint", "SMALLINT", "int2"),
+    (INT4, "integer", "INT", "int4"),
+    (INT8, "bigint", "BIGINT", "int8"),
+    (FLOAT4, "real", "FLOAT", "float4"),
+    (FLOAT8, "double precision", "DOUBLE", "float8"),
+    (NUMERIC, "numeric", "DECIMAL", "numeric"),
+    (TEXT, "text", "TEXT", "text"),
+    (VARCHAR, "character varying", "VARCHAR", "varchar"),
+    (BPCHAR, "character", "CHAR", "bpchar"),
+    (BYTEA, "bytea", "VARBINARY", "bytea"),
+    (DATE, "date", "DATE", "date"),
+    (TIME, "time", "TIME", "time"),
+    (TIMESTAMP, "timestamp", "TIMESTAMP", "timestamp"),
+    (TIMESTAMPTZ, "timestamptz", "TIMESTAMPTZ", "timestamptz"),
+    (INTERVAL, "interval", "INTERVAL", "interval"),
+    (UUID, "uuid", "UUID", "uuid"),
+    (JSON, "json", "JSON", "json"),
+    (JSONB, "jsonb", "JSONB", "jsonb"),
 )
 
-_PG_NAME = {oid: pg_name for oid, pg_name, _ in _TYPES}
-_SQLGLOT_NAME = {oid: sqlglot_name for oid, _, sqlglot_name in _TYPES}
-_OID_FOR_SQLGLOT_TYPE = {exp.DataType.build(sqlglot_name).this: oid for oid, _, sqlglot_name in _TYPES}
+_PG_NAME = {oid: pg_name for oid, pg_name, _, _ in _TYPES}
+_SQLGLOT_NAME = {oid: sqlglot_name for oid, _, sqlglot_name, _ in _TYPES}
+_TYPNAME = {oid: typname for oid, _, _, typname in _TYPES}
+_OID_FOR_SQLGLOT_TYPE = {exp.DataType.build(sqlglot_name).this: oid for oid, _, sqlglot_name, _ in _TYPES}
 
 # Spellings only the annotator produces -- no declared column uses them, so they
 # belong here rather than in _TYPES, where they would make the round trip above
@@ -118,6 +128,9 @@ _OID_FOR_SQLGLOT_TYPE.update(
 # numeric. Signed, so that -2147483648 is an integer though 2147483648 is not.
 _INT4_RANGE = (-(2**31), 2**31 - 1)
 _INT8_RANGE = (-(2**63), 2**63 - 1)
+
+# What Postgres calls an output column it cannot name from the query.
+_UNNAMED = "?column?"
 
 
 # --- declared type names ---------------------------------------------------------------
@@ -204,28 +217,109 @@ def size_integer_literals(expression: exp.Expression) -> None:
 # --- the annotated query's output columns ----------------------------------------------
 
 
-def result_columns(expression: exp.Query, param_oids: list[int | None]) -> list[ResultColumn]:
+def result_columns(expression: exp.Query, param_oids: list[int | None], *, names: Sequence[str]) -> list[ResultColumn]:
     """The columns a type-annotated query projects, named and typed as Postgres does.
 
     `param_oids` is what Parse declared, which is the only type a bare `$1` in the
     select list can have -- the annotator cannot reach it.
+
+    `names` is `AnalyzedQuery.column_names()`, decided on the query as written,
+    which is where Postgres decides them too. Required rather than defaulted:
+    reading them back off this tree instead is wrong for any column the query wrote
+    a literal for, and wrong quietly -- it answers `3000000000` where Postgres
+    answers `?column?`. A caller that has no names has the wrong tree, not a
+    naming problem.
+
+    It names the *leading* columns and may be shorter than the select list, which
+    is why the zip truncates on purpose. A DISTINCT ON key the query did not select
+    is appended to the select list so the rows carry something to deduplicate on,
+    after these names were decided and for the executor rather than the client --
+    see `tables._Plan.visible_columns`, which trims the same columns off the rows.
     """
-    return [ResultColumn(_column_name(select), _column_oid(select, param_oids)) for select in expression.selects]
+    return [ResultColumn(name, _column_oid(select, param_oids)) for name, select in zip(names, expression.selects, strict=False)]
 
 
-def _column_name(select: exp.Expression) -> str:
-    """The output column's name. qualify() has already resolved the easy ones and
-    labelled anything unnameable `_col_N`; name those after their function, as
-    Postgres does, and fall back to Postgres's own `?column?`."""
+def written_column_names(expression: exp.Query) -> dict[int, str]:
+    """What Postgres calls each output column, decided on the query as written.
+
+    Postgres names columns during parse analysis, before anything is resolved. Read
+    later than that the question is unanswerable: qualify() names an unaliased
+    literal after its own text, so `SELECT 'a'` and `SELECT 'a' AS a` become the
+    same tree, and the widening in `size_integer_literals` then hides the literal
+    behind a cast that is ours rather than the query's.
+
+    Keyed by node identity because qualify() wraps each projection in a *new* Alias
+    while keeping the node underneath, which is how `resolve_column_names` matches
+    these back up. So this must run before qualify(), and be resolved before any
+    pass that replaces a projection -- `size_integer_literals` does.
+    """
+    return {id(select): _written_name(select) for select in expression.selects}
+
+
+def resolve_column_names(qualified: exp.Query, written: dict[int, str]) -> list[str]:
+    """One name per output column, pairing `written_column_names` with the qualified tree.
+
+    A projection the query wrote keeps the name decided there. One qualify() made --
+    a column that `*` expanded into, or a key added to the select list -- is not in
+    the map and is named from this tree, which is already what Postgres calls it.
+    Pairing by identity rather than by position is what makes `SELECT *, 1` work,
+    where the two select lists are different lengths.
+    """
+    # Not `written.get(id(...), _qualified_name(select))`: a dict default is evaluated
+    # whether or not it is needed, so the fallback would run for every column and be
+    # thrown away for all but the few it is for.
+    names = []
+    for select in qualified.selects:
+        name = written.get(id(select.unalias()))
+        names.append(_qualified_name(select) if name is None else name)
+    return names
+
+
+def _written_name(select: exp.Expression) -> str:
+    """Postgres's rule, on the tree as written: an alias if the query gave one, else
+    a name derived from the expression, else `?column?`."""
+    return select.alias if isinstance(select, exp.Alias) else _implicit_name(select)
+
+
+def _implicit_name(node: exp.Expression) -> str:
+    """The name an unaliased expression gives itself. Postgres recurses here rather
+    than looking the node up: a cast is named after its operand, and only falls back
+    to its target type when the operand has no name of its own."""
+    while isinstance(node, exp.Paren):
+        node = node.this
+    if isinstance(node, exp.Column):
+        return node.name
+    if isinstance(node, exp.Cast):
+        operand = _implicit_name(node.this)
+        if operand != _UNNAMED:
+            return operand
+        # A sub-select operand stops here rather than taking the type name, which is
+        # why `(SELECT 1)::text` is ?column? where `1::text` is text.
+        if isinstance(node.this, (exp.Subquery, exp.Select)):
+            return _UNNAMED
+        # typname, not the declared spelling: `1::int` is int4, not integer.
+        return _TYPNAME.get(_oid_for_sqlglot_type(node.to), _UNNAMED)
+    if isinstance(node, exp.Anonymous):
+        return str(node.this).lower()
+    if isinstance(node, exp.Func):
+        return node.sql_name().lower()
+    return _UNNAMED
+
+
+def _qualified_name(select: exp.Expression) -> str:
+    """A column qualify() produced rather than the query -- one that `*` expanded into.
+
+    Its own name is already what Postgres calls it, apart from the `_col_N` qualify()
+    labels the unnameable with. `SELECT * FROM (SELECT 1 + 1 FROM t) x` expands to a
+    column reference *named* `_col_0`, and that label is qualify's bookkeeping rather
+    than a name to pass on to a client -- Postgres calls it `?column?`.
+    """
     name = select.alias_or_name
     if name and not name.startswith("_col_"):
         return name
     inner = select.unalias()
-    if isinstance(inner, exp.Anonymous):
-        return str(inner.this).lower()
-    if isinstance(inner, exp.Func):
-        return inner.sql_name().lower()
-    return "?column?"
+    # Only a reference to one of those labels; anything else still names itself.
+    return _UNNAMED if isinstance(inner, exp.Column) else _implicit_name(inner)
 
 
 def _column_oid(select: exp.Expression, param_oids: list[int | None]) -> int:

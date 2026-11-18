@@ -1,6 +1,6 @@
 """What examples/git_sql.py refuses, and for which of its two reasons.
 
-The example answers one shape of statement -- a single SELECT -- and used to
+The example answers two shapes of statement -- a SELECT and a set operation -- and used to
 refuse everything else with the same sentence: "this example serves SELECT only
 -- a git repo is read-only". True of INSERT, and misleading about everything
 else: EXPLAIN neither reads nor writes a row, so blaming the repo's
@@ -49,11 +49,12 @@ _refusals = {
         "message": "cannot execute DELETE -- this example serves a git repo read-only",
         "sqlstate": READ_ONLY_SQL_TRANSACTION,
     },
-    # A set operation parses as a Query that is not a Select, and its first word is
-    # SELECT -- so the statement-naming refusal would read "cannot run SELECT".
-    "a set operation says which shape is missing": {
-        "sql": "SELECT sha FROM commits UNION SELECT sha FROM commits",
-        "message": "runs a single SELECT -- a set operation or a parenthesized query is not covered",
+    # A parenthesized query parses as a Subquery, which is a Query but not one this
+    # example serves, and its first word is "(" -- so the statement-naming refusal
+    # would read "cannot run (SELECT".
+    "a parenthesized query says which shape is missing": {
+        "sql": "(SELECT sha FROM commits) LIMIT 1",
+        "message": "runs a SELECT or a set operation -- a parenthesized query is not covered",
         "sqlstate": FEATURE_NOT_SUPPORTED,
     },
 }

@@ -78,6 +78,9 @@ PG_CATALOG_SCHEMA = {
         # than returning the no rows it should.
         "pg_attrdef": {"adrelid": "INT", "adnum": "INT", "adbin": "TEXT"},
         "pg_constraint": {
+            # condef is pg_get_constraintdef()'s answer, carried on the row -- see the
+            # note on pg_index.indexdef.
+            "condef": "TEXT",
             "oid": "INT",
             "conname": "TEXT",
             "conrelid": "INT",
@@ -94,6 +97,11 @@ PG_CATALOG_SCHEMA = {
             "conkey": "TEXT",
         },
         "pg_index": {
+            # indexdef carries what pg_get_indexdef() would render, for the same reason
+            # attformattype carries format_type()'s answer: it depends on the row, so it
+            # cannot be a constant like the other catalog functions. catalog_rewrite
+            # turns the call into a reference to this column.
+            "indexdef": "TEXT",
             "indexrelid": "INT",
             "indrelid": "INT",
             "indisprimary": "BOOLEAN",

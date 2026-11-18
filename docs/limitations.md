@@ -30,11 +30,15 @@
 
   The executor's more dangerous gaps are the clauses it parses and then answers *wrongly* — a wrong answer
   wearing a right answer's clothes. `TableSession` repairs the ones it can, verified against a real
-  PostgreSQL: `OFFSET` and `DISTINCT ON` are applied to the rows the executor returns (with `LIMIT`
-  counting what survives, as Postgres does); `NOT IN (subquery)`, which the executor never filters on,
-  becomes a `NOT EXISTS` carrying SQL's NULL rule; `ORDER BY` places NULLs where Postgres places them
-  instead of raising on the comparison; and a `UNION`, `EXCEPT` or `INTERSECT` over the same table runs
-  both of its branches rather than the first one twice.
+  PostgreSQL: `DISTINCT ON` is applied to the rows the executor returns (with `LIMIT` counting what
+  survives, as Postgres does); and a `UNION`, `EXCEPT` or
+  `INTERSECT` over the same table runs both of its branches rather than the first one twice.
+
+  That list used to be longer. `OFFSET`, `NOT IN (subquery)`, NULL ordering, and the `ORDER BY` of a set
+  operation or a `SELECT DISTINCT` were all repaired here until sqlglot fixed them upstream (v30.18.0 and
+  v30.19.0) — and the floor `pyproject.toml` pins is v30.32.0, which also fixed `agg(DISTINCT x)` and
+  `NULL IN (SELECT ...)`. It is why a nested `OFFSET` is answered now rather than refused. The strict-xfail
+  tripwires in `tests/test_sqlglot_workarounds.py` are what turned red the moment each fix shipped.
 
   Numbers are the same story. A decimal constant is compared as `numeric`, the way Postgres types one, so
   `where total = 9.99` finds the `Decimal("9.99")` row instead of missing it because the executor read the
@@ -42,9 +46,20 @@
   Postgres makes it, so `select 3000000000` describes as `int8` rather than telling a binary client `int4`
   and crashing its decoder.
 
+  **Text is compared by code point, not by collation.** The executor compares strings the way Python
+  does, so `'abc' < 'ABC'` is false and `ORDER BY name` sorts every capital ahead of every lower-case
+  letter. A real PostgreSQL compares by its database collation, and on the usual locale-derived one
+  (`en_US.UTF-8`) both of those come out the other way round. This is a modelling gap rather than a
+  bug with a fix: the executor has no collation to consult, and Python's `str` ordering is the only
+  total order available to it. It matches a database created with `--locale=C` exactly, and differs
+  from any other on mixed-case or non-ASCII text. If your test asserts on the *order* of text rows,
+  that is a reason to want a real Postgres.
+
   `TABLESAMPLE` is refused outright, because the executor ignores it and nothing here can repair that.
-  An `OFFSET` or `DISTINCT ON` nested inside a subquery is refused for the same reason: the
-  repair reaches the query's own rows, and one buried in a subquery would be silently ignored as before.
+  A `DISTINCT ON` nested inside a subquery is refused for the same reason: the repair reaches the query's
+  own rows, and one buried in a subquery would be silently ignored as before. So is a parenthesized query
+  carrying a row window of its own, `(SELECT ... LIMIT 3) LIMIT 1`, which is two windows where only one
+  can be applied.
 
   Everything it can't run is an error, not an approximate answer, and a column type it can't derive is an
   error too rather than a `text` guess — including a bind parameter nothing in the query types, which is

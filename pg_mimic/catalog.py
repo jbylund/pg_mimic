@@ -20,20 +20,21 @@ executing it, and is a separate problem.
 
 from __future__ import annotations
 
+import itertools
 import logging
 import re
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 from sqlglot import exp
 from sqlglot.errors import OptimizeError
 from sqlglot.executor import execute as sqlglot_execute
-from sqlglot.optimizer.annotate_types import annotate_types
-from sqlglot.optimizer.qualify import qualify
 
 from . import types as pg_types
+from .analysis import AnalyzedQuery
 from .arrays import ARRAY_OID, is_array_oid
 from .catalog_data import INFORMATION_SCHEMA_SCHEMA, PG_CATALOG_SCHEMA
 from .catalog_rewrite import rewrite_for_executor
+from .declared import Schema, Table, resolve
 from .describe import oid_for_declared_type, result_columns
 from .errors import FEATURE_NOT_SUPPORTED, UNDEFINED_COLUMN, PgError
 from .results import ResultColumn
@@ -69,8 +70,15 @@ logger = logging.getLogger(__name__)
 _PUBLIC_OID = 2200
 _OWNER_OID = 10
 _HEAP_AM_OID = 2
+_BTREE_AM_OID = 403  # Postgres' own oid for btree, which psql prints by name
 # Real Postgres starts user objects here, and psql only cares that they're distinct.
 _FIRST_USER_OID = 16384
+# Indexes and constraints get their own OID ranges rather than continuing the table
+# numbering, so that declaring a primary key cannot renumber a *table* -- table OIDs
+# are positional and a client may have introspected them already. The gaps are wide
+# enough that a schema would have to declare 100000 tables to collide.
+_FIRST_INDEX_OID = _FIRST_USER_OID + 100_000
+_FIRST_CONSTRAINT_OID = _FIRST_USER_OID + 200_000
 
 
 _CATALOG_NAME = "pg_mimic"
@@ -139,8 +147,22 @@ def _information_schema_row(view: str, **derived) -> dict:
     return row
 
 
-def _build_information_schema(user_schema: dict) -> tuple[dict, dict]:
-    """user_schema: {table_name: {col_name: type_str}} (Session.schema()'s shape).
+class _CatalogInput(NamedTuple):
+    """sqlglot's two arguments for a catalog query, which are not a `Schema`.
+
+    `column_types` is the executor's `schema=` -- the column types of the *catalog's
+    own* tables, `{"pg_class": {"oid": "INT", ...}}` -- and `rows` is its `tables=`.
+    Named because "schema" already meant three things in this module: what the session
+    declares, this type map, and a Postgres namespace. `schema, tables = _build_...()`
+    read as though the first contained the second.
+    """
+
+    column_types: dict
+    rows: dict
+
+
+def _build_information_schema(declared: Schema) -> _CatalogInput:
+    """The information_schema views, from what the session declares.
 
     The columns filled in below are the ones a declared schema genuinely settles,
     plus the handful Postgres answers with a constant for any ordinary table --
@@ -152,7 +174,7 @@ def _build_information_schema(user_schema: dict) -> tuple[dict, dict]:
     type_rows = pg_type_by_oid()
     tables_rows = []
     columns_rows = []
-    for table_name, cols in user_schema.items():
+    for table_name, table in declared.tables.items():
         tables_rows.append(
             _information_schema_row(
                 "tables",
@@ -168,7 +190,7 @@ def _build_information_schema(user_schema: dict) -> tuple[dict, dict]:
                 is_typed="NO",
             )
         )
-        for i, (col_name, col_type) in enumerate(cols.items(), start=1):
+        for i, (col_name, col_type) in enumerate(table.columns.items(), start=1):
             oid = oid_for_declared_type(col_type)
             columns_rows.append(
                 _information_schema_row(
@@ -178,9 +200,12 @@ def _build_information_schema(user_schema: dict) -> tuple[dict, dict]:
                     table_name=table_name,
                     column_name=col_name,
                     ordinal_position=i,
-                    # A declared schema names types, not constraints, so nothing here
-                    # is NOT NULL -- as pg_catalog already says with attnotnull.
-                    is_nullable="YES",
+                    # A primary key's columns are implicitly NOT NULL, which is the one
+                    # thing a declared schema settles here. Everything else is nullable:
+                    # nothing declares a NOT NULL of its own yet. pg_catalog says the
+                    # same through attnotnull, and the two must not disagree -- a client
+                    # reading one and a client reading the other are asking one question.
+                    is_nullable="NO" if col_name in table.primary_key else "YES",
                     data_type=col_type,
                     udt_catalog=_CATALOG_NAME,
                     # The underlying type, named as pg_type names it -- `int4`,
@@ -204,8 +229,8 @@ def _build_information_schema(user_schema: dict) -> tuple[dict, dict]:
                 )
             )
 
-    tables = {"information_schema": {"tables": tables_rows, "columns": columns_rows}}
-    return INFORMATION_SCHEMA_SCHEMA, tables
+    rows = {"information_schema": {"tables": tables_rows, "columns": columns_rows}}
+    return _CatalogInput(INFORMATION_SCHEMA_SCHEMA, rows)
 
 
 def _pg_type_rows() -> list[dict]:
@@ -287,11 +312,76 @@ def _typname_for(rows: list[dict], oid: int) -> str:
     return "unknown"
 
 
-def _build_pg_catalog(user_schema: dict, database: str = "postgres") -> tuple[dict, dict]:
-    """The slice of pg_catalog psql's \\d family reads, from Session.schema()."""
+_PLAIN_IDENTIFIER = re.compile(r"^[a-z_][a-z0-9_$]*$")
+
+
+def _rendered_identifier(name: str) -> str:
+    """A name as Postgres would print it in a constraint or index definition.
+
+    Quoted only when it has to be, which is what `pg_get_constraintdef` does -- an
+    unquoted `sha` and a quoted `"userId"`. Reserved words are not consulted: the list
+    is long, it changes between releases, and a name that needs quoting for *that*
+    reason renders as bare here rather than wrongly quoted somewhere else.
+    """
+    return name if _PLAIN_IDENTIFIER.match(name) else '"' + name.replace('"', '""') + '"'
+
+
+class _Key(NamedTuple):
+    """A declared key, with the one bit that decides how it is named and rendered."""
+
+    table: str
+    columns: tuple[str, ...]
+    is_primary: bool
+
+
+def _declared_keys(table: Table) -> list[_Key]:
+    """Every key a table declares, primary first.
+
+    Order matters only for OID assignment being stable; psql sorts the footer itself
+    (`ORDER BY i.indisprimary DESC, c2.relname`).
+    """
+    keys = [_Key(table.name, table.primary_key, True)] if table.primary_key else []
+    return keys + [_Key(table.name, columns, False) for columns in table.unique]
+
+
+def _key_name(key: _Key, taken: set[str]) -> str:
+    """The name Postgres would give this key's index: `t_pkey`, or `t_a_b_key`.
+
+    The column names go in unquoted whatever they are -- Postgres builds `u1_oddName_key`
+    from `"oddName"`, then quotes the whole name when it prints it.
+
+    Truncated to 63 bytes, which is Postgres' NAMEDATALEN limit and reachable with an
+    ordinary long table name and two or three columns. A truncation that collides gets a
+    counter, as Postgres' own ChooseIndexName does -- two identical *keys* are refused at
+    declaration, so this only fires when two different keys truncate to one name.
+    """
+    stem = f"{key.table}_pkey" if key.is_primary else "_".join([key.table, *key.columns, "key"])
+    name = stem.encode()[:63].decode(errors="ignore")
+    if name not in taken:
+        return name
+    for counter in itertools.count(1):
+        suffixed = f"{name.encode()[: 63 - len(str(counter))].decode(errors='ignore')}{counter}"
+        if suffixed not in taken:
+            return suffixed
+    raise AssertionError("unreachable: itertools.count does not end")
+
+
+def _key_positions(table: Table, key: _Key) -> list[int]:
+    """A key's columns as 1-based attnums, in key order -- Postgres' conkey and indkey."""
+    positions = {column: position for position, column in enumerate(table.columns, start=1)}
+    return [positions[column] for column in key.columns]
+
+
+def _build_pg_catalog(declared: Schema, database: str = "postgres") -> _CatalogInput:
+    """The slice of pg_catalog psql's \\d family reads, from what the session declares."""
     class_rows = []
     attribute_rows = []
-    for index, (table_name, cols) in enumerate(user_schema.items()):
+    index_rows: list[dict] = []
+    constraint_rows: list[dict] = []
+    # Index names are relation names, so they share one namespace with each other and
+    # have to be unique across the whole schema, not just within a table.
+    key_names: set[str] = set()
+    for index, (table_name, table) in enumerate(declared.tables.items()):
         table_oid = _FIRST_USER_OID + index
         class_rows.append(
             {
@@ -303,7 +393,9 @@ def _build_pg_catalog(user_schema: dict, database: str = "postgres") -> tuple[di
                 "relam": _HEAP_AM_OID,
                 "reltuples": -1,  # never analysed
                 "relpages": 0,
-                "relhasindex": False,
+                # psql gates the whole `Indexes:` footer on this, so a declared key that
+                # does not set it builds rows nothing ever asks for.
+                "relhasindex": bool(table.primary_key or table.unique),
                 "relpersistence": "p",
                 "reltablespace": 0,
                 "relispartition": False,
@@ -317,14 +409,18 @@ def _build_pg_catalog(user_schema: dict, database: str = "postgres") -> tuple[di
                 "reltoastrelid": 0,
             }
         )
-        for position, (col_name, col_type) in enumerate(cols.items(), start=1):
+        for position, (col_name, col_type) in enumerate(table.columns.items(), start=1):
             attribute_rows.append(
                 {
                     "attrelid": table_oid,
                     "attname": col_name,
                     "atttypid": oid_for_declared_type(col_type),
                     "attnum": position,
-                    "attnotnull": False,
+                    # A primary key's columns are implicitly NOT NULL in Postgres, and
+                    # psql's Nullable column reads exactly this. PostgreSQL 17 also
+                    # records them as contype='n' rows in pg_constraint; pg_mimic reports
+                    # server_version 16, so it does not.
+                    "attnotnull": col_name in table.primary_key,
                     "atthasdef": False,
                     "attisdropped": False,
                     "attidentity": "",
@@ -339,6 +435,84 @@ def _build_pg_catalog(user_schema: dict, database: str = "postgres") -> tuple[di
                 }
             )
 
+        for key in _declared_keys(table):
+            key_name = _key_name(key, taken=key_names)
+            key_names.add(key_name)
+            index_oid = _FIRST_INDEX_OID + len(index_rows)
+            constraint_oid = _FIRST_CONSTRAINT_OID + len(constraint_rows)
+            key_columns = ", ".join(_rendered_identifier(column) for column in key.columns)
+            positions = _key_positions(table, key)
+            # An index is a relation, so it needs its own pg_class row: psql reads the
+            # index's *name* as c2.relname off a second pg_class in the same query, and
+            # without this row the join drops every index it was told about.
+            class_rows.append(
+                {
+                    "oid": index_oid,
+                    "relname": key_name,
+                    "relnamespace": _PUBLIC_OID,
+                    "relkind": "i",
+                    "relowner": _OWNER_OID,
+                    "relam": _BTREE_AM_OID,
+                    "reltuples": -1,
+                    "relpages": 0,
+                    "relhasindex": False,
+                    "relpersistence": "p",
+                    "reltablespace": 0,
+                    "relispartition": False,
+                    "relrowsecurity": False,
+                    "relforcerowsecurity": False,
+                    "relreplident": "n",
+                    "reloftype": 0,
+                    "relhastriggers": False,
+                    "relchecks": 0,
+                    "relhasrules": False,
+                    "reltoastrelid": 0,
+                }
+            )
+            index_rows.append(
+                {
+                    # psql echoes everything after " USING " verbatim into the footer,
+                    # which is where `btree (sha)` comes from -- so the access method and
+                    # the column list have to be in this string, not derived from relam.
+                    "indexdef": (
+                        f"CREATE UNIQUE INDEX {_rendered_identifier(key_name)} "
+                        f"ON {_rendered_identifier(table_name)} USING btree ({key_columns})"
+                    ),
+                    "indexrelid": index_oid,
+                    "indrelid": table_oid,
+                    # Both kinds are unique indexes; only one of them is *the* key, and
+                    # psql reads these two flags to choose between "PRIMARY KEY," and
+                    # "UNIQUE CONSTRAINT," in the footer.
+                    "indisprimary": key.is_primary,
+                    "indisunique": True,
+                    "indisclustered": False,
+                    "indisvalid": True,
+                    "indisreplident": False,
+                    "indkey": " ".join(str(position) for position in positions),
+                }
+            )
+            constraint_rows.append(
+                {
+                    "condef": f"{'PRIMARY KEY' if key.is_primary else 'UNIQUE'} ({key_columns})",
+                    "oid": constraint_oid,
+                    "conname": key_name,
+                    "conrelid": table_oid,
+                    "contype": "p" if key.is_primary else "u",
+                    "conparentid": 0,
+                    "conindid": index_oid,
+                    "confrelid": 0,
+                    "condeferrable": False,
+                    "condeferred": False,
+                    "convalidated": True,
+                    "connoinherit": False,
+                    "conislocal": True,
+                    "coninhcount": 0,
+                    # Postgres' int2[] of attnums, as its array literal -- the column is
+                    # declared TEXT here, and a Python list has no wire encoding.
+                    "conkey": "{" + ",".join(str(position) for position in positions) + "}",
+                }
+            )
+
     tables = {
         "pg_catalog": {
             "pg_namespace": [
@@ -347,13 +521,16 @@ def _build_pg_catalog(user_schema: dict, database: str = "postgres") -> tuple[di
                 {"oid": 13000, "nspname": "information_schema", "nspowner": _OWNER_OID},
             ],
             "pg_class": class_rows,
-            "pg_am": [{"oid": _HEAP_AM_OID, "amname": "heap", "amhandler": "heap_tableam_handler", "amtype": "t"}],
+            "pg_am": [
+                {"oid": _HEAP_AM_OID, "amname": "heap", "amhandler": "heap_tableam_handler", "amtype": "t"},
+                {"oid": _BTREE_AM_OID, "amname": "btree", "amhandler": "bthandler", "amtype": "i"},
+            ],
             "pg_attribute": attribute_rows,
             "pg_type": _pg_type_rows(),
             "pg_attrdef": [],
             "pg_collation": [],
-            "pg_constraint": [],
-            "pg_index": [],
+            "pg_constraint": constraint_rows,
+            "pg_index": index_rows,
             "pg_inherits": [],
             "pg_rewrite": [],
             "pg_trigger": [],
@@ -397,7 +574,7 @@ def _build_pg_catalog(user_schema: dict, database: str = "postgres") -> tuple[di
             ],
         }
     }
-    return PG_CATALOG_SCHEMA, tables
+    return _CatalogInput(PG_CATALOG_SCHEMA, tables)
 
 
 # --- the statements the middleware hands back ----------------------------------------
@@ -456,13 +633,13 @@ def _declared_columns(expr: exp.Expression, schema: dict) -> list[ResultColumn] 
     refusing a query the executor already answered.
     """
     try:
-        qualified = qualify(expr.copy(), schema=schema, dialect="postgres")
-        return result_columns(annotate_types(qualified, schema=schema, dialect="postgres"), [])
+        analyzed = AnalyzedQuery(expr, schema=schema)
+        return result_columns(analyzed.annotated(), [], names=analyzed.column_names())
     except Exception:
         return None
 
 
-def _as_statement(expr: exp.Expression, schema: dict, tables: dict, *, strict: bool) -> Statement | None:
+def _as_statement(expr: exp.Expression, catalog: _CatalogInput, *, strict: bool) -> Statement | None:
     """Run a catalog query, or decide what its failure means. See #39.
 
     `strict` says whether an executor failure is this connection's problem or the
@@ -470,7 +647,7 @@ def _as_statement(expr: exp.Expression, schema: dict, tables: dict, *, strict: b
     themselves, and False for pg_catalog, which is overwhelmingly psql's own SQL.
     """
     try:
-        result = sqlglot_execute(expr, schema=schema, tables=tables, dialect="postgres")
+        result = sqlglot_execute(expr, schema=catalog.column_types, tables=catalog.rows, dialect="postgres")
     except OptimizeError as error:
         # A column the catalog does not model. On information_schema that is the
         # client's own query and Postgres answers 42703; no rows is the same lie the
@@ -491,11 +668,12 @@ def _as_statement(expr: exp.Expression, schema: dict, tables: dict, *, strict: b
         logger.debug("catalog query answered empty, nothing models it: %s -- %s", error, expr.sql(dialect="postgres"))
         return _empty_result(expr)
     except Exception as error:
-        # The executor broke rather than ran out of catalog: a missing entry in its
-        # function table reads as `name 'DPIPE' is not defined`. On an
-        # information_schema query that is a pg_mimic gap and empty is a lie -- it
-        # is how #38 stayed hidden, since `SELECT a || b FROM
-        # information_schema.tables` came back as no rows and a clean exit.
+        # The executor broke rather than ran out of catalog: it compiles the query to
+        # Python, so a gap in its function table surfaces as a plain NameError from
+        # code it generated. On an information_schema query that is a pg_mimic gap
+        # and empty is a lie -- it is how #38 stayed hidden, since `SELECT a || b
+        # FROM information_schema.tables` came back as no rows and a clean exit
+        # while `||` was the missing name.
         if strict:
             raise PgError(
                 FEATURE_NOT_SUPPORTED,
@@ -513,30 +691,31 @@ def _as_statement(expr: exp.Expression, schema: dict, tables: dict, *, strict: b
 
     sql = expr.sql(dialect="postgres")
     rows = [tuple(row) for row in result.rows]
-    declared = _declared_columns(expr, schema)
+    declared = _declared_columns(expr, catalog.column_types)
     if declared is not None and len(declared) == len(result.columns):
         return StaticStatement(sql, declared, rows)
     return statement_from_rows(sql, result.columns, rows)
 
 
-async def _user_schema(connection: Connection) -> dict:
-    """What the session declares, or nothing -- never None.
+async def _declared_schema(connection: Connection) -> Schema:
+    """What the session declares, as a Schema -- never None.
 
-    `Session.schema()` returns None by default, and the `or {}` guarding that used
-    to bind to the else branch instead of the whole conditional, so a session that
-    did not override it crashed every catalog query with `'NoneType' object has no
-    attribute 'items'`. Nothing caught it because the sessions in this suite either
-    declare a schema or are TableSession, which always does.
+    The base `Session.schema()` used to return None, and the `or {}` guarding that
+    bound to the else branch instead of the whole conditional, so a session that did
+    not override it crashed every catalog query with `'NoneType' object has no
+    attribute 'items'`. That branch is gone: the default is an empty `Schema` and
+    `resolve()` absorbs every other shape, None included, since a session's own
+    override may still return one.
     """
     schema_fn = getattr(connection.session, "schema", None)
-    return ((await schema_fn()) if schema_fn is not None else {}) or {}
+    return resolve(await schema_fn()) if schema_fn is not None else Schema()
 
 
 async def information_schema_statement(connection: Connection, expr: exp.Select) -> Statement | None:
-    schema, tables = _build_information_schema(await _user_schema(connection))
-    return _as_statement(expr, schema, tables, strict=True)
+    catalog = _build_information_schema(await _declared_schema(connection))
+    return _as_statement(expr, catalog, strict=True)
 
 
 async def pg_catalog_statement(connection: Connection, expr: exp.Select) -> Statement | None:
-    schema, tables = _build_pg_catalog(await _user_schema(connection), connection.state.database)
-    return _as_statement(rewrite_for_executor(connection, expr), schema, tables, strict=False)
+    catalog = _build_pg_catalog(await _declared_schema(connection), connection.state.database)
+    return _as_statement(rewrite_for_executor(connection, expr), catalog, strict=False)

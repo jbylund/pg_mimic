@@ -10,6 +10,34 @@ what shipped rather than what was written down at the time.
 ## Unreleased
 
 ### Added
+- A `Table` can declare **unique constraints** — `unique=["email", ("tenant", "email")]`, any
+  number of them — which psql's `\d` prints as the `UNIQUE CONSTRAINT` lines of the same
+  `Indexes:` footer, named as Postgres names them (`users_email_key`). Unlike a primary
+  key they do not make their columns `not null`. Names longer than Postgres' 63-byte
+  identifier limit are truncated and, if that collides, given a counter, as Postgres
+  does. (#128)
+
+- A `Table` can declare a **primary key** — `Table("commits", {...}, primary_key="sha")`, or a
+  tuple for a composite one — and psql's `\d` prints the footer it prints for a real
+  table: `"commits_pkey" PRIMARY KEY, btree (sha)`. Its columns are reported `not null`
+  by both `pg_catalog.pg_attribute.attnotnull` and
+  `information_schema.columns.is_nullable`, the key appears in `pg_index` and
+  `pg_constraint` with a real `pg_get_indexdef()` and `pg_get_constraintdef()`, and
+  `\di` lists it. Nothing is enforced: pg_mimic stores no rows of its own, so a declared
+  key is what the catalog reports rather than a uniqueness check. Declaring the key does
+  not renumber any table's OID. (#127)
+
+- `Schema` and `Table`: what a `Session.schema()` declares, as objects rather than a
+  nested dict. `Schema([Table("users", {"id": "integer"})])` says the same thing
+  `{"users": {"id": "integer"}}` did, and the dict is still accepted — but a `Table` has
+  somewhere to put a primary key or a foreign key, which a dict of column types does
+  not, and which is what `pg_constraint` and `pg_index` need before psql's `\d` can
+  report either. Declaring them comes next (#127 onwards); this is the shape they hang
+  off. A `Table` is immutable, because one declared at module scope is shared by every
+  connection, and both the table order and each table's column order are meaningful —
+  they decide table OIDs and `ordinal_position`. A table with no columns is legal, as it
+  is in Postgres. (#126)
+
 - `information_schema.tables` and `information_schema.columns` are served at
   PostgreSQL's full width: 12 columns and 44, up from 4 and 7, in the server's own
   `ordinal_position` order so `SELECT *` lines up positionally. A column pg_mimic
@@ -92,9 +120,9 @@ what shipped rather than what was written down at the time.
   read-only sent its author looking for a permission that was never the problem.
   A write is now `25006 read_only_sql_transaction`, Postgres's own code for it;
   anything else is `0A000` naming the statement, with `EXPLAIN` adding why (there
-  is no planner behind the example, only sqlglot's executor). A set operation,
-  which parses as a query whose first word is SELECT, says that it is the *shape*
-  that is uncovered rather than claiming SELECT is unsupported. (#108)
+  is no planner behind the example, only sqlglot's executor). A parenthesized
+  query, whose first word is not a statement at all, says that it is the *shape*
+  that is uncovered rather than naming a statement called `(SELECT`. (#108)
 
 - `examples/git_sql.py` refused to serve a linked worktree or a submodule: it
   looked for a `.git` *directory*, and in both of those `.git` is a file pointing
@@ -106,8 +134,57 @@ what shipped rather than what was written down at the time.
   actually bound. Port 0 means "any free one", and the port the kernel picks is the
   one thing a client cannot guess — so the log line was useless in exactly the case
   it exists for. It now reports `self.port`. (#106)
+- `examples/git_sql.py` serves `UNION`, `EXCEPT` and `INTERSECT` instead of refusing
+  them as writes. The read-only guard tested for `exp.Select`, and a set operation is
+  an `exp.SetOperation`, so psql's own `\d` — whose publications footer is three
+  `SELECT`s joined by `UNION` — was answered "a git repo is read-only". An `ORDER BY`
+  over a set operation is still refused, with a `0A000` naming why: sqlglot's executor
+  returns those rows with every column stripped, which reaches the client as a `D`
+  message contradicting the `RowDescription` rather than as an answer. (#125)
 
 ### Changed
+- **The sqlglot floor is now 30.32.0**, which lets `TableSession` delete its last sorting repair.
+  The executor used to deduplicate a `SELECT DISTINCT` and then sort by its select list alone, so
+  `ORDER BY x DESC` came back ascending; it plans the DISTINCT below the sort now
+  ([sqlglot#8321](https://redirect.github.com/tobymao/sqlglot/pull/8321), v30.19.0), so
+  `_take_result_order` and `_sorted_rows` are gone and a `SELECT DISTINCT`'s `LIMIT` is the
+  executor's own. What stays is the check that its `ORDER BY` names only selected columns, which
+  Postgres enforces and the executor does not. The same floor fixes two bugs that had no workaround
+  and reached users: `count(DISTINCT x)` and every other `agg(DISTINCT x)` ignored the DISTINCT
+  ([#8395](https://redirect.github.com/tobymao/sqlglot/pull/8395), v30.19.0), and
+  `NULL IN (SELECT ...)` answered FALSE where Postgres answers NULL
+  ([#8990](https://redirect.github.com/tobymao/sqlglot/pull/8990),
+  [#9151](https://redirect.github.com/tobymao/sqlglot/pull/9151), v30.32.0). Their tripwires are
+  plain assertions now. `tools/install_sqlglot.sh` stays, pinned to a commit past the floor, for the
+  next fix that lands on main before it ships. (#49, #58)
+
+- **The sqlglot floor is now 30.18.0**, which fixes four of the executor bugs `TableSession`
+  worked around — so the workarounds are deleted. `OFFSET` is the executor's own
+  ([sqlglot#8219](https://redirect.github.com/tobymao/sqlglot/pull/8219)), and one nested in a
+  subquery or CTE is answered instead of refused; `NOT IN (subquery)` filters, NULL rule and all
+  ([#8190](https://redirect.github.com/tobymao/sqlglot/pull/8190),
+  [#8236](https://redirect.github.com/tobymao/sqlglot/pull/8236)); `ORDER BY` places NULLs where
+  Postgres places them rather than raising
+  ([#8158](https://redirect.github.com/tobymao/sqlglot/pull/8158)); and the `ORDER BY` of a
+  `UNION`, `EXCEPT` or `INTERSECT` keeps its columns
+  ([#8214](https://redirect.github.com/tobymao/sqlglot/pull/8214)). `_rewrite_not_in`,
+  `_rewrite_null_ordering` and their helpers are gone, and `_take_result_order` now takes only a
+  `SELECT DISTINCT`'s `ORDER BY`, which upstream still gets wrong. Answers are unchanged; there is
+  less pg_mimic between the query and them. (#49, #109)
+
+  Nine more of the untreated bugs in `tests/test_sqlglot_workarounds.py` were fixed in the same
+  release, so `||`, scalar and correlated subqueries, `EXISTS`, `IN (SELECT 1)`, `btrim`, `reverse`,
+  `NULL / 1` and an outer join under a `WHERE` clause all work now. The strict-xfail tripwires
+  there are what announced every one of them; thirteen turned red on the version bump. (#38, #58)
+
+- `TableSession.schema()` returns a `Schema` rather than the nested
+  `{table: {column: type_name}}` dict. `Schema.column_types()` is the same declaration in
+  the old shape for anything that wants it. A session of your own may keep returning the
+  dict — that is accepted and will stay accepted. `Session.schema()` also now defaults to
+  an empty `Schema` instead of `None`: the two produced identical catalogs, and the branch
+  guarding the difference is what once crashed every catalog query for a session that did
+  not override it. (#126)
+
 - **Breaking.** `SET` checks whether the parameter exists and whether a session may
   change it, where before it accepted any name at all. A name that is not a
   parameter is `42704 undefined_object`; a parameter outside a session's reach is
@@ -243,6 +320,15 @@ what shipped rather than what was written down at the time.
 
 ### Internal
 
+- `tools/fuzz` generates random `SELECT`s and compares sqlglot's executor against a
+  real PostgreSQL, minimising every divergence to the smallest query that still
+  shows it. The tripwires above were written by hand from bugs that happened to be
+  noticed; this looks for the ones nobody tripped over, and found fourteen on its
+  first run — six of them wrong answers rather than refusals, including
+  `count(DISTINCT x)` ignoring the DISTINCT and an outer join's NULL-padded row
+  surviving a `WHERE` that tests the padded column. Not part of any CI job: it needs
+  a live server, and a suite that fails on a new random seed is one people delete.
+  (#122)
 - `SessionState` is extracted and shared by the middleware and the session, so
   there is one place where per-connection state lives. (#61)
 - Strict-xfail tripwires assert what real Postgres answers for each sqlglot bug
